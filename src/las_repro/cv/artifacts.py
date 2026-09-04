@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 import fcntl
 import hashlib
@@ -12,7 +12,6 @@ from pathlib import Path
 import secrets
 import shutil
 import stat
-import tempfile
 import threading
 import time
 from typing import Iterator
@@ -113,32 +112,42 @@ class CvArtifactStore:
         self._staging: dict[Path, tuple[str, int, int]] = {}
         self._staging_lock = threading.RLock()
         try:
-            self._root.mkdir(mode=0o700)
-        except FileExistsError:
-            pass
-        self._validate_private_directory(self._root, require_owner_only=False)
-        root_status = self._root.lstat()
+            (
+                self._root_descriptor,
+                self._ancestry_identities,
+            ) = self._open_trusted_ancestry(self._root, create_final=True)
+        except (OSError, ValueError):
+            raise CvArtifactError("unsafe CV artifact directory") from None
+        root_status = os.fstat(self._root_descriptor)
         self._root_identity = root_status.st_dev, root_status.st_ino
 
     def lookup(self, key: str) -> CvArtifactHandle | None:
         """Return a digest-validated immutable handle, or None on a miss."""
         self._validate_key(key)
         self._validate_store_root()
-        prefix = self._prefix_directory(key)
-        if not self._path_exists(prefix):
+        prefix_descriptor = self._open_prefix(key, create=False)
+        if prefix_descriptor is None:
             return None
-        self._validate_private_directory(prefix, require_owner_only=True)
+        os.close(prefix_descriptor)
         with self._key_lock(key):
-            entry = self._entry_path(key)
-            if not self._path_exists(entry):
+            identity = self._entry_identity(key)
+            if identity is None:
                 return None
-            identity = self._path_identity(entry)
+            entry = self._entry_path(key)
             try:
                 artifact, manifest_digest = self._validate_entry(entry, key)
-            except (CvArtifactError, OSError, TypeError, ValueError, ValidationError):
+            except (
+                CvArtifactError,
+                OSError,
+                RecursionError,
+                TypeError,
+                ValueError,
+                ValidationError,
+            ):
                 self._quarantine_entry(key, entry, identity)
                 return None
             del artifact
+            self._validate_store_root()
             return CvArtifactHandle(key=key, manifest_sha256=manifest_digest)
 
     @contextmanager
@@ -147,16 +156,17 @@ class CvArtifactStore:
         self._validate_key(key)
         self._validate_store_root()
         prefix = self._prefix_directory(key)
+        prefix_descriptor = self._open_prefix(key, create=True)
+        if prefix_descriptor is None:
+            raise CvArtifactError("unable to create CV artifact staging")
         try:
-            prefix.mkdir(mode=0o700)
-        except FileExistsError:
-            pass
-        self._validate_private_directory(prefix, require_owner_only=True)
-        staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=prefix))
-        os.chmod(staging, 0o700)
-        identity = staging.stat(follow_symlinks=False)
+            staging, identity = self._make_private_temp_directory(
+                prefix, prefix_descriptor, ".staging-"
+            )
+        finally:
+            os.close(prefix_descriptor)
         with self._staging_lock:
-            self._staging[staging] = (key, identity.st_dev, identity.st_ino)
+            self._staging[staging] = (key, identity[0], identity[1])
         try:
             yield staging
         finally:
@@ -204,8 +214,8 @@ class CvArtifactStore:
                 self._fsync_tree(publication)
                 destination = self._entry_path(key)
                 with self._key_lock(key):
-                    if self._path_exists(destination):
-                        destination_identity = self._path_identity(destination)
+                    destination_identity = self._entry_identity(key)
+                    if destination_identity is not None:
                         try:
                             existing_artifact, existing_digest = self._validate_entry(
                                 destination, key
@@ -213,6 +223,7 @@ class CvArtifactStore:
                         except (
                             CvArtifactError,
                             OSError,
+                            RecursionError,
                             TypeError,
                             ValueError,
                             ValidationError,
@@ -224,20 +235,59 @@ class CvArtifactStore:
                             self._validate_artifact_matches_request(
                                 request, existing_artifact
                             )
+                            self._validate_store_root()
                             return CvArtifactHandle(
                                 key=key, manifest_sha256=existing_digest
                             )
-                    publication_identity = self._path_identity(publication)
-                    staged_artifact, staged_digest = self._validate_entry(
-                        publication, key
-                    )
-                    if staged_artifact != artifact or staged_digest != manifest_digest:
+                    prefix_descriptor = self._open_prefix(key, create=False)
+                    if prefix_descriptor is None:
                         raise ValueError
-                    if self._path_identity(publication) != publication_identity:
-                        raise ValueError
-                    os.replace(publication, destination)
-                    self._fsync_directory(destination.parent)
-                    destination_identity = self._path_identity(destination)
+                    try:
+                        publication_status = os.stat(
+                            publication.name,
+                            dir_fd=prefix_descriptor,
+                            follow_symlinks=False,
+                        )
+                        publication_identity = (
+                            publication_status.st_dev,
+                            publication_status.st_ino,
+                        )
+                        staged_artifact, staged_digest = self._validate_entry(
+                            publication, key
+                        )
+                        if (
+                            staged_artifact != artifact
+                            or staged_digest != manifest_digest
+                        ):
+                            raise ValueError
+                        current_publication = os.stat(
+                            publication.name,
+                            dir_fd=prefix_descriptor,
+                            follow_symlinks=False,
+                        )
+                        if (
+                            current_publication.st_dev,
+                            current_publication.st_ino,
+                        ) != publication_identity:
+                            raise ValueError
+                        os.replace(
+                            publication.name,
+                            key,
+                            src_dir_fd=prefix_descriptor,
+                            dst_dir_fd=prefix_descriptor,
+                        )
+                        os.fsync(prefix_descriptor)
+                        destination_status = os.stat(
+                            key,
+                            dir_fd=prefix_descriptor,
+                            follow_symlinks=False,
+                        )
+                        destination_identity = (
+                            destination_status.st_dev,
+                            destination_status.st_ino,
+                        )
+                    finally:
+                        os.close(prefix_descriptor)
                     try:
                         published_artifact, published_digest = self._validate_entry(
                             destination, key
@@ -250,6 +300,7 @@ class CvArtifactStore:
                     except (
                         CvArtifactError,
                         OSError,
+                        RecursionError,
                         TypeError,
                         ValueError,
                         ValidationError,
@@ -258,6 +309,7 @@ class CvArtifactStore:
                             key, destination, destination_identity
                         )
                         raise ValueError
+                    self._validate_store_root()
                     return CvArtifactHandle(
                         key=key,
                         manifest_sha256=manifest_digest,
@@ -279,11 +331,15 @@ class CvArtifactStore:
                 raise ValueError
             self._validate_key(handle.key)
             self._validate_store_root()
-            prefix = self._prefix_directory(handle.key)
-            self._validate_private_directory(prefix, require_owner_only=True)
+            prefix_descriptor = self._open_prefix(handle.key, create=False)
+            if prefix_descriptor is None:
+                raise ValueError
+            os.close(prefix_descriptor)
             with self._key_lock(handle.key):
                 entry = self._entry_path(handle.key)
-                identity = self._path_identity(entry)
+                identity = self._entry_identity(handle.key)
+                if identity is None:
+                    raise ValueError
                 try:
                     artifact, manifest_digest = self._validate_entry(
                         entry, handle.key
@@ -291,6 +347,7 @@ class CvArtifactStore:
                 except (
                     CvArtifactError,
                     OSError,
+                    RecursionError,
                     TypeError,
                     ValueError,
                     ValidationError,
@@ -299,8 +356,16 @@ class CvArtifactStore:
                     raise ValueError
                 if manifest_digest != handle.manifest_sha256:
                     raise ValueError
+                self._validate_store_root()
                 return artifact
-        except (CvArtifactError, OSError, TypeError, ValueError, ValidationError):
+        except (
+            CvArtifactError,
+            OSError,
+            RecursionError,
+            TypeError,
+            ValueError,
+            ValidationError,
+        ):
             raise CvArtifactError("unable to load CV artifact") from None
 
     def _entry_path(self, key: str) -> Path:
@@ -310,9 +375,114 @@ class CvArtifactStore:
         return self._root / key[:2]
 
     def _validate_store_root(self) -> None:
-        self._validate_private_directory(self._root, require_owner_only=False)
-        if self._path_identity(self._root) != self._root_identity:
+        try:
+            descriptor, identities = self._open_trusted_ancestry(
+                self._root, create_final=False
+            )
+            current = os.fstat(self._root_descriptor)
+            reopened = os.fstat(descriptor)
+            os.close(descriptor)
+        except (OSError, ValueError):
+            raise CvArtifactError("unsafe CV artifact directory") from None
+        if (
+            identities != self._ancestry_identities
+            or (current.st_dev, current.st_ino) != self._root_identity
+            or (reopened.st_dev, reopened.st_ino) != self._root_identity
+        ):
             raise CvArtifactError("unsafe CV artifact directory")
+
+    @classmethod
+    def _open_trusted_ancestry(
+        cls, path: Path, *, create_final: bool
+    ) -> tuple[int, tuple[tuple[int, int], ...]]:
+        if not path.is_absolute():
+            raise ValueError
+        descriptor = cls._open_directory_descriptor(Path("/"))
+        identities: list[tuple[int, int]] = []
+        try:
+            cls._validate_ancestor_status(os.fstat(descriptor), final=False)
+            root_status = os.fstat(descriptor)
+            identities.append((root_status.st_dev, root_status.st_ino))
+            parts = path.parts[1:]
+            for index, part in enumerate(parts):
+                final = index == len(parts) - 1
+                try:
+                    child = cls._open_directory_descriptor(part, dir_fd=descriptor)
+                except FileNotFoundError:
+                    if not (create_final and final):
+                        raise
+                    os.mkdir(part, mode=0o700, dir_fd=descriptor)
+                    os.fsync(descriptor)
+                    child = cls._open_directory_descriptor(part, dir_fd=descriptor)
+                status = os.fstat(child)
+                cls._validate_ancestor_status(status, final=final)
+                identities.append((status.st_dev, status.st_ino))
+                os.close(descriptor)
+                descriptor = child
+            return descriptor, tuple(identities)
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    @staticmethod
+    def _validate_ancestor_status(status: os.stat_result, *, final: bool) -> None:
+        effective_uid = os.geteuid() if hasattr(os, "geteuid") else status.st_uid
+        trusted_owners = {effective_uid, 0}
+        if (
+            not stat.S_ISDIR(status.st_mode)
+            or status.st_uid not in trusted_owners
+            or (final and status.st_uid != effective_uid)
+            or status.st_mode & 0o022
+        ):
+            raise ValueError
+
+    def _open_prefix(self, key: str, *, create: bool) -> int | None:
+        name = key[:2]
+        created = False
+        try:
+            descriptor = self._open_directory_descriptor(
+                name, dir_fd=self._root_descriptor
+            )
+        except FileNotFoundError:
+            if not create:
+                return None
+            try:
+                os.mkdir(name, mode=0o700, dir_fd=self._root_descriptor)
+                created = True
+            except FileExistsError:
+                pass
+            descriptor = self._open_directory_descriptor(
+                name, dir_fd=self._root_descriptor
+            )
+        status = os.fstat(descriptor)
+        effective_uid = os.geteuid() if hasattr(os, "geteuid") else status.st_uid
+        if status.st_uid != effective_uid or status.st_mode & 0o077:
+            os.close(descriptor)
+            raise CvArtifactError("unsafe CV artifact directory")
+        if created:
+            os.fsync(self._root_descriptor)
+        return descriptor
+
+    @staticmethod
+    def _make_private_temp_directory(
+        parent: Path, parent_descriptor: int, prefix: str
+    ) -> tuple[Path, tuple[int, int]]:
+        for _ in range(128):
+            name = f"{prefix}{secrets.token_hex(16)}"
+            try:
+                os.mkdir(name, mode=0o700, dir_fd=parent_descriptor)
+            except FileExistsError:
+                continue
+            descriptor = CvArtifactStore._open_directory_descriptor(
+                name, dir_fd=parent_descriptor
+            )
+            try:
+                os.fchmod(descriptor, 0o700)
+                status = os.fstat(descriptor)
+                return parent / name, (status.st_dev, status.st_ino)
+            finally:
+                os.close(descriptor)
+        raise CvArtifactError("unable to create CV artifact staging")
 
     @staticmethod
     def _validate_key(key: str) -> None:
@@ -327,17 +497,24 @@ class CvArtifactStore:
     def _validate_private_directory(path: Path, *, require_owner_only: bool) -> None:
         try:
             status = path.lstat()
-            owner_matches = not hasattr(os, "geteuid") or status.st_uid == os.geteuid()
-            forbidden = 0o077 if require_owner_only else 0o022
-            if (
-                stat.S_ISLNK(status.st_mode)
-                or not stat.S_ISDIR(status.st_mode)
-                or not owner_matches
-                or status.st_mode & forbidden
-            ):
-                raise ValueError
+            CvArtifactStore._validate_private_directory_status(
+                status, require_owner_only=require_owner_only
+            )
         except (OSError, ValueError):
             raise CvArtifactError("unsafe CV artifact directory") from None
+
+    @staticmethod
+    def _validate_private_directory_status(
+        status: os.stat_result, *, require_owner_only: bool
+    ) -> None:
+        owner_matches = not hasattr(os, "geteuid") or status.st_uid == os.geteuid()
+        forbidden = 0o077 if require_owner_only else 0o022
+        if (
+            not stat.S_ISDIR(status.st_mode)
+            or not owner_matches
+            or status.st_mode & forbidden
+        ):
+            raise ValueError
 
     @staticmethod
     def _has_identity(path: Path, identity: tuple[int, int]) -> bool:
@@ -360,6 +537,21 @@ class CvArtifactStore:
         status = path.lstat()
         return status.st_dev, status.st_ino
 
+    def _entry_identity(self, key: str) -> tuple[int, int] | None:
+        prefix_descriptor = self._open_prefix(key, create=False)
+        if prefix_descriptor is None:
+            return None
+        try:
+            try:
+                status = os.stat(
+                    key, dir_fd=prefix_descriptor, follow_symlinks=False
+                )
+            except FileNotFoundError:
+                return None
+            return status.st_dev, status.st_ino
+        finally:
+            os.close(prefix_descriptor)
+
     @contextmanager
     def _key_lock(self, key: str) -> Iterator[None]:
         lock_identity = f"{self._root}:{key}"
@@ -368,31 +560,49 @@ class CvArtifactStore:
                 lock_identity, threading.RLock()
             )
         with process_lock:
-            lock_path = self._prefix_directory(key) / f".{key}.lock"
+            lock_name = f".{key}.lock"
             flags = os.O_RDWR | os.O_CREAT
             nofollow = getattr(os, "O_NOFOLLOW", None)
             if nofollow is None:
                 raise CvArtifactError("unable to lock CV artifact")
             flags |= nofollow
             descriptor: int | None = None
+            prefix_descriptor: int | None = None
             try:
-                descriptor = os.open(lock_path, flags, 0o600)
+                prefix_descriptor = self._open_prefix(key, create=True)
+                if prefix_descriptor is None:
+                    raise ValueError
+                descriptor = os.open(
+                    lock_name, flags, 0o600, dir_fd=prefix_descriptor
+                )
                 status = os.fstat(descriptor)
                 owner_matches = not hasattr(os, "geteuid") or status.st_uid == os.geteuid()
+                current = os.stat(
+                    lock_name,
+                    dir_fd=prefix_descriptor,
+                    follow_symlinks=False,
+                )
                 if (
                     not stat.S_ISREG(status.st_mode)
                     or not owner_matches
                     or status.st_mode & 0o077
-                    or self._path_identity(lock_path)
+                    or (current.st_dev, current.st_ino)
                     != (status.st_dev, status.st_ino)
                 ):
                     raise CvArtifactError("unsafe CV artifact lock")
                 fcntl.flock(descriptor, fcntl.LOCK_EX)
-                if self._path_identity(lock_path) != (status.st_dev, status.st_ino):
+                current = os.stat(
+                    lock_name,
+                    dir_fd=prefix_descriptor,
+                    follow_symlinks=False,
+                )
+                if (current.st_dev, current.st_ino) != (status.st_dev, status.st_ino):
                     raise CvArtifactError("unsafe CV artifact lock")
             except (CvArtifactError, OSError, ValueError):
                 if descriptor is not None:
                     os.close(descriptor)
+                if prefix_descriptor is not None:
+                    os.close(prefix_descriptor)
                 raise CvArtifactError("unable to lock CV artifact") from None
             try:
                 yield
@@ -403,32 +613,69 @@ class CvArtifactStore:
                     raise CvArtifactError("unable to unlock CV artifact") from None
                 finally:
                     os.close(descriptor)
+                    if prefix_descriptor is not None:
+                        os.close(prefix_descriptor)
 
     def _quarantine_entry(
         self, key: str, entry: Path, identity: tuple[int, int]
     ) -> None:
+        prefix_descriptor: int | None = None
+        quarantine_descriptor: int | None = None
         try:
-            if self._path_identity(entry) != identity:
+            prefix_descriptor = self._open_prefix(key, create=False)
+            if prefix_descriptor is None:
                 raise ValueError
-            quarantine = self._root / "quarantine"
+            created = False
             try:
-                quarantine.mkdir(mode=0o700)
-            except FileExistsError:
-                pass
-            self._validate_private_directory(quarantine, require_owner_only=True)
-            destination = quarantine / f"{key}-{time.time_ns()}-{secrets.token_hex(8)}"
-            os.replace(entry, destination)
-            self._fsync_directory(quarantine)
-            self._fsync_directory(entry.parent)
+                quarantine_descriptor = self._open_directory_descriptor(
+                    "quarantine", dir_fd=self._root_descriptor
+                )
+            except FileNotFoundError:
+                os.mkdir("quarantine", mode=0o700, dir_fd=self._root_descriptor)
+                created = True
+                quarantine_descriptor = self._open_directory_descriptor(
+                    "quarantine", dir_fd=self._root_descriptor
+                )
+            quarantine_status = os.fstat(quarantine_descriptor)
+            effective_uid = (
+                os.geteuid() if hasattr(os, "geteuid") else quarantine_status.st_uid
+            )
+            if quarantine_status.st_uid != effective_uid or quarantine_status.st_mode & 0o077:
+                raise ValueError
+            if created:
+                os.fsync(self._root_descriptor)
+            current = os.stat(key, dir_fd=prefix_descriptor, follow_symlinks=False)
+            if (current.st_dev, current.st_ino) != identity:
+                raise ValueError
+            destination = f"{key}-{time.time_ns()}-{secrets.token_hex(8)}"
+            os.replace(
+                key,
+                destination,
+                src_dir_fd=prefix_descriptor,
+                dst_dir_fd=quarantine_descriptor,
+            )
+            os.fsync(quarantine_descriptor)
+            os.fsync(prefix_descriptor)
         except (CvArtifactError, OSError, ValueError):
             raise CvArtifactError("unable to quarantine CV artifact") from None
+        finally:
+            if quarantine_descriptor is not None:
+                os.close(quarantine_descriptor)
+            if prefix_descriptor is not None:
+                os.close(prefix_descriptor)
 
     @contextmanager
     def _publication_staging(self, key: str) -> Iterator[Path]:
         prefix = self._prefix_directory(key)
-        publication = Path(tempfile.mkdtemp(prefix=".publish-", dir=prefix))
-        os.chmod(publication, 0o700)
-        identity = self._path_identity(publication)
+        prefix_descriptor = self._open_prefix(key, create=True)
+        if prefix_descriptor is None:
+            raise CvArtifactError("unable to create CV artifact staging")
+        try:
+            publication, identity = self._make_private_temp_directory(
+                prefix, prefix_descriptor, ".publish-"
+            )
+        finally:
+            os.close(prefix_descriptor)
         try:
             yield publication
         finally:
@@ -456,7 +703,9 @@ class CvArtifactStore:
             self._validate_private_directory(target, require_owner_only=True)
         total = 0
         for file in artifact.files:
-            with self._open_relative_regular_file(source, file.path) as (
+            with self._open_relative_regular_file(
+                source, file.path, nonblocking=True
+            ) as (
                 source_descriptor,
                 source_parent,
                 source_name,
@@ -500,7 +749,7 @@ class CvArtifactStore:
 
     @contextmanager
     def _open_relative_regular_file(
-        self, root: Path, relative: str
+        self, root: Path | int, relative: str, *, nonblocking: bool = False
     ) -> Iterator[tuple[int, int, str, os.stat_result]]:
         parts = relative.split("/")
         directory_descriptor = self._open_directory_descriptor(root)
@@ -514,8 +763,14 @@ class CvArtifactStore:
             nofollow = getattr(os, "O_NOFOLLOW", None)
             if nofollow is None:
                 raise ValueError
+            flags = os.O_RDONLY | nofollow
+            if nonblocking:
+                nonblocking_flag = getattr(os, "O_NONBLOCK", None)
+                if nonblocking_flag is None:
+                    raise ValueError
+                flags |= nonblocking_flag
             file_descriptor = os.open(
-                parts[-1], os.O_RDONLY | nofollow, dir_fd=directory_descriptor
+                parts[-1], flags, dir_fd=directory_descriptor
             )
             try:
                 status = os.fstat(file_descriptor)
@@ -529,17 +784,22 @@ class CvArtifactStore:
 
     @staticmethod
     def _open_directory_descriptor(
-        path: Path | str, *, dir_fd: int | None = None
+        path: Path | str | int, *, dir_fd: int | None = None
     ) -> int:
         nofollow = getattr(os, "O_NOFOLLOW", None)
         directory_flag = getattr(os, "O_DIRECTORY", None)
         if nofollow is None or directory_flag is None:
             raise ValueError
-        descriptor = os.open(
-            path,
-            os.O_RDONLY | nofollow | directory_flag,
-            dir_fd=dir_fd,
-        )
+        if isinstance(path, int):
+            if dir_fd is not None:
+                raise ValueError
+            descriptor = os.dup(path)
+        else:
+            descriptor = os.open(
+                path,
+                os.O_RDONLY | nofollow | directory_flag,
+                dir_fd=dir_fd,
+            )
         status = os.fstat(descriptor)
         if not stat.S_ISDIR(status.st_mode):
             os.close(descriptor)
@@ -591,10 +851,11 @@ class CvArtifactStore:
 
     def _validate_artifact_files(
         self,
-        directory: Path,
+        directory: Path | int,
         artifact: CvEvidenceArtifact,
         *,
         include_manifest: bool,
+        pinned_files: tuple[tuple[str, int, int, str, os.stat_result], ...] = (),
     ) -> None:
         if len(artifact.files) > self._max_files:
             raise ValueError
@@ -603,20 +864,17 @@ class CvArtifactStore:
         expected = {file.path for file in artifact.files}
         if _MANIFEST_NAME in expected or len(expected) != len(artifact.files):
             raise ValueError
-        actual: set[str] = set()
-        actual_directories: set[str] = set()
-        for path, status in self._walk_tree(directory):
-            relative = path.relative_to(directory).as_posix()
-            if stat.S_ISREG(status.st_mode):
-                if status.st_nlink != 1:
-                    raise ValueError
-                actual.add(relative)
-                if len(actual) > self._max_files + int(include_manifest):
-                    raise ValueError
-            elif not stat.S_ISDIR(status.st_mode):
-                raise ValueError
-            else:
-                actual_directories.add(relative)
+        before = self._capture_tree_metadata(directory)
+        actual = {
+            relative
+            for relative, metadata in before.items()
+            if relative and stat.S_ISREG(metadata[2])
+        }
+        actual_directories = {
+            relative
+            for relative, metadata in before.items()
+            if relative and stat.S_ISDIR(metadata[2])
+        }
         allowed = expected | ({_MANIFEST_NAME} if include_manifest else set())
         if actual != allowed:
             raise ValueError
@@ -629,87 +887,229 @@ class CvArtifactStore:
         if actual_directories != expected_directories:
             raise ValueError
         total = 0
-        for file in artifact.files:
-            path = directory.joinpath(*file.path.split("/"))
-            status_before = path.lstat()
-            if (
-                not stat.S_ISREG(status_before.st_mode)
-                or status_before.st_size != file.size_bytes
-            ):
-                raise ValueError
-            digest = hashlib.sha256()
-            size = 0
-            with path.open("rb") as stream:
-                while chunk := stream.read(_STREAM_BYTES):
+        with ExitStack() as stack:
+            opened_files: dict[
+                str, tuple[int, int, str, os.stat_result]
+            ] = {
+                relative: (descriptor, parent, name, status)
+                for relative, descriptor, parent, name, status in pinned_files
+            }
+            for file in artifact.files:
+                opened_files[file.path] = stack.enter_context(
+                    self._open_relative_regular_file(
+                        directory, file.path, nonblocking=True
+                    )
+                )
+            for relative, (_, _, _, opened) in opened_files.items():
+                if relative not in before or self._stat_signature(opened) != before[relative]:
+                    raise ValueError
+            for file in artifact.files:
+                descriptor = opened_files[file.path][0]
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                digest = hashlib.sha256()
+                size = 0
+                while chunk := os.read(descriptor, _STREAM_BYTES):
                     size += len(chunk)
                     total += len(chunk)
                     if total > self._max_bytes:
                         raise ValueError
                     digest.update(chunk)
-                opened = os.fstat(stream.fileno())
-            status_after = path.lstat()
-            identities = {
-                (status_before.st_dev, status_before.st_ino),
-                (opened.st_dev, opened.st_ino),
-                (status_after.st_dev, status_after.st_ino),
-            }
-            if (
-                len(identities) != 1
-                or status_before.st_nlink != 1
-                or opened.st_nlink != 1
-                or status_after.st_nlink != 1
-                or size != file.size_bytes
-                or digest.hexdigest() != file.sha256
-            ):
+                if size != file.size_bytes or digest.hexdigest() != file.sha256:
+                    raise ValueError
+            after = self._capture_tree_metadata(directory)
+            if before != after:
                 raise ValueError
+            for relative, (descriptor, parent, name, opened) in opened_files.items():
+                current_descriptor = os.fstat(descriptor)
+                current_path = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                if (
+                    self._stat_signature(opened) != self._stat_signature(current_descriptor)
+                    or self._stat_signature(opened) != self._stat_signature(current_path)
+                    or self._stat_signature(opened) != after[relative]
+                ):
+                    raise ValueError
+
+    def _capture_tree_metadata(
+        self, root: Path | int
+    ) -> dict[str, tuple[int, int, int, int, int, int, int, int]]:
+        root_status = os.fstat(root) if isinstance(root, int) else root.lstat()
+        metadata = {"": self._stat_signature(root_status)}
+        file_count = 0
+        for relative, status in self._walk_tree_relative(root):
+            if stat.S_ISREG(status.st_mode):
+                file_count += 1
+                if file_count > self._max_files + 1:
+                    raise ValueError
+                if status.st_nlink != 1:
+                    raise ValueError
+            metadata[relative] = self._stat_signature(status)
+        return metadata
+
+    @staticmethod
+    def _stat_signature(
+        status: os.stat_result,
+    ) -> tuple[int, int, int, int, int, int, int, int]:
+        return (
+            status.st_dev,
+            status.st_ino,
+            status.st_mode,
+            status.st_nlink,
+            status.st_size,
+            status.st_mtime_ns,
+            status.st_ctime_ns,
+            status.st_flags if hasattr(status, "st_flags") else 0,
+        )
+
+    def _walk_tree_relative(
+        self, root: Path | int
+    ) -> Iterator[tuple[str, os.stat_result]]:
+        entry_count = 0
+        root_descriptor = self._open_directory_descriptor(root)
+        stack: list[tuple[str, int, os.ScandirIterator[str]]] = []
+        try:
+            stack.append(("", root_descriptor, os.scandir(root_descriptor)))
+            root_descriptor = -1
+            while stack:
+                parent, parent_descriptor, entries = stack[-1]
+                try:
+                    entry = next(entries)
+                except StopIteration:
+                    entries.close()
+                    os.close(parent_descriptor)
+                    stack.pop()
+                    continue
+                entry_count += 1
+                if entry_count > self._max_tree_entries:
+                    raise ValueError
+                status = entry.stat(follow_symlinks=False)
+                relative = f"{parent}/{entry.name}" if parent else entry.name
+                if stat.S_ISLNK(status.st_mode) or not (
+                    stat.S_ISREG(status.st_mode) or stat.S_ISDIR(status.st_mode)
+                ):
+                    raise ValueError
+                yield relative, status
+                if stat.S_ISDIR(status.st_mode):
+                    child_descriptor = self._open_directory_descriptor(
+                        entry.name, dir_fd=parent_descriptor
+                    )
+                    opened = os.fstat(child_descriptor)
+                    if (opened.st_dev, opened.st_ino) != (
+                        status.st_dev,
+                        status.st_ino,
+                    ):
+                        os.close(child_descriptor)
+                        raise ValueError
+                    stack.append(
+                        (relative, child_descriptor, os.scandir(child_descriptor))
+                    )
+        finally:
+            if root_descriptor >= 0:
+                os.close(root_descriptor)
+            while stack:
+                _, descriptor, entries = stack.pop()
+                entries.close()
+                os.close(descriptor)
 
     def _walk_tree(self, root: Path) -> Iterator[tuple[Path, os.stat_result]]:
-        entry_count = 0
-        for path in root.rglob("*"):
-            entry_count += 1
-            if entry_count > self._max_tree_entries:
-                raise ValueError
-            status = path.lstat()
-            if stat.S_ISLNK(status.st_mode) or not (
-                stat.S_ISREG(status.st_mode) or stat.S_ISDIR(status.st_mode)
-            ):
-                raise ValueError
-            yield path, status
+        for relative, status in self._walk_tree_relative(root):
+            yield root.joinpath(*relative.split("/")), status
 
     def _validate_entry(
         self, entry: Path, expected_key: str
     ) -> tuple[CvEvidenceArtifact, str]:
-        entry_identity = self._path_identity(entry)
-        self._validate_private_directory(entry.parent, require_owner_only=True)
-        self._validate_private_directory(entry, require_owner_only=True)
-        manifest_path = entry / _MANIFEST_NAME
-        manifest, manifest_digest = self._read_bounded_regular_file(
-            manifest_path, self._max_manifest_bytes
+        prefix_descriptor: int | None = None
+        entry_descriptor: int | None = None
+        prefix = self._prefix_directory(expected_key)
+        anchored = entry.parent == prefix and (
+            entry.name == expected_key or entry.name.startswith(".publish-")
         )
-        payload = json.loads(manifest)
-        if not isinstance(payload, dict) or set(payload) != _MANIFEST_FIELDS:
-            raise ValueError
-        cache_identity, identity_entities = self._validated_cache_identity(
-            payload["cache_identity"]
-        )
-        if hashlib.sha256(_canonical_json(cache_identity)).hexdigest() != expected_key:
-            raise ValueError
-        artifact = CvEvidenceArtifact.model_validate(payload["artifact"])
-        self._validate_artifact_matches_identity(
-            cache_identity, identity_entities, artifact
-        )
-        canonical = _canonical_json(
-            {
-                "cache_identity": cache_identity,
-                "artifact": artifact.model_dump(mode="json"),
-            }
-        )
-        if manifest != canonical:
-            raise ValueError
-        self._validate_artifact_files(entry, artifact, include_manifest=True)
-        if self._path_identity(entry) != entry_identity:
-            raise ValueError
-        return artifact, manifest_digest
+        try:
+            if anchored:
+                prefix_descriptor = self._open_prefix(expected_key, create=False)
+                if prefix_descriptor is None:
+                    raise ValueError
+                entry_descriptor = self._open_directory_descriptor(
+                    entry.name, dir_fd=prefix_descriptor
+                )
+            else:
+                self._validate_private_directory(
+                    entry.parent, require_owner_only=True
+                )
+                entry_descriptor = self._open_directory_descriptor(entry)
+            entry_status = os.fstat(entry_descriptor)
+            self._validate_private_directory_status(
+                entry_status, require_owner_only=True
+            )
+            entry_identity = entry_status.st_dev, entry_status.st_ino
+            with self._open_relative_regular_file(
+                entry_descriptor, _MANIFEST_NAME, nonblocking=True
+            ) as (manifest_descriptor, manifest_parent, manifest_name, manifest_status):
+                if (
+                    manifest_status.st_nlink != 1
+                    or manifest_status.st_size > self._max_manifest_bytes
+                ):
+                    raise ValueError
+                manifest, manifest_digest = self._read_bounded_descriptor(
+                    manifest_descriptor, self._max_manifest_bytes
+                )
+                payload = json.loads(manifest)
+                if not isinstance(payload, dict) or set(payload) != _MANIFEST_FIELDS:
+                    raise ValueError
+                cache_identity, identity_entities = self._validated_cache_identity(
+                    payload["cache_identity"]
+                )
+                if (
+                    hashlib.sha256(_canonical_json(cache_identity)).hexdigest()
+                    != expected_key
+                ):
+                    raise ValueError
+                artifact = CvEvidenceArtifact.model_validate(payload["artifact"])
+                self._validate_artifact_matches_identity(
+                    cache_identity, identity_entities, artifact
+                )
+                canonical = _canonical_json(
+                    {
+                        "cache_identity": cache_identity,
+                        "artifact": artifact.model_dump(mode="json"),
+                    }
+                )
+                if manifest != canonical:
+                    raise ValueError
+                self._validate_artifact_files(
+                    entry_descriptor,
+                    artifact,
+                    include_manifest=True,
+                    pinned_files=(
+                        (
+                            _MANIFEST_NAME,
+                            manifest_descriptor,
+                            manifest_parent,
+                            manifest_name,
+                            manifest_status,
+                        ),
+                    ),
+                )
+            current = os.fstat(entry_descriptor)
+            if (current.st_dev, current.st_ino) != entry_identity:
+                raise ValueError
+            if anchored:
+                if prefix_descriptor is None:
+                    raise ValueError
+                current = os.stat(
+                    entry.name,
+                    dir_fd=prefix_descriptor,
+                    follow_symlinks=False,
+                )
+                if (current.st_dev, current.st_ino) != entry_identity:
+                    raise ValueError
+            elif self._path_identity(entry) != entry_identity:
+                raise ValueError
+            return artifact, manifest_digest
+        finally:
+            if entry_descriptor is not None:
+                os.close(entry_descriptor)
+            if prefix_descriptor is not None:
+                os.close(prefix_descriptor)
 
     @staticmethod
     def _validated_cache_identity(
@@ -770,38 +1170,23 @@ class CvArtifactStore:
             raise ValueError
 
     @staticmethod
-    def _read_bounded_regular_file(path: Path, limit: int) -> tuple[bytes, str]:
-        nofollow = getattr(os, "O_NOFOLLOW", None)
-        if nofollow is None:
+    def _read_bounded_descriptor(descriptor: int, limit: int) -> tuple[bytes, str]:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1 or opened.st_size > limit:
             raise ValueError
-        descriptor = os.open(path, os.O_RDONLY | nofollow)
-        try:
-            opened = os.fstat(descriptor)
-            if (
-                not stat.S_ISREG(opened.st_mode)
-                or opened.st_nlink != 1
-                or opened.st_size > limit
-            ):
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        digest = hashlib.sha256()
+        chunks: list[bytes] = []
+        size = 0
+        while chunk := os.read(descriptor, min(_STREAM_BYTES, limit + 1 - size)):
+            size += len(chunk)
+            if size > limit:
                 raise ValueError
-            digest = hashlib.sha256()
-            chunks: list[bytes] = []
-            size = 0
-            while chunk := os.read(descriptor, min(_STREAM_BYTES, limit + 1 - size)):
-                size += len(chunk)
-                if size > limit:
-                    raise ValueError
-                chunks.append(chunk)
-                digest.update(chunk)
-            current = path.lstat()
-            if (
-                (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
-                or current.st_nlink != 1
-                or size != opened.st_size
-            ):
-                raise ValueError
-            return b"".join(chunks), digest.hexdigest()
-        finally:
-            os.close(descriptor)
+            chunks.append(chunk)
+            digest.update(chunk)
+        if size != opened.st_size:
+            raise ValueError
+        return b"".join(chunks), digest.hexdigest()
 
     @staticmethod
     def _fsync_directory(

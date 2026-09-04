@@ -6,6 +6,9 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
+import subprocess
+import sys
 import threading
 
 import pytest
@@ -610,7 +613,11 @@ def test_lookup_rejects_manifest_inode_swap(tmp_path, cv_request, monkeypatch):
         descriptor = original_open(path, flags, *args, **kwargs)
         if Path(path).name == "manifest.json" and not swapped:
             swapped = True
-            os.replace(replacement, path)
+            destination_descriptor = kwargs.get("dir_fd")
+            if destination_descriptor is None:
+                os.replace(replacement, path)
+            else:
+                os.replace(replacement, path, dst_dir_fd=destination_descriptor)
         return descriptor
 
     monkeypatch.setattr(os, "open", swap_after_open)
@@ -629,7 +636,10 @@ def test_lookup_sanitizes_quarantine_failure(tmp_path, cv_request, monkeypatch):
     original_replace = os.replace
 
     def fail_quarantine(source, destination, *args, **kwargs):
-        if Path(destination).parent.name == "quarantine":
+        if (
+            Path(destination).parent.name == "quarantine"
+            or kwargs.get("src_dir_fd") != kwargs.get("dst_dir_fd")
+        ):
             raise OSError("private-attacker-detail")
         return original_replace(source, destination, *args, **kwargs)
 
@@ -798,3 +808,334 @@ def test_concurrent_publish_returns_one_valid_winner(
     assert len(handles) == 2
     assert handles[0] == handles[1] == stores[0].lookup(cv_cache_key(cv_request))
     assert stores[0].load(handles[0]) in artifacts
+
+
+class LimitedScandir:
+    """Fail if a caller asks the real scandir iterator for too many entries."""
+
+    def __init__(self, iterator, limit, consumed, on_end=None):
+        self._iterator = iterator
+        self._limit = limit
+        self._consumed = consumed
+        self._on_end = on_end
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._consumed[0] >= self._limit:
+            raise AssertionError("scandir consumed beyond the configured tree bound")
+        try:
+            entry = next(self._iterator)
+        except StopIteration:
+            if self._on_end is not None:
+                callback, self._on_end = self._on_end, None
+                callback()
+            raise
+        self._consumed[0] += 1
+        return entry
+
+    def close(self):
+        self._iterator.close()
+
+
+def same_directory_endpoint(value, expected: Path) -> bool:
+    if isinstance(value, int):
+        opened = os.fstat(value)
+        target = expected.stat()
+        return (opened.st_dev, opened.st_ino) == (target.st_dev, target.st_ino)
+    return Path(value) == expected
+
+
+def test_high_fanout_scan_stops_at_bound_before_materializing_directory(
+    tmp_path, cv_request, monkeypatch
+):
+    """Materializing all directory entries must defeat the configured scan bound."""
+    payload = b"mask"
+    store = CvArtifactStore(tmp_path / "cv-cache", max_files=1)
+    artifact = artifact_for(cv_request, payload)
+    key = cv_cache_key(cv_request)
+    real_scandir = os.scandir
+    consumed = [0]
+    wrapped = [False]
+
+    with store.staging(key) as staging:
+        write_artifact_file(staging, payload)
+        for index in range(256):
+            (staging / f"fanout-{index:03}").mkdir(mode=0o700)
+
+        def limited_scandir(path):
+            iterator = real_scandir(path)
+            if same_directory_endpoint(path, staging) and not wrapped[0]:
+                wrapped[0] = True
+                return LimitedScandir(iterator, 65, consumed)
+            return iterator
+
+        monkeypatch.setattr(os, "scandir", limited_scandir)
+        with pytest.raises(CvArtifactError, match="unable to publish CV artifact"):
+            store.publish(cv_request, staging, artifact)
+
+    assert consumed[0] == 65
+
+
+def test_fifo_manifest_lookup_returns_promptly_without_writer(tmp_path, cv_request):
+    """Opening a FIFO manifest in blocking mode must hang cache lookup."""
+    root = tmp_path / "cv-cache"
+    CvArtifactStore(root)
+    key = cv_cache_key(cv_request)
+    prefix = root / key[:2]
+    prefix.mkdir(mode=0o700)
+    entry = prefix / key
+    entry.mkdir(mode=0o700)
+    os.mkfifo(entry / "manifest.json", mode=0o600)
+    script = (
+        "from pathlib import Path; "
+        "from las_repro.cv.artifacts import CvArtifactStore; "
+        "print(CvArtifactStore(Path(__import__('sys').argv[1])).lookup(__import__('sys').argv[2]))"
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(root), key],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        timeout=2,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout.strip() == "None"
+
+
+def test_publish_rechecks_membership_after_initial_walk(
+    tmp_path, cv_request, monkeypatch
+):
+    """Adding an undeclared file after membership capture must not be published."""
+    payload = b"mask"
+    store = CvArtifactStore(tmp_path / "cv-cache")
+    artifact = artifact_for(cv_request, payload)
+    key = cv_cache_key(cv_request)
+    real_scandir = os.scandir
+    mutated = False
+
+    with store.staging(key) as staging:
+        write_artifact_file(staging, payload)
+
+        def add_file_after_walk():
+            nonlocal mutated
+            (staging / "unexpected.npz").write_bytes(b"unexpected")
+            mutated = True
+
+        def mutating_scandir(path):
+            iterator = real_scandir(path)
+            if same_directory_endpoint(path, staging) and not mutated:
+                return LimitedScandir(iterator, 100, [0], add_file_after_walk)
+            return iterator
+
+        monkeypatch.setattr(os, "scandir", mutating_scandir)
+        with pytest.raises(CvArtifactError, match="unable to publish CV artifact"):
+            store.publish(cv_request, staging, artifact)
+
+    assert mutated
+    assert store.lookup(key) is None
+
+
+def two_file_artifact(
+    request: CvEvidenceRequest, first: bytes, second: bytes
+) -> CvEvidenceArtifact:
+    base = artifact_for(request, first)
+    second_file = ArtifactFile(
+        path="masks/1.npz",
+        sha256=hashlib.sha256(second).hexdigest(),
+        size_bytes=len(second),
+    )
+    return base.model_copy(update={"files": (*base.files, second_file)})
+
+
+def test_lookup_rechecks_already_hashed_file_metadata(
+    tmp_path, cv_request, monkeypatch
+):
+    """Mutating an already-hashed inode must not produce a validated handle."""
+    first = b"first-mask"
+    second = b"second-mask"
+    artifact = two_file_artifact(cv_request, first, second)
+    root = tmp_path / "cv-cache"
+    store = CvArtifactStore(root)
+    key = cv_cache_key(cv_request)
+    entry = write_raw_entry(root, key, canonical_manifest_for(cv_request, artifact))
+    (entry / "masks").mkdir(mode=0o700)
+    first_path = entry / "masks" / "0.npz"
+    first_path.write_bytes(first)
+    (entry / "masks" / "1.npz").write_bytes(second)
+    expected_digest = hashlib.sha256(first).hexdigest()
+    real_sha256 = hashlib.sha256
+    mutated = False
+
+    class MutatingHash:
+        def __init__(self, value=b""):
+            self._hash = real_sha256(value)
+
+        def update(self, value):
+            self._hash.update(value)
+
+        def hexdigest(self):
+            nonlocal mutated
+            result = self._hash.hexdigest()
+            if result == expected_digest and not mutated:
+                first_path.write_bytes(b"evil!-mask")
+                mutated = True
+            return result
+
+    monkeypatch.setattr(hashlib, "sha256", MutatingHash)
+
+    assert store.lookup(key) is None
+    assert mutated
+    assert not entry.exists()
+
+
+def test_store_rejects_symlinked_or_writable_ancestry(tmp_path):
+    """Checking only the terminal root must trust replaceable ancestor paths."""
+    real_parent = tmp_path / "real-parent"
+    real_parent.mkdir(mode=0o700)
+    linked_parent = tmp_path / "linked-parent"
+    linked_parent.symlink_to(real_parent, target_is_directory=True)
+    writable_parent = tmp_path / "writable-parent"
+    writable_parent.mkdir(mode=0o700)
+    writable_parent.chmod(0o777)
+
+    with pytest.raises(CvArtifactError, match="unsafe CV artifact directory"):
+        CvArtifactStore(linked_parent / "cache")
+    with pytest.raises(CvArtifactError, match="unsafe CV artifact directory"):
+        CvArtifactStore(writable_parent / "cache")
+
+
+def test_store_detects_ancestor_symlink_substitution_after_initialization(
+    tmp_path, cv_request
+):
+    """Reaching the same root inode through a substituted ancestor must be rejected."""
+    parent = tmp_path / "cache-parent"
+    parent.mkdir(mode=0o700)
+    root = parent / "cache"
+    store = CvArtifactStore(root)
+    displaced = tmp_path / "displaced-parent"
+    parent.rename(displaced)
+    parent.symlink_to(displaced, target_is_directory=True)
+
+    with pytest.raises(CvArtifactError, match="unsafe CV artifact directory"):
+        store.lookup(cv_cache_key(cv_request))
+
+
+def test_lookup_does_not_follow_ancestor_substitution_after_root_check(
+    tmp_path, cv_request, monkeypatch
+):
+    """A swap immediately after the root check must not redirect the lookup."""
+    parent = tmp_path / "cache-parent"
+    parent.mkdir(mode=0o700)
+    root = parent / "cache"
+    store = CvArtifactStore(root)
+    _, handle = published_artifact(store, cv_request)
+    replacement_parent = tmp_path / "replacement-parent"
+    replacement_parent.mkdir(mode=0o700)
+    shutil.copytree(root, replacement_parent / "cache")
+    displaced = tmp_path / "displaced-parent"
+    original_open_prefix = store._open_prefix
+    swapped = False
+
+    def substitute_before_prefix_open(key, *, create):
+        nonlocal swapped
+        if not swapped:
+            parent.rename(displaced)
+            replacement_parent.rename(parent)
+            swapped = True
+        return original_open_prefix(key, create=create)
+
+    monkeypatch.setattr(store, "_open_prefix", substitute_before_prefix_open)
+
+    with pytest.raises(CvArtifactError, match="unsafe CV artifact directory"):
+        store.lookup(handle.key)
+
+    assert swapped
+
+
+def test_new_prefix_creation_fsyncs_cache_root(tmp_path, cv_request, monkeypatch):
+    """Omitting the parent fsync must lose a newly created prefix after a crash."""
+    root = tmp_path / "cv-cache"
+    store = CvArtifactStore(root)
+    root_identity = (root.stat().st_dev, root.stat().st_ino)
+    real_fsync = os.fsync
+    fsynced = []
+
+    def record_fsync(descriptor):
+        status = os.fstat(descriptor)
+        fsynced.append((status.st_dev, status.st_ino))
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", record_fsync)
+    with store.staging(cv_cache_key(cv_request)):
+        pass
+
+    assert root_identity in fsynced
+
+
+def test_new_quarantine_creation_fsyncs_cache_root(tmp_path, cv_request, monkeypatch):
+    """Omitting the parent fsync must lose a new quarantine directory after a crash."""
+    root = tmp_path / "cv-cache"
+    store = CvArtifactStore(root)
+    key = cv_cache_key(cv_request)
+    write_raw_entry(root, key, b"partial")
+    root_identity = (root.stat().st_dev, root.stat().st_ino)
+    real_fsync = os.fsync
+    fsynced = []
+
+    def record_fsync(descriptor):
+        status = os.fstat(descriptor)
+        fsynced.append((status.st_dev, status.st_ino))
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", record_fsync)
+    assert store.lookup(key) is None
+
+    assert root_identity in fsynced
+
+
+def test_lookup_treats_disappearing_entry_as_sanitized_miss(
+    tmp_path, cv_request, monkeypatch
+):
+    """Disappearance between existence and identity checks must leak its pathname."""
+    root = tmp_path / "cv-cache"
+    store = CvArtifactStore(root)
+    key = cv_cache_key(cv_request)
+    entry = write_raw_entry(root, key, b"partial")
+    displaced = tmp_path / "disappeared-entry"
+    original_identity = store._entry_identity
+    removed = False
+
+    def disappear_before_identity(requested_key):
+        nonlocal removed
+        if requested_key == key and not removed:
+            entry.rename(displaced)
+            removed = True
+        return original_identity(requested_key)
+
+    monkeypatch.setattr(store, "_entry_identity", disappear_before_identity)
+
+    assert store.lookup(key) is None
+    assert removed
+
+
+def test_lookup_quarantines_deep_json_without_recursion_error(tmp_path, cv_request):
+    """Unbounded JSON nesting must escape as an unsanitized RecursionError."""
+    root = tmp_path / "cv-cache"
+    store = CvArtifactStore(root)
+    key = cv_cache_key(cv_request)
+    entry = write_raw_entry(root, key, b"[" * 10_000 + b"]" * 10_000)
+
+    assert store.lookup(key) is None
+    assert not entry.exists()
+    assert len(tuple((root / "quarantine").iterdir())) == 1
