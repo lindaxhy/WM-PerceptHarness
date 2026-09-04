@@ -17,7 +17,7 @@ The following value is derived locally from the validated segment table and the 
 Copy every record_skeleton row into the output segments array. Never delete a record. Keep exactly one record per expected index in the exact original order. Preserve every segment_index exactly. Replace any of the six enrichment attributes only when visible evidence in that fixed segment supports the replacement; otherwise retain its conservative default.
 
 [allowed enums]
-- actor: left_gripper|right_gripper|both_grippers|robot_arm|unknown
+- actor: left_hand|right_hand|both_hands|left_gripper|right_gripper|both_grippers|robot_arm|unknown
 - actor_state: idle|reaching|contacting|grasping|holding|transporting|placing|releasing|retracting|unknown
 - skill: hold|reach|grasp|pick|lift|move|place|release|push|pull|rotate|open|close|retract|touch|unknown
 - visual_motion_state: static|low|active|unknown
@@ -26,6 +26,7 @@ Copy every record_skeleton row into the output segments array. Never delete a re
 
 [semantic rules]
 - Use only states directly supported by visible evidence in the fixed segment.
+- For visible human hands, use left_hand, right_hand, or both_hands. Use gripper labels only for visible robot grippers, and robot_arm only when laterality is not visible.
 - Keep target names stable across adjacent segments.
 - During transport, place, or release, target remains the manipulated object rather than the destination.
 - Use none for an empty retracting or idle hand. Use unknown when visual evidence is insufficient.

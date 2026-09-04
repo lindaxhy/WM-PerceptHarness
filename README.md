@@ -329,8 +329,14 @@ container`. Then submit the silent main-view video with
 
 The hint is naming context, not an action SOP: an object absent from visible
 interaction must not be forced into output. The main-view flow runs 0805 Pass A,
-Pass B boundary fine segments, and six-field enrichment while local validators
-own the final timestamps.
+Pass B boundary fine segments, six-field enrichment, and a complete-video scene
+semantics pass while local validators own the final timestamps. The response
+keeps the contiguous training track in `segments`, exposes its deterministic
+longer projection as `grouped_semantic_events`, and separately exposes
+video-evidence scene fields (`objects`, `initial_state`, `final_state`, `outcome`,
+and overlap-capable `semantic_events`). If the scene pass remains schema-invalid
+after one repair, the fine track still completes with conservative empty scene
+fields and a `SCENE_SEMANTICS_UNAVAILABLE` warning.
 
 ## Production process roles and offline GPU setup
 

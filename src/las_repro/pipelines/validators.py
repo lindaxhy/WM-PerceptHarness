@@ -24,6 +24,9 @@ _ARITHMETIC_EPSILON = 1e-9
 
 
 class Actor(StrEnum):
+    LEFT_HAND = "left_hand"
+    RIGHT_HAND = "right_hand"
+    BOTH_HANDS = "both_hands"
     LEFT_GRIPPER = "left_gripper"
     RIGHT_GRIPPER = "right_gripper"
     BOTH_GRIPPERS = "both_grippers"
@@ -576,6 +579,13 @@ def _validate_fine_segments(
     previous_end_boundary_id: str | None = None
     for position, segment in enumerate(segments):
         path = action_path + ("fine_segments", position)
+        if not valid_fine_description(segment.description):
+            _issue(
+                issues,
+                "SEGMENT_DESCRIPTION_INVALID",
+                path + ("description",),
+                "fine segment description violates the public caption contract",
+            )
         if segment.segment_index in seen_indexes:
             _issue(
                 issues,
@@ -668,6 +678,18 @@ def _validate_fine_segments(
         previous_end = segment.end
         previous_end_boundary_id = segment.end_boundary_id
     return previous_index
+
+
+def valid_fine_description(value: str) -> bool:
+    """Return whether a caption satisfies the shared prompt/export contract."""
+    words = value.split()
+    subjects = ("left hand", "right hand", "both hands", "neither hand")
+    return (
+        value == value.lower()
+        and 2 <= len(words) <= 10
+        and len(value) <= 60
+        and any(value.startswith(subject + " ") for subject in subjects)
+    )
 
 
 def _validate_boundary_reference(

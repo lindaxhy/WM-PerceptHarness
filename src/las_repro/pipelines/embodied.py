@@ -23,6 +23,12 @@ from ..pipelines.base import PipelineContext, SafePipelineError
 from ..store import SQLiteTaskStore
 from ..workers import InferenceJobFailed, JobWaitTimeout, wait_for_jobs
 from .output_validation import DEFAULT_OUTPUT_SCHEMAS, NormalizedSchemaOutput
+from .scene_semantics import (
+    SceneSemantics,
+    trusted_target_skeleton,
+    unavailable_scene_semantics,
+)
+from .semantic_events import build_semantic_events
 from .validators import (
     BoundaryPlan,
     CoarsePlan,
@@ -48,6 +54,7 @@ _PROMPT_FILES = {
     "embodied_pass_a": "embodied_pass_a.txt",
     "embodied_pass_b": "embodied_pass_b.txt",
     "embodied_enrichment": "embodied_enrichment.txt",
+    "scene_semantics": "scene_semantics.txt",
 }
 _MARKER = re.compile(r"\{\{(?P<name>[A-Z][A-Z0-9_]*)\}\}")
 _MAX_BOUNDARY_SLOTS_PER_ACTION = 10_000
@@ -170,7 +177,7 @@ class EmbodiedActionPipeline:
         # parent/adjacency/reference/hard-cap validator; local code must not
         # rewrite an otherwise valid evidence-backed timestamp to fit a prompt
         # planning envelope.
-        boundary_data, _, _ = self._run_validated_stage(
+        boundary_data, _, boundary_normalization = self._run_validated_stage(
             task,
             context,
             media_path,
@@ -213,14 +220,49 @@ class EmbodiedActionPipeline:
             metadata=metadata,
         )
         enrichment = EnrichmentResult.model_validate(enrichment_data)
+        warnings: list[dict[str, Any]] = []
+        if boundary_normalization is not None:
+            warnings.append(_boundary_normalization_warning(boundary_normalization))
+        if enrichment_normalization is not None:
+            warnings.append(_enrichment_normalization_warning(enrichment_normalization))
+        segments = _merge_enrichment(segment_table, enrichment)
+        trusted_targets = trusted_target_skeleton(segments)
+        try:
+            scene_data, _, _ = self._run_validated_stage(
+                task,
+                context,
+                media_path,
+                span,
+                fps,
+                stage="scene_semantics",
+                schema_name="SceneSemantics",
+                schema_context={
+                    "duration": span.end,
+                    "require_observed_content": bool(trusted_targets),
+                    "required_object_ids": [
+                        target["object_id"] for target in trusted_targets
+                    ],
+                },
+                render_prompt=lambda repair: self._renderer.scene_semantics(
+                    segments,
+                    video_duration=span.end,
+                    repair=repair,
+                ),
+                affinity_anchor=pass_a_job,
+                metadata=metadata,
+            )
+        except TemporalValidationError:
+            scene_data = unavailable_scene_semantics()
+            warnings.append({"code": "SCENE_SEMANTICS_UNAVAILABLE"})
+        scene = SceneSemantics.model_validate(scene_data)
         result = {
             "task_description": coarse.task_description,
-            "segments": _merge_enrichment(segment_table, enrichment),
+            "segments": segments,
+            "grouped_semantic_events": build_semantic_events(segments),
+            **scene.model_dump(mode="json"),
         }
-        if enrichment_normalization is not None:
-            result["warnings"] = [
-                _enrichment_normalization_warning(enrichment_normalization)
-            ]
+        if warnings:
+            result["warnings"] = warnings
         return result
 
     def _run_validated_stage(
@@ -250,6 +292,8 @@ class EmbodiedActionPipeline:
             )
             prompt = render_prompt(repair)
             job_schema_context = dict(schema_context)
+            if schema_name == "BoundaryPlan":
+                job_schema_context["allow_topology_fallback"] = ordinal == 1
             if schema_name == "EnrichmentResult":
                 job_schema_context["allow_enum_unknown_fallback"] = ordinal == 1
             [job] = context.store.create_inference_jobs(
@@ -463,6 +507,36 @@ class PromptRenderer:
             {
                 "SEGMENTS_JSON": table,
                 "ENRICHMENT_REQUIREMENTS_JSON": _enrichment_requirements(indices),
+                "VALIDATION_REPAIR_JSON": repair,
+            },
+        )
+
+    def scene_semantics(
+        self,
+        segments: Sequence[Mapping[str, Any] | BaseModel],
+        *,
+        video_duration: Any,
+        repair: Mapping[str, Any] | None = None,
+    ) -> str:
+        """Render full-video scene facts with the validated segment table as data."""
+        if isinstance(segments, (str, bytes, bytearray)) or not isinstance(
+            segments, Sequence
+        ):
+            raise PromptRenderError("segments must be a sequence of JSON records")
+        if len(segments) > _MAX_ENRICHMENT_RECORDS:
+            raise PromptRenderError("scene segment table is not materializable")
+        table = [
+            item.model_dump(mode="json") if isinstance(item, BaseModel) else item
+            for item in segments
+        ]
+        if any(not isinstance(item, Mapping) for item in table):
+            raise PromptRenderError("segments must be a sequence of JSON records")
+        return self.render(
+            "scene_semantics",
+            {
+                "VIDEO_DURATION_SECONDS_JSON": _prompt_video_duration(video_duration),
+                "SEGMENTS_JSON": table,
+                "KNOWN_TARGETS_JSON": trusted_target_skeleton(table),
                 "VALIDATION_REPAIR_JSON": repair,
             },
         )
@@ -1067,6 +1141,16 @@ def _enrichment_normalization_warning(
     }
 
 
+def _boundary_normalization_warning(
+    normalization: NormalizedSchemaOutput,
+) -> dict[str, Any]:
+    return {
+        "code": "BOUNDARY_TOPOLOGY_NORMALIZED",
+        "issue_codes": list(normalization.issue_codes),
+        "count": normalization.normalized_field_count,
+    }
+
+
 def _stage_validation_error(
     stage: str,
     issue_codes: Sequence[str],
@@ -1087,6 +1171,7 @@ def _stage_label(stage: str) -> str:
             "embodied_pass_a": "embodied pass A",
             "embodied_pass_b": "embodied pass B",
             "embodied_enrichment": "embodied enrichment",
+            "scene_semantics": "scene semantics",
         }[stage]
     except KeyError:
         raise EmbodiedActionPipelineError("embodied stage is invalid") from None
