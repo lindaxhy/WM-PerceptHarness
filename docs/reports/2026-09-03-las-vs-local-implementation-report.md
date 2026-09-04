@@ -5,9 +5,11 @@
 
 ## 结论摘要
 
+> **当前状态（实施后）：** `full_0021` 的 Pass B 边界结构问题已经修复；隔离 GPU 复验为 `COMPLETED`，产出 14 个严格连续细片段和 5 个确定性聚合事件。下文仍保留修复前的冻结基线统计，以保证历史评估可复现，不能把其中的 `FAILED` 解读为当前状态。
+
 当前交付是自托管的视频理解模型服务，不是把请求转发给方舟、远程 LAS 或其他模型 API。服务复现 LAS 的异步 Submit/Poll 使用方式，由本地 `Qwen/Qwen3-VL-8B-Instruct` 完成视觉推理；运行观察未发现模型 API 出站连接，也没有提取音轨、调用 ASR 或把转写作为证据。
 
-这次诊断性对比预先冻结了 5 个样本。4 个得到严格可验证的本地结果，1 个（`full_0021`）在 Pass B 初次输出和内置修复后仍违反边界结构约束，因而保留为失败且不进入评分。4 个已评分结果覆盖 25 个 LAS 事件：每个事件都与至少一个本地时间片有正时间重叠，但动作兼容覆盖均值只有 `0.12441008674259292`；可比语义中，actor 为 `11/12`，action family 为 `2/15`，target 为 `3/8`。LAS 的 11 个遮挡事件没有一个本地显式遮挡事件匹配，主要是输出 schema 能力差异，不应全部归为基础模型错误。
+修复前的诊断性对比预先冻结了 5 个样本。当时 4 个得到严格可验证的本地结果，1 个（`full_0021`）在 Pass B 初次输出和内置修复后仍违反边界结构约束，因而在该冻结基线中保留为失败且不进入评分。4 个已评分结果覆盖 25 个 LAS 事件：每个事件都与至少一个本地时间片有正时间重叠，但动作兼容覆盖均值只有 `0.12441008674259292`；可比语义中，actor 为 `11/12`，action family 为 `2/15`，target 为 `3/8`。LAS 的 11 个遮挡事件没有一个本地显式遮挡事件匹配，主要是输出 schema 能力差异，不应全部归为基础模型错误。
 
 现有证据不支持立即进行广泛微调。更合理的顺序是：先补齐遮挡、状态、结果和人手 actor schema，调整提示词和事件聚合，再用更大的盲测、人工复核集复测。只有视觉语义遗漏或时间边界偏差在这些改动后仍稳定复现，才应针对性 LoRA/SFT。
 
@@ -102,11 +104,11 @@ LAS reference 的显式对象清单包括：装有 4 个苹果的黄色篮、空
 
 语义上 actor 为 `2/3`，action 为 `0/6`，target 为 `0/4`。三个 LAS occlusion semantic events 均无 local explicit occlusion match。Local 的优势是完整、细粒度、可直接训练导出的时间拓扑；LAS 的优势是能表达重叠的长事件、遮挡状态、对象清单、初终态和结果。Local 的连续细分也带来冗余风险，同一个 LAS 长事件可能横跨多个片段；反过来，primary-match 只取一个片段，可能低估组合后的语义。所有描述都必须结合结构化字段和可见证据复核，不能因为语言流畅就排除对象混淆或 hallucination 风险。本次 deep 结果严格首轮通过，未使用 `unknown` normalization。
 
-## 4. 五个样本的结果
+## 4. 五个样本的修复前冻结基线结果
 
 ### 4.1 每个样本：时间指标
 
-`full_0021` 的 10 个 LAS 事件已入选，但没有本地结果，因此是 selected 而非 scored。
+在修复前冻结基线中，`full_0021` 的 10 个 LAS 事件已入选，但当时没有本地结果，因此是 selected 而非 scored；其实施后复验状态见本文开头，不纳入本表的历史聚合指标。
 
 | Sample | Terminal | LAS selected/scored | Local segments | Any-overlap mean | Action-compatible mean | Max-IoU mean / median | IoU≥0.3 | IoU≥0.5 | Median start/end error (s) | Uncovered / local extra |
 | --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | --- | --- |
@@ -149,7 +151,7 @@ LAS reference 的显式对象清单包括：装有 4 个苹果的黄色篮、空
 
 这里 `any-overlap=1.0` 主要说明 local 连续时间轴覆盖了 LAS 事件所在时段，并不代表语义正确。LAS 常用一个长区间表达完整动作或持续状态，local 则硬性拆成不超过 1 秒的连续片段，所以单片段最大 IoU 会受到粒度上限压低；应同时看 union coverage、boundary error 和语义指标。action-compatible coverage 明显低于 any-overlap coverage，说明差异不能只用切段粒度解释。
 
-### 4.4 失败、schema gap 与 normalization 率
+### 4.4 修复前的失败、schema gap 与 normalization 率
 
 - 终态结果可用率为 `4/5`（80%），真实 pipeline failure rate 为 `1/5`（20%）。在四个补充样本块中，可用率为 `3/4`（75%），失败率为 `1/4`（25%）。`full_0021` 的闭合错误码为 `SEGMENT_TOO_LONG` 和 `SEGMENT_BOUNDARY_NOT_ADJACENT`；没有替换、重提或伪造结果。
 - 4 个完成样本中 1 个使用过保守 enum fallback，即 `1/4`（25%）；按全部入选样本是 `1/5`（20%）。最终 46 个 local segments 中有 2 个 `skill` 字段被归一为 `unknown`，即 `2/46`（约 4.35%）；这些字段按规则不进入 action semantic denominator。
