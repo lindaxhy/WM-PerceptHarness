@@ -1,0 +1,202 @@
+{
+    "summary": "A person's right hand moves two different flat rectangular boards sequentially leftward across a wooden table, each passing in front of a stationary yellow ball to briefly fully obscure it before continuing off the left edge of the frame, leaving the ball in its original position.",
+    "objects": [
+        {
+            "id": "obj_001",
+            "name": "yellow ball",
+            "role": "stationary object resting on the table surface",
+            "visible_attributes": [
+                "spherical",
+                "bright yellow",
+                "single white curved stripe",
+                "remains in fixed position throughout the clip"
+            ]
+        },
+        {
+            "id": "obj_002",
+            "name": "light wooden board",
+            "role": "first flat board moved across the table to obscure the ball",
+            "visible_attributes": [
+                "rectangular",
+                "light wood grain finish",
+                "thin white edge trim",
+                "held at top edge by a hand"
+            ]
+        },
+        {
+            "id": "obj_003",
+            "name": "light gray board",
+            "role": "second flat board moved across the table to obscure the ball",
+            "visible_attributes": [
+                "rectangular",
+                "smooth matte light gray surface",
+                "dark gray reinforced bottom corners",
+                "small visible screws at corner joints"
+            ]
+        },
+        {
+            "id": "obj_004",
+            "name": "wooden table",
+            "role": "horizontal supporting surface for the ball and board movements",
+            "visible_attributes": [
+                "light brown wood grain",
+                "smooth flat surface",
+                "rounded right edge",
+                "dark background behind its far edge"
+            ]
+        },
+        {
+            "id": "obj_005",
+            "name": "right hand",
+            "role": "manipulator that moves both boards across the table",
+            "visible_attributes": [
+                "light skin tone",
+                "only thumb and gripping fingers are visible",
+                "rest of arm/body is out of frame"
+            ]
+        }
+    ],
+    "initial_state": "Near the beginning, the yellow ball rests stationary in the center of the light brown wooden table, while the right hand holds the light wooden board above the right side of the table at the frame edge.",
+    "final_state": "Near the end, the light gray board has fully exited the left edge of the frame, and the yellow ball remains stationary in its original central position on the table with no other objects in view.",
+    "occlusions": [
+        {
+            "start_s": 1.2,
+            "end_s": 2.6,
+            "occluded_object_ids": [
+                "obj_001"
+            ],
+            "occluder_id": "obj_002",
+            "visible_evidence": "At 1.2s the leading left edge of the light wooden board reaches the ball and begins covering it; at 2.6s the trailing right edge of the board passes the ball, making the ball fully visible again."
+        },
+        {
+            "start_s": 10.2,
+            "end_s": 12.0,
+            "occluded_object_ids": [
+                "obj_001"
+            ],
+            "occluder_id": "obj_003",
+            "visible_evidence": "At 10.2s the leading left edge of the light gray board reaches the ball and begins covering it; at 12.0s the trailing right edge of the board passes the ball, making the ball fully visible again."
+        }
+    ],
+    "semantic_events": [
+        {
+            "event_id": "evt_001",
+            "start_s": 0.0,
+            "end_s": 5.4,
+            "type": "move",
+            "actor": "right hand",
+            "object_ids": [
+                "obj_002"
+            ],
+            "description": "Right hand moves the light wooden board horizontally left across the table from the right frame edge until it exits the left frame edge.",
+            "visible_evidence": "The light wooden board's position shifts steadily left across the frame over this interval, disappearing completely past the left edge by 5.4s.",
+            "confidence": 0.98
+        },
+        {
+            "event_id": "evt_002",
+            "start_s": 1.2,
+            "end_s": 1.4,
+            "type": "occlusion_enter",
+            "actor": "obj_002",
+            "object_ids": [
+                "obj_001"
+            ],
+            "description": "The yellow ball begins to be covered by the leading edge of the moving light wooden board.",
+            "visible_evidence": "The right portion of the ball is first obscured by the board at 1.2s, with visible ball area decreasing as the board moves left.",
+            "confidence": 0.95
+        },
+        {
+            "event_id": "evt_003",
+            "start_s": 1.4,
+            "end_s": 2.4,
+            "type": "occluded",
+            "actor": "obj_002",
+            "object_ids": [
+                "obj_001"
+            ],
+            "description": "The yellow ball is completely hidden behind the light wooden board.",
+            "visible_evidence": "No portion of the yellow ball is visible during this interval, as the board fully covers the ball's position on the table.",
+            "confidence": 0.99
+        },
+        {
+            "event_id": "evt_004",
+            "start_s": 2.4,
+            "end_s": 2.6,
+            "type": "occlusion_exit",
+            "actor": "obj_002",
+            "object_ids": [
+                "obj_001"
+            ],
+            "description": "The yellow ball becomes visible again as the light wooden board moves past its position.",
+            "visible_evidence": "The left edge of the ball emerges from behind the right edge of the board at 2.4s, with the full ball visible by 2.6s.",
+            "confidence": 0.95
+        },
+        {
+            "event_id": "evt_005",
+            "start_s": 8.2,
+            "end_s": 14.4,
+            "type": "move",
+            "actor": "right hand",
+            "object_ids": [
+                "obj_003"
+            ],
+            "description": "Right hand moves the light gray board horizontally left across the table, entering from the right frame edge until it exits the left frame edge.",
+            "visible_evidence": "The light gray board first appears at the right frame edge at 8.2s, shifts steadily left across the table, and disappears completely past the left edge by 14.4s.",
+            "confidence": 0.98
+        },
+        {
+            "event_id": "evt_006",
+            "start_s": 10.2,
+            "end_s": 10.4,
+            "type": "occlusion_enter",
+            "actor": "obj_003",
+            "object_ids": [
+                "obj_001"
+            ],
+            "description": "The yellow ball begins to be covered by the leading edge of the moving light gray board.",
+            "visible_evidence": "The right portion of the ball is first obscured by the board at 10.2s, with visible ball area decreasing as the board moves left.",
+            "confidence": 0.95
+        },
+        {
+            "event_id": "evt_007",
+            "start_s": 10.4,
+            "end_s": 11.8,
+            "type": "occluded",
+            "actor": "obj_003",
+            "object_ids": [
+                "obj_001"
+            ],
+            "description": "The yellow ball is completely hidden behind the light gray board.",
+            "visible_evidence": "No portion of the yellow ball is visible during this interval, as the board fully covers the ball's position on the table.",
+            "confidence": 0.99
+        },
+        {
+            "event_id": "evt_008",
+            "start_s": 11.8,
+            "end_s": 12.0,
+            "type": "occlusion_exit",
+            "actor": "obj_003",
+            "object_ids": [
+                "obj_001"
+            ],
+            "description": "The yellow ball becomes visible again as the light gray board moves past its position.",
+            "visible_evidence": "The left edge of the ball emerges from behind the right edge of the board at 11.8s, with the full ball visible by 12.0s.",
+            "confidence": 0.95
+        }
+    ],
+    "outcome": {
+        "status": "unknown",
+        "reason": "No explicit goal for the board movements is visible in the clip, so success or failure of an intended task cannot be confirmed.",
+        "visible_evidence": "After both boards exit the left frame edge, the yellow ball remains stationary in its original central position on the wooden table with no visible changes to the scene."
+    },
+    "camera_motion": [],
+    "quality_flags": [],
+    "review": {
+        "status": "machine_only",
+        "notes": "Only the gripping fingers and thumb of the right hand are visible; the remainder of the person operating the boards is out of frame. The yellow ball shows no detectable positional change across the full clip. The purpose of moving the two boards across the table cannot be determined from visual evidence alone, as no interaction with the ball beyond temporary occlusion occurs.",
+        "required_checks": [
+            "Verify that the yellow ball did not shift position during the intervals when it was occluded by the boards",
+            "Confirm the intended task being performed with the two rectangular boards"
+        ]
+    }
+}

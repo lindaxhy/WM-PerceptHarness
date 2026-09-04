@@ -1,0 +1,198 @@
+{
+    "summary": "A left hand moves a green cloth over a horizontal row of four plastic cups on a wooden table to conceal them; a right hand reaches under the cloth to grasp and remove the yellow cup, lifting it out of the frame; the left hand then pulls the cloth back to the left to reveal the remaining clear, red, and green cups in their original positions.",
+    "objects": [
+        {
+            "id": "obj_001",
+            "name": "green fabric cloth",
+            "role": "cover manipulated by left hand to conceal cups",
+            "visible_attributes": [
+                "bright green",
+                "soft wrinkled fabric",
+                "folded layered edges",
+                "grasped at top edge by hand"
+            ]
+        },
+        {
+            "id": "obj_002",
+            "name": "clear plastic cup",
+            "role": "leftmost cup resting on table",
+            "visible_attributes": [
+                "transparent plastic",
+                "cylindrical shape",
+                "open top",
+                "appears empty"
+            ]
+        },
+        {
+            "id": "obj_003",
+            "name": "red plastic cup",
+            "role": "second cup in the table row",
+            "visible_attributes": [
+                "solid red exterior",
+                "white plastic rim",
+                "light purple interior at opening",
+                "cylindrical shape"
+            ]
+        },
+        {
+            "id": "obj_004",
+            "name": "yellow plastic cup",
+            "role": "third cup in the table row, removed from under cloth",
+            "visible_attributes": [
+                "solid yellow exterior",
+                "white plastic rim",
+                "cylindrical shape"
+            ]
+        },
+        {
+            "id": "obj_005",
+            "name": "green plastic cup",
+            "role": "rightmost cup resting on table",
+            "visible_attributes": [
+                "bright green exterior",
+                "white plastic rim",
+                "light blue interior at opening",
+                "cylindrical shape"
+            ]
+        },
+        {
+            "id": "obj_006",
+            "name": "wooden table",
+            "role": "flat supporting surface for all items",
+            "visible_attributes": [
+                "light brown wood grain",
+                "smooth flat surface",
+                "matte wood finish"
+            ]
+        },
+        {
+            "id": "obj_007",
+            "name": "left hand",
+            "role": "manipulates the green cloth",
+            "visible_attributes": [
+                "light skin tone",
+                "grasps top edge of cloth",
+                "attached to visible forearm"
+            ]
+        },
+        {
+            "id": "obj_008",
+            "name": "right hand",
+            "role": "retrieves the yellow cup from under cloth",
+            "visible_attributes": [
+                "light skin tone",
+                "enters from right side of frame",
+                "grasps cup rim",
+                "attached to visible forearm"
+            ]
+        }
+    ],
+    "initial_state": "At the start of the clip, the left hand holds the green cloth on the left side of the wooden table; four cups (clear, red, yellow, green) are arranged in a straight horizontal row on the table to the right of the cloth, all fully visible, with a solid dark background behind the table.",
+    "final_state": "At the end of the clip, the green cloth is held back on the left side of the table; the clear, red, and green cups are fully visible in their original positions, and the yellow cup is no longer present on the table surface.",
+    "occlusions": [
+        {
+            "start_s": 1.2,
+            "end_s": 6.6,
+            "occluded_object_ids": [
+                "obj_004"
+            ],
+            "occluder_id": "obj_001",
+            "visible_evidence": "The yellow cup is fully covered by the green cloth starting at ~1.2s, and remains hidden until the right hand pulls it out from under the cloth edge at 6.6s."
+        },
+        {
+            "start_s": 1.4,
+            "end_s": 8.0,
+            "occluded_object_ids": [
+                "obj_002",
+                "obj_003",
+                "obj_005"
+            ],
+            "occluder_id": "obj_001",
+            "visible_evidence": "The clear, red, and green cups are fully covered by the green cloth starting at ~1.4s, and remain hidden until the cloth is pulled left, with the green cup first becoming visible again at 8.0s."
+        }
+    ],
+    "semantic_events": [
+        {
+            "event_id": "evt_001",
+            "start_s": 0.0,
+            "end_s": 1.6,
+            "type": "move",
+            "actor": "left hand",
+            "object_ids": [
+                "obj_001"
+            ],
+            "description": "Left hand slides the green cloth horizontally right across the table to cover the row of cups",
+            "visible_evidence": "The cloth shifts rightward, progressively obscuring each cup from left to right until all cups are hidden",
+            "confidence": 0.98
+        },
+        {
+            "event_id": "evt_002",
+            "start_s": 1.2,
+            "end_s": 6.6,
+            "type": "occluded",
+            "actor": "neither hand",
+            "object_ids": [
+                "obj_004"
+            ],
+            "description": "Yellow cup remains hidden under the green cloth",
+            "visible_evidence": "No part of the yellow cup is visible while the cloth covers its position, until extraction by the right hand",
+            "confidence": 0.95
+        },
+        {
+            "event_id": "evt_003",
+            "start_s": 1.4,
+            "end_s": 8.0,
+            "type": "occluded",
+            "actor": "neither hand",
+            "object_ids": [
+                "obj_002",
+                "obj_003",
+                "obj_005"
+            ],
+            "description": "Clear, red, and green cups remain hidden under the green cloth",
+            "visible_evidence": "No parts of these three cups are visible while the cloth covers their positions, until the cloth is pulled back left",
+            "confidence": 0.95
+        },
+        {
+            "event_id": "evt_004",
+            "start_s": 4.4,
+            "end_s": 6.8,
+            "type": "grasp",
+            "actor": "right hand",
+            "object_ids": [
+                "obj_004"
+            ],
+            "description": "Right hand reaches under the cloth edge, grasps the yellow cup, and lifts it upward out of the frame",
+            "visible_evidence": "Right hand enters from the right, moves under the cloth top edge, reappears holding the yellow cup, then moves the cup up and out of view",
+            "confidence": 0.92
+        },
+        {
+            "event_id": "evt_005",
+            "start_s": 7.2,
+            "end_s": 8.6,
+            "type": "move",
+            "actor": "left hand",
+            "object_ids": [
+                "obj_001"
+            ],
+            "description": "Left hand slides the green cloth horizontally left back to its starting side of the table",
+            "visible_evidence": "The cloth shifts leftward, progressively revealing each cup from right to left until the remaining three cups are fully visible",
+            "confidence": 0.98
+        }
+    ],
+    "outcome": {
+        "status": "success",
+        "reason": "The yellow cup was successfully extracted from under the cloth, and the cloth was retracted to show the remaining cups",
+        "visible_evidence": "After cloth removal, the clear, red, and green cups are visible in their original positions; the yellow cup is absent from the table, having been lifted out of frame"
+    },
+    "camera_motion": [],
+    "quality_flags": [],
+    "review": {
+        "status": "machine_only",
+        "notes": "Audio, speech, and outside knowledge are ignored per instruction; the yellow cup exits the top of the frame after being lifted, so its final position is not visible; no other objects are seen being altered under the cloth",
+        "required_checks": [
+            "Confirm final resting position of the removed yellow cup",
+            "Verify no cups other than the yellow cup were moved or modified while under the cloth"
+        ]
+    }
+}

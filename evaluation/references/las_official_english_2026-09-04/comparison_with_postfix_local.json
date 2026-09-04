@@ -1,0 +1,176 @@
+{
+  "schema_version": "las_local_comparison_summary_v1",
+  "reference_set_id": "las_official_english_2026-09-04",
+  "computed_on": "2026-09-04",
+  "analyzer_sha256": "173b957bb020b13e4f29f0fae28b058983c81a7d15eb4d78f1c99be2eb1fc799",
+  "mapping_policy": {
+    "base": "same pre-frozen action, actor, and target mappings as the Chinese-reference comparison",
+    "language_only_additions": {
+      "las_actor": {
+        "left hand": "single_manipulator",
+        "right hand": "single_manipulator",
+        "both hands": "both_manipulators"
+      },
+      "local_actor": {
+        "left_hand": "single_manipulator",
+        "right_hand": "single_manipulator",
+        "both_hands": "both_manipulators"
+      }
+    },
+    "post_hoc_action_family_additions": 0,
+    "post_hoc_target_alias_additions": 0
+  },
+  "local_artifact": {
+    "implementation_wheel_sha256": "d4ec014afe55bfc75461df06be565cdc896e6e10b2b7dd023951a8dfa3f306e0",
+    "result_sha256": {
+      "full_0001": "78d0681c013fe12b632b641d0f4e33ffd4f67e29a97e43a47b893ed9732d666b",
+      "full_0002": "55422790b4b66d7409aeec052a2b5bbc71f0babd07ded2efa4b2b0641101a13f",
+      "full_0004": "8f21a5e194a4781c7f55787bdf7735a091c5d9205a5aa0ded010295309bf8eb1",
+      "full_0021": "d36fed02d8f904af390b95e52a2e894dc28ea63c91d7e3e875072dd8d82a7886",
+      "full_0024": "18ce8fded6d1b13a06063826aa5b55e6f086056df61d276ccd01d47c3f7b4f1e"
+    }
+  },
+  "aggregate": {
+    "sample_count": 5,
+    "las_event_count": 31,
+    "local_segment_count": 60,
+    "any_overlap_coverage_mean": 1.0,
+    "action_compatible_coverage_mean": 0.10609444319121739,
+    "max_iou_mean": 0.390855256130655,
+    "max_iou_median": 0.34595959595959597,
+    "iou_at_0_3": {
+      "count": 16,
+      "events": 31
+    },
+    "iou_at_0_5": {
+      "count": 10,
+      "events": 31
+    },
+    "start_error_median_seconds": 0.20000000000000107,
+    "end_error_median_seconds": 0.4820512820512821,
+    "actor": {
+      "matches": 17,
+      "comparable": 17
+    },
+    "action_family": {
+      "matches": 3,
+      "comparable": 20
+    },
+    "target": {
+      "matches": 9,
+      "comparable": 14
+    },
+    "uncovered_las_events": 0,
+    "local_extra_segments": 8,
+    "las_occlusion_events": 13,
+    "local_explicit_occlusion_matches": 0
+  },
+  "samples": [
+    {
+      "sample_id": "full_0001",
+      "las_events": 9,
+      "local_segments": 13,
+      "any_overlap_coverage_mean": 1.0,
+      "action_compatible_coverage_mean": 0.13732193732193732,
+      "max_iou_mean": 0.5189867253677204,
+      "max_iou_median": 0.5256410256410255,
+      "iou_at_0_3": "6/9",
+      "iou_at_0_5": "5/9",
+      "start_error_median_seconds": 0.12820512820512864,
+      "end_error_median_seconds": 0.2769230769230768,
+      "actor": "6/6",
+      "action_family": "1/7",
+      "target": "7/9",
+      "uncovered_las_events": 0,
+      "local_extra_segments": 1,
+      "las_occlusion_events": 3,
+      "local_explicit_occlusion_matches": 0
+    },
+    {
+      "sample_id": "full_0002",
+      "las_events": 8,
+      "local_segments": 17,
+      "any_overlap_coverage_mean": 1.0,
+      "action_compatible_coverage_mean": 0.25,
+      "max_iou_mean": 0.2933215976723737,
+      "max_iou_median": 0.22222222222222232,
+      "iou_at_0_3": "2/8",
+      "iou_at_0_5": "1/8",
+      "start_error_median_seconds": 0.30714285714285716,
+      "end_error_median_seconds": 0.37142857142857144,
+      "actor": "2/2",
+      "action_family": "2/8",
+      "target": "1/4",
+      "uncovered_las_events": 0,
+      "local_extra_segments": 2,
+      "las_occlusion_events": 6,
+      "local_explicit_occlusion_matches": 0
+    },
+    {
+      "sample_id": "full_0024",
+      "las_events": 5,
+      "local_segments": 6,
+      "any_overlap_coverage_mean": 1.0,
+      "action_compatible_coverage_mean": 0.01060606060606061,
+      "max_iou_mean": 0.2612625183650642,
+      "max_iou_median": 0.26277372262773724,
+      "iou_at_0_3": "2/5",
+      "iou_at_0_5": "0/5",
+      "start_error_median_seconds": 0.4611111111111111,
+      "end_error_median_seconds": 0.594444444444445,
+      "actor": "3/3",
+      "action_family": "0/2",
+      "target": "0/0",
+      "uncovered_las_events": 0,
+      "local_extra_segments": 0,
+      "las_occlusion_events": 2,
+      "local_explicit_occlusion_matches": 0
+    },
+    {
+      "sample_id": "full_0021",
+      "las_events": 4,
+      "local_segments": 14,
+      "any_overlap_coverage_mean": 1.0,
+      "action_compatible_coverage_mean": 0.0,
+      "max_iou_mean": 0.5295614035087717,
+      "max_iou_median": 0.5991228070175436,
+      "iou_at_0_3": "3/4",
+      "iou_at_0_5": "3/4",
+      "start_error_median_seconds": 0.42500000000000027,
+      "end_error_median_seconds": 0.15000000000000002,
+      "actor": "3/3",
+      "action_family": "0/0",
+      "target": "1/1",
+      "uncovered_las_events": 0,
+      "local_extra_segments": 5,
+      "las_occlusion_events": 0,
+      "local_explicit_occlusion_matches": 0
+    },
+    {
+      "sample_id": "full_0004",
+      "las_events": 5,
+      "local_segments": 10,
+      "any_overlap_coverage_mean": 1.0,
+      "action_compatible_coverage_mean": 0.0,
+      "max_iou_mean": 0.3349002849002851,
+      "max_iou_median": 0.3666666666666667,
+      "iou_at_0_3": "3/5",
+      "iou_at_0_5": "1/5",
+      "start_error_median_seconds": 0.15999999999999925,
+      "end_error_median_seconds": 0.9599999999999991,
+      "actor": "3/3",
+      "action_family": "0/3",
+      "target": "0/0",
+      "uncovered_las_events": 0,
+      "local_extra_segments": 0,
+      "las_occlusion_events": 2,
+      "local_explicit_occlusion_matches": 0
+    }
+  ],
+  "limitations": [
+    "full_0002 used the video-only transcode documented in manifest.json",
+    "all five LAS references are machine_only",
+    "full_0004 and full_0021 have the occlusion cross-field issues documented in manifest.json",
+    "event types absent from the pre-frozen action mapping remain not_comparable"
+  ]
+}
