@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.abc
 import importlib.metadata
+import importlib.util
 import json
+import math
 import os
 import select
 import shutil
@@ -20,6 +23,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 import las_repro.cli as cli
 from las_repro.api import create_app
@@ -49,7 +53,7 @@ def _cli_environment(tmp_path: Path, media_root: Path) -> dict[str, str]:
                 {"qwen3-vl-8b-instruct": str(tmp_path / "model")}
             ),
             "LAS_BACKEND": "qwen3_vl",
-            "LAS_GPU_DEVICES": "0,1,2,3",
+            "LAS_GPU_DEVICES": "0,1,2",
             "LAS_API_HOST": "127.0.0.1",
             "LAS_API_PORT": "8000",
             "LAS_TOS_ACCESS_KEY": SECRET_SENTINEL,
@@ -89,7 +93,14 @@ def test_help_exposes_exact_process_roles_without_printing_secrets(tmp_path: Pat
     )
 
     assert completed.returncode == 0, completed.stderr
-    for command in ("init-db", "api", "coordinator", "gpu-worker", "run-fake"):
+    for command in (
+        "init-db",
+        "api",
+        "coordinator",
+        "gpu-worker",
+        "cv-worker",
+        "run-fake",
+    ):
         assert command in completed.stdout
     _assert_secret_absent(completed)
 
@@ -447,9 +458,10 @@ def test_signal_boundary_restores_handlers_when_teardown_blocking_fails(
         ["api"],
         ["coordinator"],
         ["gpu-worker", "--device", "0"],
+        ["cv-worker", "--provider", "fake", "--device", "3", "--once"],
         ["run-fake", "--once"],
     ],
-    ids=("init-db", "api", "coordinator", "gpu-worker", "run-fake"),
+    ids=("init-db", "api", "coordinator", "gpu-worker", "cv-worker", "run-fake"),
 )
 def test_each_role_closes_an_initialized_store_when_startup_sigterm_arrives(
     tmp_path: Path,
@@ -462,6 +474,8 @@ def test_each_role_closes_an_initialized_store_when_startup_sigterm_arrives(
         work_root=tmp_path / "work",
         backend="qwen3_vl",
         gpu_devices=(0,),
+        cv_provider="fake",
+        cv_cache_root=tmp_path / "cv-cache",
     )
     initialized = 0
     closed = 0
@@ -501,9 +515,10 @@ def test_each_role_closes_an_initialized_store_when_startup_sigterm_arrives(
         ["api"],
         ["coordinator"],
         ["gpu-worker", "--device", "0"],
+        ["cv-worker", "--provider", "fake", "--device", "3", "--once"],
         ["run-fake", "--once"],
     ],
-    ids=("init-db", "api", "coordinator", "gpu-worker", "run-fake"),
+    ids=("init-db", "api", "coordinator", "gpu-worker", "cv-worker", "run-fake"),
 )
 def test_each_role_defers_sigterm_from_the_first_sqlite_connect_until_schema_ready(
     tmp_path: Path,
@@ -516,6 +531,8 @@ def test_each_role_defers_sigterm_from_the_first_sqlite_connect_until_schema_rea
         work_root=tmp_path / "work",
         backend="qwen3_vl",
         gpu_devices=(0,),
+        cv_provider="fake",
+        cv_cache_root=tmp_path / "cv-cache",
     )
     real_connect = sqlite3.connect
     connect_calls = 0
@@ -859,6 +876,152 @@ def test_cli_settings_validate_listen_address_fields() -> None:
     assert settings.api_port == 8123
 
 
+def test_hybrid_gpu_defaults_are_three_qwen_plus_one_cv() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.gpu_devices == (0, 1, 2)
+    assert settings.qwen_gpu_devices == (0, 1, 2)
+    assert settings.cv_device == 3
+    assert settings.cv_provider == "disabled"
+    assert settings.cv_model_alias == "sam3.1"
+    assert settings.cv_entity_limit == 16
+    assert settings.cv_short_video_seconds == 30.0
+    assert settings.cv_scan_fps == 8.0
+    assert settings.cv_max_fps == 30.0
+    assert settings.cv_refinement_radius_seconds == 1.0
+    assert settings.cv_min_confidence == 0.5
+    assert settings.cv_min_area_fraction == 0.01
+    assert settings.cv_occlusion_visibility_drop == 0.5
+    assert settings.cv_overlap_threshold == 0.1
+    assert settings.cv_execution_chunk_frames == 8
+    assert settings.cv_timeout_seconds == 300.0
+    assert settings.cv_compile_model is False
+
+
+@pytest.mark.parametrize("provider", ["disabled", "fake"])
+def test_cv_settings_accept_only_non_sam_provider_values_without_local_assets(
+    provider: str,
+) -> None:
+    assert Settings(cv_provider=provider).cv_provider == provider
+    with pytest.raises(ValidationError):
+        Settings(cv_provider="remote")
+
+
+def test_cv_settings_require_distinct_nonnegative_qwen_and_cv_devices() -> None:
+    with pytest.raises(ValidationError, match="distinct"):
+        Settings(gpu_devices=(0, 1, 3), cv_device=3)
+    with pytest.raises(ValidationError):
+        Settings(gpu_devices=(0, -1), cv_device=3)
+    with pytest.raises(ValidationError):
+        Settings(gpu_devices=(0, 0), cv_device=3)
+    with pytest.raises(ValidationError):
+        Settings(gpu_devices=(0, 1, 2), cv_device=-1)
+    with pytest.raises(ValidationError):
+        Settings(gpu_devices=(0, True), cv_device=3)
+    with pytest.raises(ValidationError):
+        Settings(gpu_devices=(0, 1, 2), cv_device=True)
+
+
+def _sam31_settings(tmp_path: Path) -> dict[str, Any]:
+    repository = tmp_path / "sam31-repository"
+    cache = tmp_path / "cv-cache"
+    repository.mkdir()
+    cache.mkdir()
+    checkpoint = tmp_path / "sam31-checkpoint.pt"
+    checkpoint.write_bytes(b"local checkpoint fixture")
+    bpe = tmp_path / "sam31-bpe.txt.gz"
+    bpe.write_bytes(b"local bpe fixture")
+    return {
+        "cv_provider": "sam31",
+        "cv_repository_path": repository,
+        "cv_checkpoint_path": checkpoint,
+        "cv_bpe_path": bpe,
+        "cv_checkpoint_sha256": hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
+        "cv_cache_root": cache,
+    }
+
+
+def test_sam31_settings_accept_only_existing_typed_local_assets(tmp_path: Path) -> None:
+    values = _sam31_settings(tmp_path)
+
+    settings = Settings(**values)
+
+    assert settings.cv_repository_path == values["cv_repository_path"]
+    assert settings.cv_checkpoint_path == values["cv_checkpoint_path"]
+    assert settings.cv_bpe_path == values["cv_bpe_path"]
+    assert settings.cv_cache_root == values["cv_cache_root"]
+
+    for field in (
+        "cv_repository_path",
+        "cv_checkpoint_path",
+        "cv_bpe_path",
+        "cv_cache_root",
+    ):
+        invalid = values | {field: tmp_path / f"missing-{field}"}
+        with pytest.raises(ValidationError, match=field):
+            Settings(**invalid)
+    with pytest.raises(ValidationError, match="cv_repository_path"):
+        Settings(**(values | {"cv_repository_path": values["cv_checkpoint_path"]}))
+    with pytest.raises(ValidationError, match="cv_checkpoint_path"):
+        Settings(**(values | {"cv_checkpoint_path": values["cv_repository_path"]}))
+    with pytest.raises(ValidationError, match="cv_bpe_path"):
+        Settings(**(values | {"cv_bpe_path": values["cv_repository_path"]}))
+    with pytest.raises(ValidationError, match="cv_cache_root"):
+        Settings(**(values | {"cv_cache_root": values["cv_checkpoint_path"]}))
+
+
+@pytest.mark.parametrize("digest", ["", "a" * 63, "g" * 64, "a" * 65])
+def test_cv_checkpoint_digest_requires_exact_sha256_syntax(digest: str) -> None:
+    with pytest.raises(ValidationError) as error:
+        Settings(cv_checkpoint_sha256=digest)
+    assert all(item["type"] != "extra_forbidden" for item in error.value.errors())
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("cv_cache_max_bytes", 0),
+        ("cv_cache_max_bytes", True),
+        ("cv_cache_max_files", 0),
+        ("cv_execution_chunk_frames", 0),
+        ("cv_timeout_seconds", 0.0),
+        ("cv_timeout_seconds", True),
+        ("cv_timeout_seconds", math.inf),
+        ("cv_short_video_seconds", math.nan),
+        ("cv_scan_fps", 0.0),
+        ("cv_max_fps", -1.0),
+        ("cv_refinement_radius_seconds", 0.0),
+        ("cv_min_confidence", 0.0),
+        ("cv_min_confidence", 1.1),
+        ("cv_min_area_fraction", math.inf),
+        ("cv_occlusion_visibility_drop", 0.0),
+        ("cv_overlap_threshold", 1.1),
+    ],
+)
+def test_cv_settings_reject_nonpositive_nonfinite_or_unbounded_numbers(
+    field: str,
+    value: int | float,
+) -> None:
+    with pytest.raises(ValidationError) as error:
+        Settings(**{field: value})
+    assert all(item["type"] != "extra_forbidden" for item in error.value.errors())
+
+
+@pytest.mark.parametrize("entity_limit", [0, 17])
+def test_cv_entity_limit_stays_within_the_multiplex_cap(entity_limit: int) -> None:
+    with pytest.raises(ValidationError) as error:
+        Settings(cv_entity_limit=entity_limit)
+    assert all(item["type"] != "extra_forbidden" for item in error.value.errors())
+    assert Settings(cv_entity_limit=1).cv_entity_limit == 1
+    assert Settings(cv_entity_limit=16).cv_entity_limit == 16
+
+
+def test_cv_scan_fps_cannot_exceed_max_fps() -> None:
+    with pytest.raises(ValidationError, match="cv_scan_fps") as error:
+        Settings(cv_scan_fps=30.0, cv_max_fps=8.0)
+    assert all(item["type"] != "extra_forbidden" for item in error.value.errors())
+
+
 def test_store_close_is_idempotent_and_leaves_persisted_state_readable(
     tmp_path: Path,
 ) -> None:
@@ -928,7 +1091,7 @@ def test_gpu_worker_loads_one_model_on_exactly_the_configured_device(
             [
                 "gpu-worker",
                 "--device",
-                "3",
+                "2",
                 "--model-name",
                 "alternate-model",
                 "--once",
@@ -938,10 +1101,10 @@ def test_gpu_worker_loads_one_model_on_exactly_the_configured_device(
     )
     assert len(loaded) == 1
     assert loaded[0][0] == "alternate-model"
-    assert loaded[0][2] == "cuda:3"
+    assert loaded[0][2] == "cuda:2"
     assert len(constructed) == 1
     assert constructed[0][1] is model
-    assert constructed[0][2:4] == ("gpu-3", "cuda:3")
+    assert constructed[0][2:4] == ("gpu-2", "cuda:2")
     assert constructed[0][4]["model_name"] == "alternate-model"
     assert len(signal_boundaries) == 1
     assert worker_closes == 1
@@ -992,7 +1155,7 @@ def test_gpu_worker_role_closes_worker_and_store_when_run_unwinds(
     monkeypatch.setattr(workers, "GPUWorker", FailingWorker)
     monkeypatch.setattr(SQLiteTaskStore, "close", record_store_close)
 
-    assert cli.main(["gpu-worker", "--device", "3", "--once"]) == expected_status
+    assert cli.main(["gpu-worker", "--device", "2", "--once"]) == expected_status
     assert worker_closes == 1
     assert store_closes == 1
 
@@ -1024,7 +1187,7 @@ def test_gpu_worker_role_closes_store_when_model_loading_fails(
     monkeypatch.setattr(Qwen3VLModel, "load_alias", fail_load)
     monkeypatch.setattr(SQLiteTaskStore, "close", record_store_close)
 
-    assert cli.main(["gpu-worker", "--device", "3", "--once"]) == 1
+    assert cli.main(["gpu-worker", "--device", "2", "--once"]) == 1
     assert store_closes == 1
 
 
@@ -1053,6 +1216,197 @@ def test_gpu_worker_rejects_a_device_outside_config_without_loading_model(
 
     assert cli.main(["gpu-worker", "--device", "3", "--once"]) == 1
     assert attempted_loads == 0
+
+
+def test_hybrid_gpu_default_rejects_cv_device_from_qwen_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from las_repro.models.qwen3_vl import Qwen3VLModel
+
+    attempted_loads = 0
+
+    def must_not_load(*_: Any, **__: Any) -> object:
+        nonlocal attempted_loads
+        attempted_loads += 1
+        return object()
+
+    monkeypatch.setattr(
+        Settings,
+        "from_env",
+        lambda: Settings(database_path=tmp_path / "tasks.sqlite3"),
+    )
+    monkeypatch.setattr(Qwen3VLModel, "load_alias", must_not_load)
+
+    assert cli.main(["gpu-worker", "--device", "3", "--once"]) == 1
+    assert attempted_loads == 0
+
+
+def test_non_cv_roles_and_fake_mode_never_import_sam_runtime(
+    tmp_path: Path,
+) -> None:
+    media_root = tmp_path / "media"
+    media_root.mkdir()
+    environment = _cli_environment(tmp_path, media_root)
+    script = r"""
+import importlib.abc
+import sys
+
+role = sys.argv[1]
+
+class BlockSam(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        package = fullname.split('.')[0]
+        if (
+            fullname == 'las_repro.cv.sam31'
+            or package in {'sam3', 'cv2'}
+            or (role != 'gpu-worker' and package in {'numpy', 'torch'})
+        ):
+            raise AssertionError(f'SAM dependency imported by {role}: {fullname}')
+        return None
+
+sys.meta_path.insert(0, BlockSam())
+import las_repro.cli as cli
+
+if role == 'api':
+    cli._serve = lambda *args, **kwargs: None
+    arguments = ['api']
+elif role == 'coordinator':
+    arguments = ['coordinator', '--once']
+elif role == 'gpu-worker':
+    from las_repro import workers
+    from las_repro.models.qwen3_vl import Qwen3VLModel
+
+    class Worker:
+        def __init__(self, *args, **kwargs):
+            pass
+        def run_once(self):
+            return False
+        def close(self):
+            pass
+
+    Qwen3VLModel.load_alias = classmethod(lambda cls, *args, **kwargs: object())
+    workers.GPUWorker = Worker
+    arguments = ['gpu-worker', '--device', '0', '--once']
+else:
+    arguments = ['run-fake', '--once']
+
+raise SystemExit(cli.main(arguments))
+"""
+
+    for role in ("api", "coordinator", "gpu-worker", "run-fake", "run-fake-cv"):
+        role_environment = dict(environment)
+        if role == "run-fake-cv":
+            role_environment["LAS_CV_PROVIDER"] = "fake"
+            role_environment["LAS_CV_CACHE_ROOT"] = str(tmp_path / "cv-cache")
+        completed = subprocess.run(
+            [sys.executable, "-c", script, role],
+            cwd=REPOSITORY_ROOT,
+            env=role_environment,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        _assert_secret_absent(completed)
+
+
+def test_cv_worker_sam31_sets_visibility_before_lazy_import_and_loads_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from las_repro.cv import worker as cv_worker_module
+
+    settings = Settings(
+        database_path=tmp_path / "tasks.sqlite3",
+        **_sam31_settings(tmp_path),
+    )
+    monkeypatch.setattr(Settings, "from_env", lambda: settings)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    loads: list[tuple[Any, ...]] = []
+    constructed: list[tuple[Any, ...]] = []
+    provider_closes = 0
+
+    class RecordingProvider:
+        def __init__(self) -> None:
+            self.execution_chunk_frames = 1
+
+        @classmethod
+        def load(cls, *args: Any, **kwargs: Any) -> RecordingProvider:
+            assert os.environ.get("CUDA_VISIBLE_DEVICES") == "3"
+            loads.append((*args, kwargs))
+            return cls()
+
+        def close(self) -> None:
+            nonlocal provider_closes
+            provider_closes += 1
+
+    class RecordingWorker:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            constructed.append((*args, kwargs))
+
+        def run_once(self) -> bool:
+            return False
+
+    class SamLoader(importlib.abc.Loader):
+        def create_module(self, spec: Any) -> None:
+            return None
+
+        def exec_module(self, module: Any) -> None:
+            module.Sam31EvidenceProvider = RecordingProvider
+
+    class SamFinder(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname: str, path: Any = None, target: Any = None) -> Any:
+            if fullname != "las_repro.cv.sam31":
+                return None
+            assert os.environ.get("CUDA_VISIBLE_DEVICES") == "3"
+            return importlib.util.spec_from_loader(fullname, SamLoader())
+
+    monkeypatch.delitem(sys.modules, "las_repro.cv.sam31", raising=False)
+    finder = SamFinder()
+    sys.meta_path.insert(0, finder)
+    monkeypatch.setattr(cv_worker_module, "CVEvidenceWorker", RecordingWorker)
+    try:
+        assert (
+            cli.main(
+                ["cv-worker", "--provider", "sam31", "--device", "3", "--once"]
+            )
+            == 0
+        )
+    finally:
+        sys.meta_path.remove(finder)
+        sys.modules.pop("las_repro.cv.sam31", None)
+
+    assert len(loads) == 1
+    assert loads[0][0:3] == (
+        settings.cv_repository_path,
+        settings.cv_checkpoint_path,
+        settings.cv_checkpoint_sha256,
+    )
+    assert loads[0][3] == {"compile_model": False}
+    assert len(constructed) == 1
+    assert constructed[0][1].execution_chunk_frames == 8
+    assert constructed[0][3] == "cv-sam31-3"
+    assert constructed[0][4] == {"lease_seconds": settings.lease_seconds}
+    assert provider_closes == 1
+
+
+def test_cv_worker_fake_provider_without_close_has_a_clean_once_lifecycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        database_path=tmp_path / "tasks.sqlite3",
+        cv_provider="fake",
+        cv_cache_root=tmp_path / "cv-cache",
+    )
+    monkeypatch.setattr(Settings, "from_env", lambda: settings)
+
+    assert (
+        cli.main(["cv-worker", "--provider", "fake", "--device", "3", "--once"])
+        == 0
+    )
 
 
 def test_run_fake_shutdown_keeps_inference_alive_until_current_coordinator_finishes(
@@ -1116,6 +1470,92 @@ def test_run_fake_shutdown_keeps_inference_alive_until_current_coordinator_finis
     )
     assert stop_signals["coordinator"] is not stop_signals["gpu"]
     assert gpu_closed.is_set()
+
+
+def test_run_fake_with_fake_cv_starts_one_worker_and_closes_provider_after_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from las_repro import media, workers
+    from las_repro.cv import base as cv_base
+    from las_repro.cv import worker as cv_worker_module
+    from las_repro.models import fake
+
+    stop = threading.Event()
+    cv_started = threading.Event()
+    gpu_started = threading.Event()
+    constructed_cv_workers = 0
+    provider_closes = 0
+
+    class RecordingCoordinator:
+        def __init__(self, *_: Any, **__: Any) -> None:
+            pass
+
+        def run_forever(self, role_stop: threading.Event) -> None:
+            assert role_stop.wait(timeout=2.0)
+
+    class RecordingGPUWorker:
+        def __init__(self, *_: Any, **__: Any) -> None:
+            pass
+
+        def run_forever(self, role_stop: threading.Event) -> None:
+            gpu_started.set()
+            assert role_stop.wait(timeout=2.0)
+
+        def close(self) -> None:
+            pass
+
+    class RecordingCvProvider:
+        def __init__(self, *, execution_chunk_frames: int) -> None:
+            assert execution_chunk_frames == 8
+
+        def close(self) -> None:
+            nonlocal provider_closes
+            assert stop.is_set()
+            provider_closes += 1
+
+    class RecordingCvWorker:
+        def __init__(self, *_: Any, **__: Any) -> None:
+            nonlocal constructed_cv_workers
+            constructed_cv_workers += 1
+
+        def run_once(self) -> bool:
+            cv_started.set()
+            return False
+
+    monkeypatch.setattr(workers, "Coordinator", RecordingCoordinator)
+    monkeypatch.setattr(workers, "GPUWorker", RecordingGPUWorker)
+    monkeypatch.setattr(fake, "FakeVideoModel", lambda: object())
+    monkeypatch.setattr(cv_base, "FakeCvEvidenceProvider", RecordingCvProvider)
+    monkeypatch.setattr(cv_worker_module, "CVEvidenceWorker", RecordingCvWorker)
+    monkeypatch.setattr(media, "MediaResolver", lambda *args, **kwargs: object())
+    monkeypatch.setattr(media, "TosAdapter", lambda *args, **kwargs: object())
+    monkeypatch.setattr(cli, "_pipeline_registry", lambda: object())
+    monkeypatch.setattr(cli, "create_app", lambda *args, **kwargs: object())
+
+    def stop_api(_: Any, __: str, ___: int, *, stop: threading.Event) -> None:
+        assert cv_started.wait(timeout=2.0)
+        assert gpu_started.wait(timeout=2.0)
+        stop.set()
+
+    monkeypatch.setattr(cli, "_serve", stop_api)
+    settings = Settings(
+        database_path=tmp_path / "tasks.sqlite3",
+        work_root=tmp_path / "work",
+        cv_provider="fake",
+        cv_cache_root=tmp_path / "cv-cache",
+    )
+
+    assert (
+        cli._run_fake(
+            Namespace(once=False, host=None, port=None),
+            settings,
+            stop,
+        )
+        == 0
+    )
+    assert constructed_cv_workers == 1
+    assert provider_closes == 1
 
 
 def test_run_fake_once_uses_main_signal_boundary_around_coordinator_claims(

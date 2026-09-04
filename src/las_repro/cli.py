@@ -8,7 +8,7 @@ import signal
 import sys
 import threading
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from typing import Any
 
 from pydantic import ValidationError
@@ -85,6 +85,16 @@ def _parser() -> argparse.ArgumentParser:
     )
     gpu_worker.add_argument("--once", action="store_true", help="claim at most one job")
     gpu_worker.set_defaults(command=_gpu_worker)
+
+    cv_worker = commands.add_parser(
+        "cv-worker",
+        help="run one isolated local computer-vision evidence provider",
+    )
+    cv_worker.add_argument("--device", type=int, required=True, choices=range(0, 1024))
+    cv_worker.add_argument("--provider", required=True, choices=("fake", "sam31"))
+    cv_worker.add_argument("--worker-id")
+    cv_worker.add_argument("--once", action="store_true", help="claim at most one job")
+    cv_worker.set_defaults(command=_cv_worker)
 
     run_fake = commands.add_parser(
         "run-fake",
@@ -167,7 +177,7 @@ def _gpu_worker(
 ) -> int:
     if settings.backend != "qwen3_vl":
         raise ValueError("gpu-worker requires LAS_BACKEND=qwen3_vl")
-    if arguments.device not in settings.gpu_devices:
+    if arguments.device not in settings.qwen_gpu_devices:
         raise ValueError("gpu-worker device is absent from LAS_GPU_DEVICES")
     # This is the only production CLI role that imports or loads the optional
     # GPU backend.  One invocation constructs exactly one model for one device.
@@ -202,84 +212,229 @@ def _gpu_worker(
     return 0
 
 
+def _cv_worker(
+    arguments: argparse.Namespace,
+    settings: Settings,
+    stop: threading.Event,
+) -> int:
+    if arguments.provider != settings.cv_provider:
+        raise ValueError("cv-worker provider does not match LAS_CV_PROVIDER")
+    if arguments.device != settings.cv_device:
+        raise ValueError("cv-worker device does not match LAS_CV_DEVICE")
+    worker_id = arguments.worker_id or f"cv-{arguments.provider}-{arguments.device}"
+    with _store(settings) as store:
+        with _cv_worker_runtime(
+            store,
+            settings,
+            provider_name=arguments.provider,
+            physical_device=arguments.device,
+            worker_id=worker_id,
+        ) as worker:
+            if arguments.once:
+                worker.run_once()
+            else:
+                _run_cv_forever(worker, stop)
+    return 0
+
+
+@contextmanager
+def _cv_worker_runtime(
+    store: SQLiteTaskStore,
+    settings: Settings,
+    *,
+    provider_name: str,
+    physical_device: int,
+    worker_id: str,
+) -> Iterator[Any]:
+    # Provider-independent CV modules are safe in the core environment.  The
+    # SAM adapter itself remains behind the physical-device visibility gate.
+    from .cv.artifacts import CvArtifactStore
+    from .cv.worker import CVEvidenceWorker
+
+    artifact_store = CvArtifactStore(
+        settings.cv_cache_root,
+        max_files=settings.cv_cache_max_files,
+        max_bytes=settings.cv_cache_max_bytes,
+    )
+    provider: Any | None = None
+    try:
+        if provider_name == "fake":
+            from .cv.base import FakeCvEvidenceProvider
+
+            provider = FakeCvEvidenceProvider(
+                execution_chunk_frames=settings.cv_execution_chunk_frames
+            )
+        elif provider_name == "sam31":
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(physical_device)
+            from .cv.sam31 import Sam31EvidenceProvider
+
+            # The isolated process sees physical GPU N only as logical cuda:0;
+            # no physical ordinal is passed into the provider runtime.
+            provider = Sam31EvidenceProvider.load(
+                settings.cv_repository_path,
+                settings.cv_checkpoint_path,
+                settings.cv_checkpoint_sha256,
+                compile_model=settings.cv_compile_model,
+            )
+            _configure_execution_chunk_frames(
+                provider, settings.cv_execution_chunk_frames
+            )
+        else:  # argparse and Settings both enforce this closed set.
+            raise ValueError("cv-worker provider is unsupported")
+        yield CVEvidenceWorker(
+            store,
+            provider,
+            artifact_store,
+            worker_id,
+            lease_seconds=settings.lease_seconds,
+        )
+    finally:
+        try:
+            if provider is not None:
+                _close_provider_state(provider)
+        finally:
+            artifact_store.close()
+
+
+def _configure_execution_chunk_frames(provider: Any, value: int) -> None:
+    current = getattr(provider, "execution_chunk_frames", None)
+    if isinstance(current, bool) or not isinstance(current, int) or current <= 0:
+        raise ValueError("CV provider must expose positive execution_chunk_frames")
+    setter = getattr(provider, "set_execution_chunk_frames", None)
+    if callable(setter):
+        setter(value)
+    else:
+        try:
+            provider.execution_chunk_frames = value
+        except (AttributeError, TypeError):
+            raise ValueError("CV provider execution chunk cannot be configured") from None
+    configured = getattr(provider, "execution_chunk_frames", None)
+    if (
+        isinstance(configured, bool)
+        or not isinstance(configured, int)
+        or configured <= 0
+    ):
+        raise ValueError("CV provider execution chunk must remain positive")
+
+
+def _close_provider_state(provider: Any) -> None:
+    close = getattr(provider, "close", None)
+    if callable(close):
+        close()
+
+
+def _run_cv_forever(worker: Any, stop: threading.Event) -> None:
+    from .workers import _run_forever
+
+    _run_forever(
+        worker.run_once,
+        stop,
+        no_work_backoff=0.05,
+        max_no_work_backoff=1.0,
+        error_backoff=1.0,
+    )
+
+
 def _run_fake(
     arguments: argparse.Namespace,
     settings: Settings,
     stop: threading.Event,
 ) -> int:
+    if settings.cv_provider not in {"disabled", "fake"}:
+        raise ValueError("run-fake supports LAS_CV_PROVIDER=disabled or fake")
     from .media import MediaResolver, TosAdapter
     from .models.fake import FakeVideoModel
     from .workers import Coordinator, GPUWorker
 
     with _store(settings) as store:
-        resolver = MediaResolver(settings, tos_adapter=TosAdapter(settings))
-        coordinator = Coordinator(
-            store,
-            resolver,
-            settings,
-            _pipeline_registry(),
-            worker_id="fake-coordinator",
-        )
-        workers = [
-            GPUWorker(
+        with ExitStack() as cv_resources:
+            resolver = MediaResolver(settings, tos_adapter=TosAdapter(settings))
+            coordinator = Coordinator(
                 store,
-                FakeVideoModel(),
-                worker_id=f"fake-gpu-{model_name}",
-                device=f"fake:{index}",
-                model_name=model_name,
-                lease_seconds=settings.lease_seconds,
+                resolver,
+                settings,
+                _pipeline_registry(),
+                worker_id="fake-coordinator",
             )
-            for index, model_name in enumerate(sorted(settings.model_registry))
-        ]
-        gpu_stops = [threading.Event() for _ in workers]
-        gpu_threads = [
-            _worker_thread(
-                f"las-fake-gpu-{index}",
-                worker.run_forever,
-                gpu_stop,
-            )
-            for index, (worker, gpu_stop) in enumerate(
-                zip(workers, gpu_stops, strict=True)
-            )
-        ]
-        try:
-            for gpu_thread in gpu_threads:
-                gpu_thread.start()
-            if arguments.once:
-                while coordinator.run_once():
-                    pass
-            else:
-                coordinator_thread = _worker_thread(
-                    "las-fake-coordinator",
-                    coordinator.run_forever,
-                    stop,
+            workers = [
+                GPUWorker(
+                    store,
+                    FakeVideoModel(),
+                    worker_id=f"fake-gpu-{model_name}",
+                    device=f"fake:{index}",
+                    model_name=model_name,
+                    lease_seconds=settings.lease_seconds,
                 )
-                try:
-                    coordinator_thread.start()
-                    app = create_app(settings, store)
-                    _serve(
-                        app,
-                        _host(arguments, settings),
-                        _port(arguments, settings),
-                        stop=stop,
+                for index, model_name in enumerate(sorted(settings.model_registry))
+            ]
+            worker_stops = [threading.Event() for _ in workers]
+            worker_threads = [
+                _worker_thread(
+                    f"las-fake-gpu-{index}",
+                    worker.run_forever,
+                    worker_stop,
+                )
+                for index, (worker, worker_stop) in enumerate(
+                    zip(workers, worker_stops, strict=True)
+                )
+            ]
+            if settings.cv_provider == "fake":
+                cv_worker = cv_resources.enter_context(
+                    _cv_worker_runtime(
+                        store,
+                        settings,
+                        provider_name="fake",
+                        physical_device=settings.cv_device,
+                        worker_id="fake-cv",
                     )
-                finally:
-                    stop.set()
-                    if coordinator_thread.ident is not None:
-                        coordinator_thread.join()
-        finally:
-            # Keep inference available until the active coordinator claim has
-            # finished.  It may still be waiting for jobs created before the
-            # API/coordinator stop gate closed.
+                )
+                cv_stop = threading.Event()
+                worker_stops.append(cv_stop)
+                worker_threads.append(
+                    _worker_thread(
+                        "las-fake-cv",
+                        lambda role_stop: _run_cv_forever(cv_worker, role_stop),
+                        cv_stop,
+                    )
+                )
             try:
-                for gpu_stop in gpu_stops:
-                    gpu_stop.set()
-                for gpu_thread in gpu_threads:
-                    if gpu_thread.ident is not None:
-                        gpu_thread.join()
+                for worker_thread in worker_threads:
+                    worker_thread.start()
+                if arguments.once:
+                    while coordinator.run_once():
+                        pass
+                else:
+                    coordinator_thread = _worker_thread(
+                        "las-fake-coordinator",
+                        coordinator.run_forever,
+                        stop,
+                    )
+                    try:
+                        coordinator_thread.start()
+                        app = create_app(settings, store)
+                        _serve(
+                            app,
+                            _host(arguments, settings),
+                            _port(arguments, settings),
+                            stop=stop,
+                        )
+                    finally:
+                        stop.set()
+                        if coordinator_thread.ident is not None:
+                            coordinator_thread.join()
             finally:
-                for worker in workers:
-                    worker.close()
+                # Keep both inference runtimes available until the active
+                # coordinator claim finishes, then close their claim gates and
+                # join any current lease before releasing provider state.
+                try:
+                    for worker_stop in worker_stops:
+                        worker_stop.set()
+                    for worker_thread in worker_threads:
+                        if worker_thread.ident is not None:
+                            worker_thread.join()
+                finally:
+                    for worker in workers:
+                        worker.close()
     return 0
 
 
