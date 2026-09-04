@@ -30,6 +30,9 @@ from .contracts import (
     CvEvidenceRequest,
     CvTrack,
     EvidenceStatus,
+    FrameTimeline,
+    FrameTimestamp,
+    OverlayRecord,
     TrackObservation,
 )
 from .timeline import (
@@ -787,14 +790,16 @@ class Sam31EvidenceProvider:
 def _empty_artifact(request: CvEvidenceRequest) -> CvEvidenceArtifact:
     return CvEvidenceArtifact(
         schema_version="cv_evidence_v1",
-        status=EvidenceStatus.AVAILABLE,
+        status=EvidenceStatus.DISABLED,
         provider="sam31",
         model_identity=request.model_identity,
         video_sha256=request.video_sha256,
         checkpoint_sha256=request.checkpoint_sha256,
+        processed_timeline=None,
         entities=request.entities,
         tracks=(),
         files=(),
+        overlay_records=(),
     )
 
 
@@ -1863,6 +1868,7 @@ def _build_artifact(
     overlay_renderer: Callable[..., None],
 ) -> CvEvidenceArtifact:
     artifact_files: list[ArtifactFile] = []
+    overlay_records: list[OverlayRecord] = []
     tracks: list[CvTrack] = []
     for prompt_run in prompt_runs:
         mask_relative = prompt_run.mask_relative
@@ -1922,6 +1928,13 @@ def _build_artifact(
             overlay_file = _artifact_file(staging, overlay_path)
             budget.record_file(overlay_file.size_bytes)
             artifact_files.append(overlay_file)
+            overlay_records.append(
+                OverlayRecord(
+                    path=relative,
+                    track_id=f"{entity_id}_{object_id}",
+                    frame_index=detection.source_frame_index,
+                )
+            )
 
     return CvEvidenceArtifact(
         schema_version="cv_evidence_v1",
@@ -1930,9 +1943,19 @@ def _build_artifact(
         model_identity=request.model_identity,
         video_sha256=request.video_sha256,
         checkpoint_sha256=request.checkpoint_sha256,
+        processed_timeline=FrameTimeline(
+            frames=tuple(
+                FrameTimestamp(
+                    frame_index=frame.source_frame_index,
+                    timestamp_seconds=frame.source_timestamp_seconds,
+                )
+                for frame in sampled.frames
+            )
+        ),
         entities=request.entities,
         tracks=tuple(tracks),
         files=tuple(sorted(artifact_files, key=lambda item: item.path)),
+        overlay_records=tuple(sorted(overlay_records, key=lambda item: item.path)),
     )
 
 

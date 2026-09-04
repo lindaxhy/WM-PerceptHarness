@@ -33,6 +33,7 @@ from .contracts import (
     FrameTimestamp,
     NonnegativeInt,
     ObjectId,
+    OverlayRecord,
     StrictModel,
     Timestamp,
     TrackId,
@@ -53,24 +54,26 @@ _MAX_TRACK_LIMIT = 256
 _MAX_OBSERVATION_LIMIT = 256
 _MAX_RELATION_LIMIT = 8_192
 _MAX_OVERLAY_LIMIT = 24
-_MAX_ENTITY_SUMMARIES = 256
+_MAX_ENTITY_SUMMARIES = 64
 _MAX_IDENTIFIER_CHARS = 128
 _MAX_LABEL_CHARS = 256
 _MAX_ALIAS_CHARS = 128
 _MAX_ALIASES_PER_ENTITY = 16
 _MAX_CANDIDATE_PROMPT_CHARS = _MAX_PROMPT_CHARS
 _MAX_BUNDLE_CANDIDATES = 256
-_ABS_MAX_ARTIFACT_ENTITIES = 512
-_ABS_MAX_ARTIFACT_TRACKS = 512
-_ABS_MAX_ALIASES_PER_INPUT_ENTITY = 4_096
+_ABS_MAX_ARTIFACT_ENTITIES = 64
+_ABS_MAX_ARTIFACT_TRACKS = 256
+_ABS_MAX_ALIASES_PER_INPUT_ENTITY = 256
 _ABS_MAX_OBSERVATIONS_PER_INPUT_TRACK = 10_000
-_ABS_MAX_TOTAL_INPUT_OBSERVATIONS = 1_000_000
-_ABS_MAX_ARTIFACT_FILES = 20_000
-_ABS_MAX_ARTIFACT_WARNINGS = 1_024
+_ABS_MAX_TOTAL_INPUT_OBSERVATIONS = 64_000
+_ABS_MAX_ARTIFACT_FILES = 1_024
+_ABS_MAX_ARTIFACT_WARNINGS = 64
 _ABS_MAX_TIMELINE_FRAMES = 100_000
-_ABS_MAX_INPUT_STRING_CHARS = 4_096
+_ABS_MAX_PROCESSED_FRAMES = 10_000
+_ABS_MAX_INPUT_STRING_CHARS = 512
 _ABS_MAX_SUMMARY_WARNINGS = 64
-_ABS_MAX_CANDIDATE_INPUTS = 4_096
+_MAX_VISIBILITY_RUNS_PER_TRACK = 256
+_MAX_RELATION_PAIR_SCANS = 262_144
 _EDGE_PROXIMITY_THRESHOLD = 0.05
 _MANDATORY_PRIORITY_TEXT = (
     "first,last,state_changes,min_area_context,max_area,lowest_confidence_context"
@@ -82,8 +85,11 @@ class SummaryEntity(StrictModel):
     """Bounded entity text retained for later trusted-data prompt sections."""
 
     entity_id: ObjectId
-    canonical_label: StrictStr
-    aliases: tuple[StrictStr, ...]
+    canonical_label: Annotated[StrictStr, Field(max_length=_MAX_LABEL_CHARS)]
+    aliases: Annotated[
+        tuple[Annotated[StrictStr, Field(max_length=_MAX_ALIAS_CHARS)], ...],
+        Field(max_length=_MAX_ALIASES_PER_ENTITY),
+    ]
     role: EntityRole
 
     @field_validator("role", mode="before")
@@ -174,6 +180,25 @@ class VisibilityGap(StrictModel):
         return self
 
 
+class VisibilityRun(StrictModel):
+    """A compact witness for one constant visibility state on processed frames."""
+
+    state: Literal["visible", "missing"]
+    start_frame: NonnegativeInt
+    start_time: Timestamp
+    end_frame: NonnegativeInt
+    end_time: Timestamp
+    minimum_confidence: Confidence | None
+
+    @model_validator(mode="after")
+    def validate_run(self) -> VisibilityRun:
+        if self.start_frame > self.end_frame or self.start_time > self.end_time:
+            raise ValueError("visibility run boundaries must be ordered")
+        if self.state == "visible" and self.minimum_confidence is not None:
+            raise ValueError("visible run cannot carry missing confidence")
+        return self
+
+
 class SummaryTrack(StrictModel):
     """A bounded track plus lifecycle gaps derived before downsampling."""
 
@@ -181,8 +206,16 @@ class SummaryTrack(StrictModel):
     entity_id: ObjectId
     status: EvidenceStatus
     source_observation_count: NonnegativeInt
-    observations: tuple[SummaryObservation, ...]
-    missing_intervals: tuple[VisibilityGap, ...]
+    observations: Annotated[
+        tuple[SummaryObservation, ...], Field(max_length=_MAX_OBSERVATION_LIMIT)
+    ]
+    visibility_runs: Annotated[
+        tuple[VisibilityRun, ...], Field(max_length=_MAX_VISIBILITY_RUNS_PER_TRACK)
+    ]
+    visibility_lifecycle_complete: StrictBool
+    missing_intervals: Annotated[
+        tuple[VisibilityGap, ...], Field(max_length=_MAX_OBSERVATION_LIMIT)
+    ]
     candidate_search_complete: StrictBool
 
     @field_validator("status", mode="before")
@@ -200,6 +233,8 @@ class SummaryTrack(StrictModel):
             raise ValueError("complete candidate search cannot omit observations")
         if self.status is not EvidenceStatus.AVAILABLE and (
             self.observations
+            or self.visibility_runs
+            or self.visibility_lifecycle_complete
             or self.missing_intervals
             or self.candidate_search_complete
         ):
@@ -221,11 +256,25 @@ class SummaryTrack(StrictModel):
             )
             if previous_end >= current.first_missing_frame:
                 raise ValueError("missing intervals must be disjoint and ordered")
+        for previous, current in zip(self.visibility_runs, self.visibility_runs[1:]):
+            if previous.state == current.state:
+                raise ValueError("adjacent visibility runs must change state")
+            if previous.end_frame >= current.start_frame or (
+                previous.end_time >= current.start_time
+            ):
+                raise ValueError("visibility runs must be disjoint and ordered")
+        expected_gaps = _gaps_from_visibility_runs(
+            self.visibility_runs,
+            self.observations,
+            lifecycle_complete=self.visibility_lifecycle_complete,
+        )
+        if self.missing_intervals != expected_gaps:
+            raise ValueError("missing intervals must match the visibility lifecycle")
         return self
 
 
 class SpatialRelation(StrictModel):
-    """A same-frame, directed bounding-box relation proxy."""
+    """A same-frame, canonical unordered-pair bounding-box relation proxy."""
 
     frame_index: NonnegativeInt
     timestamp_seconds: Timestamp
@@ -241,9 +290,22 @@ class SpatialRelation(StrictModel):
 
     @model_validator(mode="after")
     def reject_self_relation(self) -> SpatialRelation:
-        if self.subject_track_id == self.object_track_id:
+        if self.subject_track_id >= self.object_track_id:
             raise ValueError("a spatial relation needs two tracks")
         return self
+
+
+class SummaryOverlay(StrictModel):
+    """Prompt-safe overlay path with explicit track/frame provenance."""
+
+    path: Annotated[StrictStr, Field(max_length=512)]
+    track_id: TrackId
+    frame_index: NonnegativeInt
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        return _validate_overlay_ref(value)
 
 
 class SummaryWarning(StrictModel):
@@ -252,17 +314,18 @@ class SummaryWarning(StrictModel):
     code: Literal[
         "ALIASES_TRUNCATED",
         "ARTIFACT_WARNINGS_OMITTED",
+        "ENTITIES_WITHOUT_AVAILABLE_TRACKS",
         "ENTITIES_TRUNCATED",
         "ENTITY_TEXT_TRUNCATED",
         "LIFECYCLE_GAPS_TRUNCATED",
         "MANDATORY_LANDMARKS_TRUNCATED",
         "OBSERVATIONS_TRUNCATED",
-        "OVERLAY_BINDINGS_INCOMPLETE",
         "OVERLAYS_TRUNCATED",
         "PROMPT_DATA_TRUNCATED",
         "RELATIONS_TRUNCATED",
         "TRACKS_TRUNCATED",
         "UNAVAILABLE_EVIDENCE_OMITTED",
+        "VISIBILITY_RUNS_TRUNCATED",
     ]
     kept: NonnegativeInt | None = None
     omitted: NonnegativeInt | None = None
@@ -297,13 +360,20 @@ class SummaryWarning(StrictModel):
             "LIFECYCLE_GAPS_TRUNCATED": {"kept", "omitted"},
             "RELATIONS_TRUNCATED": {"kept", "omitted"},
             "OVERLAYS_TRUNCATED": {"kept", "omitted"},
-            "OVERLAY_BINDINGS_INCOMPLETE": {"count"},
             "ARTIFACT_WARNINGS_OMITTED": {"count"},
+            "ENTITIES_WITHOUT_AVAILABLE_TRACKS": {"count"},
             "UNAVAILABLE_EVIDENCE_OMITTED": {"count"},
+            "VISIBILITY_RUNS_TRUNCATED": {"kept", "omitted"},
             "PROMPT_DATA_TRUNCATED": {"budget_enforced"},
         }[self.code]
         if populated != required:
             raise ValueError("warning payload does not match its closed code grammar")
+        if self.omitted is not None and self.omitted == 0:
+            raise ValueError("truncation warning must omit at least one item")
+        if self.count is not None and self.count == 0:
+            raise ValueError("count warning must describe at least one item")
+        if self.tracks is not None and self.tracks == 0:
+            raise ValueError("track warning must describe at least one track")
         if self.code == "PROMPT_DATA_TRUNCATED" and self.budget_enforced is not True:
             raise ValueError("prompt truncation warning must confirm budget enforcement")
         return self
@@ -315,14 +385,30 @@ class CvEvidenceSummary(StrictModel):
     schema_version: Literal["cv_summary_v1"]
     status: EvidenceStatus
     candidate_search_complete: StrictBool
-    observed_clock: tuple[FrameTimestamp, ...]
-    entities: tuple[SummaryEntity, ...]
-    tracks: tuple[SummaryTrack, ...]
-    relations: tuple[SpatialRelation, ...]
+    observed_clock: Annotated[
+        tuple[FrameTimestamp, ...], Field(max_length=_ABS_MAX_PROCESSED_FRAMES)
+    ]
+    entities: Annotated[
+        tuple[SummaryEntity, ...], Field(max_length=_MAX_ENTITY_SUMMARIES)
+    ]
+    tracks: Annotated[
+        tuple[SummaryTrack, ...], Field(max_length=_MAX_TRACK_LIMIT)
+    ]
+    relations: Annotated[
+        tuple[SpatialRelation, ...], Field(max_length=_MAX_RELATION_LIMIT)
+    ]
     relations_complete: StrictBool
-    overlay_refs: tuple[StrictStr, ...]
+    overlay_refs: Annotated[
+        tuple[Annotated[StrictStr, Field(max_length=512)], ...],
+        Field(max_length=_MAX_OVERLAY_LIMIT),
+    ]
+    overlays: Annotated[
+        tuple[SummaryOverlay, ...], Field(max_length=_MAX_OVERLAY_LIMIT)
+    ]
     overlays_complete: StrictBool
-    warnings: tuple[SummaryWarning, ...]
+    warnings: Annotated[
+        tuple[SummaryWarning, ...], Field(max_length=_ABS_MAX_SUMMARY_WARNINGS)
+    ]
     prompt_char_limit: Annotated[
         int, Field(gt=0, le=_MAX_PROMPT_CHARS, strict=True)
     ] = _MAX_PROMPT_CHARS
@@ -348,7 +434,7 @@ class CvEvidenceSummary(StrictModel):
     def validate_observed_clock(
         cls, values: tuple[FrameTimestamp, ...]
     ) -> tuple[FrameTimestamp, ...]:
-        if len(values) > _ABS_MAX_TIMELINE_FRAMES:
+        if len(values) > _ABS_MAX_PROCESSED_FRAMES:
             raise ValueError("summary observed clock exceeds its bound")
         for previous, current in zip(values, values[1:]):
             if previous.frame_index >= current.frame_index or (
@@ -362,8 +448,9 @@ class CvEvidenceSummary(StrictModel):
     def validate_warnings(
         cls, values: tuple[SummaryWarning, ...]
     ) -> tuple[SummaryWarning, ...]:
-        if len(values) != len(set(values)):
-            raise ValueError("summary warnings must be unique")
+        codes = [warning.code for warning in values]
+        if len(codes) != len(set(codes)):
+            raise ValueError("summary warning codes must be unique")
         return values
 
     @model_validator(mode="after")
@@ -379,6 +466,9 @@ class CvEvidenceSummary(StrictModel):
                     "LIFECYCLE_GAPS_TRUNCATED",
                     "MANDATORY_LANDMARKS_TRUNCATED",
                     "UNAVAILABLE_EVIDENCE_OMITTED",
+                    "VISIBILITY_RUNS_TRUNCATED",
+                    "ENTITIES_WITHOUT_AVAILABLE_TRACKS",
+                    "ARTIFACT_WARNINGS_OMITTED",
                 }
                 for warning in self.warnings
             )
@@ -388,6 +478,7 @@ class CvEvidenceSummary(StrictModel):
             self.tracks
             or self.relations
             or self.overlay_refs
+            or self.overlays
             or self.observed_clock
         ):
             raise ValueError("nonavailable summaries cannot retain visual evidence")
@@ -411,6 +502,26 @@ class CvEvidenceSummary(StrictModel):
                 ):
                     raise ValueError(
                         "observation is not closed to the authoritative observed clock"
+                    )
+            for run in track.visibility_runs:
+                if frame_times.get(run.start_frame) != run.start_time or (
+                    frame_times.get(run.end_frame) != run.end_time
+                ):
+                    raise ValueError(
+                        "visibility lifecycle is not closed to the observed clock"
+                    )
+            for observation in track.observations:
+                matching_runs = [
+                    run
+                    for run in track.visibility_runs
+                    if run.start_frame <= observation.frame_index <= run.end_frame
+                ]
+                if len(matching_runs) != 1 or (
+                    (matching_runs[0].state == "visible")
+                    != observation.visible
+                ):
+                    raise ValueError(
+                        "retained observation contradicts the visibility lifecycle"
                     )
             visible_boundaries = {
                 (item.frame_index, item.timestamp_seconds)
@@ -465,6 +576,12 @@ class CvEvidenceSummary(StrictModel):
             if item.visible
         }
         relation_keys: set[tuple[int, str, str]] = set()
+        observations_by_key = {
+            (track.track_id, item.frame_index, item.timestamp_seconds): item
+            for track in self.tracks
+            for item in track.observations
+            if item.visible
+        }
         for relation in self.relations:
             if (
                 relation.subject_track_id not in known_tracks
@@ -489,22 +606,86 @@ class CvEvidenceSummary(StrictModel):
             if key in relation_keys:
                 raise ValueError("summary relations must be unique")
             relation_keys.add(key)
+            expected = _spatial_relation(
+                relation.subject_track_id,
+                observations_by_key[
+                    (
+                        relation.subject_track_id,
+                        relation.frame_index,
+                        relation.timestamp_seconds,
+                    )
+                ],
+                relation.object_track_id,
+                observations_by_key[
+                    (
+                        relation.object_track_id,
+                        relation.frame_index,
+                        relation.timestamp_seconds,
+                    )
+                ],
+            )
+            if relation != expected:
+                raise ValueError("relation geometry does not match retained boxes")
         relation_warning = any(
             warning.code == "RELATIONS_TRUNCATED" for warning in self.warnings
         )
+        visible_counts_by_frame: dict[int, int] = {}
+        for _, frame_index, _ in observations:
+            visible_counts_by_frame[frame_index] = (
+                visible_counts_by_frame.get(frame_index, 0) + 1
+            )
+        possible_relation_count = sum(
+            count * (count - 1) // 2
+            for count in visible_counts_by_frame.values()
+        )
+        if self.relations_complete != (
+            len(self.relations) == possible_relation_count
+        ):
+            raise ValueError(
+                "relation completeness must match retained same-frame geometry"
+            )
         if self.relations_complete == relation_warning:
             raise ValueError("relation completeness must match truncation warning")
+        relation_warning_record = next(
+            (
+                warning
+                for warning in self.warnings
+                if warning.code == "RELATIONS_TRUNCATED"
+            ),
+            None,
+        )
+        if relation_warning_record is not None and (
+            relation_warning_record.kept != len(self.relations)
+            or relation_warning_record.omitted
+            != possible_relation_count - len(self.relations)
+        ):
+            raise ValueError("relation warning must match retained geometry")
         overlay_warning = any(
             warning.code == "OVERLAYS_TRUNCATED" for warning in self.warnings
         )
         if self.overlays_complete == overlay_warning:
             raise ValueError("overlay completeness must match truncation warning")
+        if tuple(item.path for item in self.overlays) != self.overlay_refs:
+            raise ValueError("overlay reference projection must match provenance")
+        visible_frames = {
+            (track.track_id, observation.frame_index)
+            for track in self.tracks
+            for observation in track.observations
+            if observation.visible
+        }
+        if any(
+            (overlay.track_id, overlay.frame_index) not in visible_frames
+            for overlay in self.overlays
+        ):
+            raise ValueError("overlay provenance must close to retained visibility")
         return self
 
     def prompt_record(self) -> dict[str, Any]:
         """Return a fresh allowlisted JSON record, rejecting an oversized model."""
-        record = _summary_prompt_record(self)
-        if _canonical_char_count(record) > self.prompt_char_limit:
+        _preflight_summary(self)
+        validated = _revalidate_summary(self)
+        record = _summary_prompt_record(validated)
+        if _canonical_char_count(record) > validated.prompt_char_limit:
             raise ValueError("CV summary prompt record exceeds its character cap")
         return record
 
@@ -514,7 +695,9 @@ class OccluderProvenance(StrictModel):
 
     entity_id: ObjectId
     track_id: TrackId
-    supporting_frames: tuple[NonnegativeInt, ...]
+    supporting_frames: Annotated[
+        tuple[NonnegativeInt, ...], Field(max_length=_MAX_OBSERVATION_LIMIT)
+    ]
 
     @field_validator("supporting_frames")
     @classmethod
@@ -532,20 +715,31 @@ class OcclusionCandidate(StrictModel):
     candidate_id: CandidateId
     target_entity_id: ObjectId
     target_track_id: TrackId
-    possible_occluders: tuple[OccluderProvenance, ...]
-    possible_occluder_entity_ids: tuple[ObjectId, ...]
-    allowed_start_times: tuple[Timestamp, ...]
-    allowed_end_times: tuple[Timestamp, ...]
+    possible_occluders: Annotated[
+        tuple[OccluderProvenance, ...], Field(max_length=_MAX_TRACK_LIMIT)
+    ]
+    possible_occluder_entity_ids: Annotated[
+        tuple[ObjectId, ...], Field(max_length=_MAX_ENTITY_SUMMARIES)
+    ]
+    allowed_start_times: Annotated[
+        tuple[Timestamp, ...], Field(min_length=1, max_length=8)
+    ]
+    allowed_end_times: Annotated[
+        tuple[Timestamp, ...], Field(min_length=1, max_length=8)
+    ]
     last_visible_frame: NonnegativeInt
     first_revisible_frame: NonnegativeInt | None
     edge_departure: StrictBool
     low_confidence: StrictBool
-    overlay_refs: tuple[StrictStr, ...]
+    overlay_refs: Annotated[
+        tuple[Annotated[StrictStr, Field(max_length=512)], ...],
+        Field(max_length=_MAX_OVERLAY_LIMIT),
+    ]
     observation_support_complete: StrictBool
     relation_support_complete: StrictBool
     overlay_support_complete: StrictBool
     support_complete: StrictBool
-    candidate_set_complete: StrictBool
+    source_search_complete: StrictBool
 
     @field_validator("overlay_refs")
     @classmethod
@@ -568,6 +762,11 @@ class OcclusionCandidate(StrictModel):
             raise ValueError("candidate end times must be unique and ordered")
         if max(self.allowed_start_times) >= min(self.allowed_end_times):
             raise ValueError("candidate boundaries must guarantee positive duration")
+        if (
+            self.first_revisible_frame is not None
+            and self.first_revisible_frame <= self.last_visible_frame
+        ):
+            raise ValueError("candidate revisibility frame must follow last visibility")
         if tuple(sorted(set(self.possible_occluder_entity_ids))) != (
             self.possible_occluder_entity_ids
         ):
@@ -600,37 +799,43 @@ class OcclusionCandidate(StrictModel):
 
     def prompt_record(self) -> dict[str, Any]:
         """Return fresh allowlisted values without exposing model internals."""
-        record: dict[str, Any] = {
-            "candidate_id": self.candidate_id,
-            "target_entity_id": self.target_entity_id,
-            "target_track_id": self.target_track_id,
-            "possible_occluders": [
-                {
-                    "entity_id": item.entity_id,
-                    "track_id": item.track_id,
-                    "supporting_frames": list(item.supporting_frames),
-                }
-                for item in self.possible_occluders
-            ],
-            "possible_occluder_entity_ids": list(
-                self.possible_occluder_entity_ids
-            ),
-            "allowed_start_times": list(self.allowed_start_times),
-            "allowed_end_times": list(self.allowed_end_times),
-            "last_visible_frame": self.last_visible_frame,
-            "first_revisible_frame": self.first_revisible_frame,
-            "edge_departure": self.edge_departure,
-            "low_confidence": self.low_confidence,
-            "overlay_refs": list(self.overlay_refs),
-            "observation_support_complete": self.observation_support_complete,
-            "relation_support_complete": self.relation_support_complete,
-            "overlay_support_complete": self.overlay_support_complete,
-            "support_complete": self.support_complete,
-            "candidate_set_complete": self.candidate_set_complete,
-        }
+        _preflight_candidate(self)
+        validated = _revalidate_candidate(self)
+        record = _candidate_prompt_record(validated)
         if _canonical_char_count(record) > _MAX_CANDIDATE_PROMPT_CHARS:
             raise ValueError("occlusion candidate prompt record exceeds its cap")
         return record
+
+
+def _candidate_prompt_record(candidate: OcclusionCandidate) -> dict[str, Any]:
+    return {
+        "candidate_id": candidate.candidate_id,
+        "target_entity_id": candidate.target_entity_id,
+        "target_track_id": candidate.target_track_id,
+        "possible_occluders": [
+            {
+                "entity_id": item.entity_id,
+                "track_id": item.track_id,
+                "supporting_frames": list(item.supporting_frames),
+            }
+            for item in candidate.possible_occluders
+        ],
+        "possible_occluder_entity_ids": list(
+            candidate.possible_occluder_entity_ids
+        ),
+        "allowed_start_times": list(candidate.allowed_start_times),
+        "allowed_end_times": list(candidate.allowed_end_times),
+        "last_visible_frame": candidate.last_visible_frame,
+        "first_revisible_frame": candidate.first_revisible_frame,
+        "edge_departure": candidate.edge_departure,
+        "low_confidence": candidate.low_confidence,
+        "overlay_refs": list(candidate.overlay_refs),
+        "observation_support_complete": candidate.observation_support_complete,
+        "relation_support_complete": candidate.relation_support_complete,
+        "overlay_support_complete": candidate.overlay_support_complete,
+        "support_complete": candidate.support_complete,
+        "source_search_complete": candidate.source_search_complete,
+    }
 
 
 class CvPromptBundle(StrictModel):
@@ -638,19 +843,30 @@ class CvPromptBundle(StrictModel):
 
     schema_version: Literal["cv_prompt_bundle_v1"]
     summary: CvEvidenceSummary
-    candidates: tuple[OcclusionCandidate, ...]
+    thresholds: EvidenceThresholds
+    candidates: Annotated[
+        tuple[OcclusionCandidate, ...], Field(max_length=_MAX_BUNDLE_CANDIDATES)
+    ]
+    source_search_complete: StrictBool
     candidates_complete: StrictBool
-    truncation_codes: tuple[
-        Literal[
-            "SUMMARY_CANDIDATE_SEARCH_INCOMPLETE",
-            "CANDIDATE_SOURCE_TRUNCATED",
-            "CANDIDATE_COUNT_TRUNCATED",
-            "CANDIDATE_PROMPT_TRUNCATED",
-        ], ...
+    truncation_codes: Annotated[
+        tuple[
+            Literal[
+                "SUMMARY_CANDIDATE_SEARCH_INCOMPLETE",
+                "CANDIDATE_SOURCE_TRUNCATED",
+                "CANDIDATE_COUNT_TRUNCATED",
+                "CANDIDATE_PROMPT_TRUNCATED",
+            ],
+            ...,
+        ],
+        Field(max_length=4),
     ]
     prompt_char_limit: Annotated[
         int, Field(gt=0, le=_MAX_PROMPT_CHARS, strict=True)
     ] = _MAX_PROMPT_CHARS
+    candidate_limit: Annotated[
+        int, Field(gt=0, le=_MAX_BUNDLE_CANDIDATES, strict=True)
+    ] = _MAX_BUNDLE_CANDIDATES
 
     @model_validator(mode="after")
     def validate_bundle(self) -> CvPromptBundle:
@@ -662,16 +878,21 @@ class CvPromptBundle(StrictModel):
             raise ValueError("aggregate candidate IDs must be unique")
         if self.truncation_codes != tuple(dict.fromkeys(self.truncation_codes)):
             raise ValueError("aggregate truncation codes must be unique and ordered")
-        if self.candidates_complete != (not self.truncation_codes):
-            raise ValueError("candidate completeness must match truncation codes")
+        set_truncation_codes = {
+            "CANDIDATE_SOURCE_TRUNCATED",
+            "CANDIDATE_COUNT_TRUNCATED",
+            "CANDIDATE_PROMPT_TRUNCATED",
+        }
+        if self.candidates_complete != (
+            not any(code in set_truncation_codes for code in self.truncation_codes)
+        ):
+            raise ValueError("candidate set completeness must match set truncation")
         if (
             "SUMMARY_CANDIDATE_SEARCH_INCOMPLETE" in self.truncation_codes
         ) == self.summary.candidate_search_complete:
             raise ValueError("bundle summary-search completeness is inconsistent")
-        if any(not item.candidate_set_complete for item in self.candidates) and (
-            "CANDIDATE_SOURCE_TRUNCATED" not in self.truncation_codes
-        ):
-            raise ValueError("bundle omits candidate source-truncation signal")
+        if self.source_search_complete != self.summary.candidate_search_complete:
+            raise ValueError("bundle source-search completeness is inconsistent")
         track_entities = {
             track.track_id: track.entity_id for track in self.summary.tracks
         }
@@ -682,8 +903,9 @@ class CvPromptBundle(StrictModel):
         summary_overlays = set(self.summary.overlay_refs)
         positive_relation_keys = {
             (
-                relation.subject_track_id,
-                relation.object_track_id,
+                frozenset(
+                    (relation.subject_track_id, relation.object_track_id)
+                ),
                 relation.frame_index,
             )
             for relation in self.summary.relations
@@ -695,7 +917,10 @@ class CvPromptBundle(StrictModel):
             > 0.0
         }
         for candidate in self.candidates:
-            if track_entities.get(candidate.target_track_id) != candidate.target_entity_id:
+            if (
+                track_entities.get(candidate.target_track_id)
+                != candidate.target_entity_id
+            ):
                 raise ValueError("candidate target provenance is not closed to summary")
             if any(
                 track_entities.get(item.track_id) != item.entity_id
@@ -704,8 +929,7 @@ class CvPromptBundle(StrictModel):
                 raise ValueError("candidate occluder provenance is not closed to summary")
             if any(
                 (
-                    candidate.target_track_id,
-                    item.track_id,
+                    frozenset((candidate.target_track_id, item.track_id)),
                     frame_index,
                 )
                 not in positive_relation_keys
@@ -721,33 +945,52 @@ class CvPromptBundle(StrictModel):
                 )
             ):
                 raise ValueError("candidate times are not closed to the observed clock")
-            if any(reference not in summary_overlays for reference in candidate.overlay_refs):
-                raise ValueError("candidate overlay is not closed to summary")
-            involved_tracks = {
-                candidate.target_track_id,
-                *(item.track_id for item in candidate.possible_occluders),
-            }
             if any(
-                (resolved := _resolve_overlay_track(reference, track_entities)) is None
-                or resolved[0] not in involved_tracks
+                reference not in summary_overlays
                 for reference in candidate.overlay_refs
             ):
-                raise ValueError("candidate overlay provenance is not closed to summary")
+                raise ValueError("candidate overlay is not closed to summary")
             target_track = tracks_by_id[candidate.target_track_id]
             if candidate.observation_support_complete != (
                 target_track.candidate_search_complete
             ):
                 raise ValueError("candidate observation completeness disagrees with summary")
-            if candidate.relation_support_complete != self.summary.relations_complete:
+            if (
+                candidate.relation_support_complete
+                != self.summary.relations_complete
+            ):
                 raise ValueError("candidate relation completeness disagrees with summary")
-        if _canonical_char_count(_bundle_prompt_record(self)) > self.prompt_char_limit:
+            if (
+                candidate.source_search_complete
+                != self.summary.candidate_search_complete
+            ):
+                raise ValueError("candidate source-search completeness disagrees")
+        expected = _expected_bundle_components(
+            self.summary,
+            self.thresholds,
+            candidate_limit=self.candidate_limit,
+            prompt_char_limit=self.prompt_char_limit,
+        )
+        if (
+            self.candidates != expected.candidates
+            or self.source_search_complete != expected.source_search_complete
+            or self.candidates_complete != expected.candidates_complete
+            or self.truncation_codes != expected.truncation_codes
+        ):
+            raise ValueError("bundle must contain the canonical candidate set")
+        if (
+            _canonical_char_count(_bundle_prompt_record(self))
+            > self.prompt_char_limit
+        ):
             raise ValueError("aggregate CV prompt record exceeds its character cap")
         return self
 
     def prompt_record(self) -> dict[str, Any]:
         """Return one fresh, allowlisted, aggregate record for a model job."""
-        record = _bundle_prompt_record(self)
-        if _canonical_char_count(record) > self.prompt_char_limit:
+        _preflight_bundle(self)
+        validated = _revalidate_bundle(self)
+        record = _bundle_prompt_record(validated)
+        if _canonical_char_count(record) > validated.prompt_char_limit:
             raise ValueError("aggregate CV prompt record exceeds its character cap")
         return record
 
@@ -765,11 +1008,14 @@ class _AssemblyMetadata:
     mandatory_conflicts: int
     total_gaps: int
     kept_gaps: int
+    total_visibility_runs: int
+    kept_visibility_runs: int
     total_relations: int
     kept_relations: int
     total_overlays: int
     kept_overlays: int
     artifact_warning_count: int
+    uncovered_entity_count: int
     unavailable_evidence_count: int
 
 
@@ -784,6 +1030,14 @@ class _CandidateDraft:
     edge_departure: bool
     low_confidence: bool
     evidence_frames: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ExpectedBundleComponents:
+    candidates: tuple[OcclusionCandidate, ...]
+    source_search_complete: bool
+    candidates_complete: bool
+    truncation_codes: tuple[str, ...]
 
 
 def summarize_cv_evidence(
@@ -871,22 +1125,44 @@ def summarize_cv_evidence(
         return summary
 
     # Preserve the three-observation context needed to identify a local quality
-    # dip before dropping whole, stably ordered tracks.  Only an exceptionally
-    # small budget is allowed to reduce the final retained track below three.
-    for reduced_observation_cap in range(observation_cap - 1, 2, -1):
-        observation_cap = reduced_observation_cap
-        summary = assemble()
-        if _summary_fits(summary, max_prompt_chars):
-            summary.prompt_record()
-            return summary
+    # dip before dropping whole, stably ordered tracks.  Both cap searches are
+    # logarithmic, so hostile-but-valid inputs cannot trigger hundreds of full
+    # summary rebuilds while the prompt budget is being reduced.
+    original_track_cap = track_cap
+    low = 3
+    high = observation_cap - 1
+    best_observation_summary: CvEvidenceSummary | None = None
+    while low <= high:
+        candidate_cap = (low + high) // 2
+        observation_cap = candidate_cap
+        candidate_summary = assemble()
+        if _summary_fits(candidate_summary, max_prompt_chars):
+            best_observation_summary = candidate_summary
+            low = candidate_cap + 1
+        else:
+            high = candidate_cap - 1
+    if best_observation_summary is not None:
+        best_observation_summary.prompt_record()
+        return best_observation_summary
 
-    for reduced_track_cap in range(track_cap - 1, 0, -1):
-        track_cap = reduced_track_cap
-        summary = assemble()
-        if _summary_fits(summary, max_prompt_chars):
-            summary.prompt_record()
-            return summary
+    observation_cap = min(3, max_observations_per_track)
+    low = 1
+    high = original_track_cap - 1
+    best_track_summary: CvEvidenceSummary | None = None
+    while low <= high:
+        candidate_cap = (low + high) // 2
+        track_cap = candidate_cap
+        candidate_summary = assemble()
+        if _summary_fits(candidate_summary, max_prompt_chars):
+            best_track_summary = candidate_summary
+            low = candidate_cap + 1
+        else:
+            high = candidate_cap - 1
+    if best_track_summary is not None:
+        best_track_summary.prompt_record()
+        return best_track_summary
 
+    track_cap = min(1, original_track_cap)
     for reduced_observation_cap in range(min(observation_cap, 2), 0, -1):
         observation_cap = reduced_observation_cap
         summary = assemble()
@@ -909,28 +1185,42 @@ def build_occlusion_candidates(
 ) -> tuple[OcclusionCandidate, ...]:
     """Propose visibility-change skeletons without semantic classification."""
     _preflight_summary(summary)
+    _preflight_thresholds(thresholds)
     validated_summary = _revalidate_summary(summary)
-    validated_summary.prompt_record()
-    if validated_summary.status is not EvidenceStatus.AVAILABLE:
-        return ()
     validated_thresholds = _revalidate_thresholds(thresholds)
+    candidates, truncated = _canonical_candidates(
+        validated_summary, validated_thresholds
+    )
+    if truncated:
+        raise ValueError(
+            "candidate set exceeds the public bound; use build_cv_prompt_bundle"
+        )
+    return candidates
+
+
+def _canonical_candidates(
+    summary: CvEvidenceSummary,
+    thresholds: EvidenceThresholds,
+) -> tuple[tuple[OcclusionCandidate, ...], bool]:
+    if summary.status is not EvidenceStatus.AVAILABLE:
+        return (), False
     tracks = tuple(
-        sorted(validated_summary.tracks, key=lambda item: item.track_id)
+        sorted(summary.tracks, key=lambda item: item.track_id)
     )
     bounded_drafts = heapq.nsmallest(
         _MAX_BUNDLE_CANDIDATES + 1,
-        _candidate_drafts(tracks, validated_thresholds),
+        _candidate_drafts(tracks, thresholds),
         key=_draft_sort_key,
     )
-    candidate_set_complete = len(bounded_drafts) <= _MAX_BUNDLE_CANDIDATES
+    set_truncated = len(bounded_drafts) > _MAX_BUNDLE_CANDIDATES
     ordered_drafts = tuple(bounded_drafts[:_MAX_BUNDLE_CANDIDATES])
-    entities = {item.entity_id: item for item in validated_summary.entities}
+    entities = {item.entity_id: item for item in summary.entities}
     track_entities = {item.track_id: item.entity_id for item in tracks}
     candidates: list[OcclusionCandidate] = []
     for ordinal, draft in enumerate(ordered_drafts, start=1):
         possible_occluders = _possible_occluders(
             draft,
-            validated_summary.relations,
+            summary.relations,
             entities,
             track_entities,
         )
@@ -942,12 +1232,11 @@ def build_occlusion_candidates(
         if re.fullmatch(r"[0-9a-f]{12}", prefix) is None:
             raise ValueError("candidate hash prefix is invalid")
         overlay_fields = _candidate_overlay_fields(
-            validated_summary.overlay_refs,
+            summary.overlays,
             draft.target_track_id,
             possible_occluders,
             draft.evidence_frames,
-            track_entities,
-            overlays_complete=validated_summary.overlays_complete,
+            overlays_complete=summary.overlays_complete,
         )
         observation_support_complete = next(
             track.candidate_search_complete
@@ -956,7 +1245,7 @@ def build_occlusion_candidates(
         )
         support_complete = (
             observation_support_complete
-            and validated_summary.relations_complete
+            and summary.relations_complete
             and bool(overlay_fields["overlay_support_complete"])
         )
         candidate = OcclusionCandidate(
@@ -972,14 +1261,13 @@ def build_occlusion_candidates(
             edge_departure=draft.edge_departure,
             low_confidence=draft.low_confidence,
             observation_support_complete=observation_support_complete,
-            relation_support_complete=validated_summary.relations_complete,
+            relation_support_complete=summary.relations_complete,
             support_complete=support_complete,
-            candidate_set_complete=candidate_set_complete,
+            source_search_complete=summary.candidate_search_complete,
             **overlay_fields,
         )
-        candidate.prompt_record()
         candidates.append(candidate)
-    return tuple(candidates)
+    return tuple(candidates), set_truncated
 
 
 def _candidate_drafts(
@@ -1019,7 +1307,7 @@ def _candidate_drafts(
 
 def build_cv_prompt_bundle(
     summary: CvEvidenceSummary,
-    candidates: tuple[OcclusionCandidate, ...],
+    thresholds: EvidenceThresholds,
     *,
     max_candidates: int = _MAX_BUNDLE_CANDIDATES,
     max_prompt_chars: int | None = None,
@@ -1029,9 +1317,9 @@ def build_cv_prompt_bundle(
         "max_candidates", max_candidates, maximum=_MAX_BUNDLE_CANDIDATES
     )
     _preflight_summary(summary)
-    _preflight_candidates(candidates)
+    _preflight_thresholds(thresholds)
     validated_summary = _revalidate_summary(summary)
-    validated_summary.prompt_record()
+    validated_thresholds = _revalidate_thresholds(thresholds)
     effective_prompt_limit = (
         validated_summary.prompt_char_limit
         if max_prompt_chars is None
@@ -1042,50 +1330,97 @@ def build_cv_prompt_bundle(
         effective_prompt_limit,
         maximum=min(_MAX_PROMPT_CHARS, validated_summary.prompt_char_limit),
     )
-    validated_candidates = tuple(
-        _revalidate_candidate(item) for item in candidates
+    expected = _expected_bundle_components(
+        validated_summary,
+        validated_thresholds,
+        candidate_limit=max_candidates,
+        prompt_char_limit=effective_prompt_limit,
     )
-    ordered = tuple(sorted(validated_candidates, key=_candidate_sort_key))
-    if len({item.candidate_id for item in ordered}) != len(ordered):
-        raise ValueError("candidate IDs must be unique before prompt bundling")
-    kept = list(ordered[:max_candidates])
-    summary_search_incomplete = not validated_summary.candidate_search_complete
-    source_truncated = any(not item.candidate_set_complete for item in ordered)
-    count_truncated = len(ordered) > len(kept)
-    prompt_truncated = False
-    while True:
-        truncation_codes = tuple(
+    return CvPromptBundle(
+        schema_version="cv_prompt_bundle_v1",
+        summary=validated_summary,
+        thresholds=validated_thresholds,
+        candidates=expected.candidates,
+        source_search_complete=expected.source_search_complete,
+        candidates_complete=expected.candidates_complete,
+        truncation_codes=expected.truncation_codes,
+        prompt_char_limit=effective_prompt_limit,
+        candidate_limit=max_candidates,
+    )
+
+
+def _expected_bundle_components(
+    summary: CvEvidenceSummary,
+    thresholds: EvidenceThresholds,
+    *,
+    candidate_limit: int,
+    prompt_char_limit: int,
+) -> _ExpectedBundleComponents:
+    candidates, generation_truncated = _canonical_candidates(summary, thresholds)
+    count_truncated = len(candidates) > candidate_limit
+    initially_kept = candidates[:candidate_limit]
+    source_search_complete = summary.candidate_search_complete
+
+    def codes(*, prompt_truncated: bool) -> tuple[str, ...]:
+        return tuple(
             code
             for code, enabled in (
                 (
                     "SUMMARY_CANDIDATE_SEARCH_INCOMPLETE",
-                    summary_search_incomplete,
+                    not source_search_complete,
                 ),
-                ("CANDIDATE_SOURCE_TRUNCATED", source_truncated),
+                ("CANDIDATE_SOURCE_TRUNCATED", generation_truncated),
                 ("CANDIDATE_COUNT_TRUNCATED", count_truncated),
                 ("CANDIDATE_PROMPT_TRUNCATED", prompt_truncated),
             )
             if enabled
         )
-        record = _bundle_prompt_record_values(
-            validated_summary,
-            tuple(kept),
-            candidates_complete=not truncation_codes,
-            truncation_codes=truncation_codes,
+
+    initial_codes = codes(prompt_truncated=False)
+    initial_complete = not (generation_truncated or count_truncated)
+    initial_record = _bundle_prompt_record_values(
+        summary,
+        thresholds,
+        initially_kept,
+        source_search_complete=source_search_complete,
+        candidates_complete=initial_complete,
+        truncation_codes=initial_codes,
+    )
+    if _canonical_char_count(initial_record) <= prompt_char_limit:
+        return _ExpectedBundleComponents(
+            candidates=initially_kept,
+            source_search_complete=source_search_complete,
+            candidates_complete=initial_complete,
+            truncation_codes=initial_codes,
         )
-        if _canonical_char_count(record) <= effective_prompt_limit:
-            return CvPromptBundle(
-                schema_version="cv_prompt_bundle_v1",
-                summary=validated_summary,
-                candidates=tuple(kept),
-                candidates_complete=not truncation_codes,
-                truncation_codes=truncation_codes,
-                prompt_char_limit=effective_prompt_limit,
-            )
-        if not kept:
-            raise ValueError("CV summary leaves no room for an aggregate prompt bundle")
-        kept.pop()
-        prompt_truncated = True
+
+    prompt_codes = codes(prompt_truncated=True)
+    low = 0
+    high = len(initially_kept)
+    best = -1
+    while low <= high:
+        middle = (low + high) // 2
+        record = _bundle_prompt_record_values(
+            summary,
+            thresholds,
+            initially_kept[:middle],
+            source_search_complete=source_search_complete,
+            candidates_complete=False,
+            truncation_codes=prompt_codes,
+        )
+        if _canonical_char_count(record) <= prompt_char_limit:
+            best = middle
+            low = middle + 1
+        else:
+            high = middle - 1
+    if best < 0:
+        raise ValueError("CV summary leaves no room for an aggregate prompt bundle")
+    return _ExpectedBundleComponents(
+        candidates=initially_kept[:best],
+        source_search_complete=source_search_complete,
+        candidates_complete=False,
+        truncation_codes=prompt_codes,
+    )
 
 
 def _structural_error(name: str) -> ValueError:
@@ -1104,6 +1439,39 @@ def _preflight_text(value: object, name: str) -> str:
     return value
 
 
+def _preflight_int(value: object, name: str, *, minimum: int = 0) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise _structural_error(name)
+    return value
+
+
+def _preflight_float(
+    value: object,
+    name: str,
+    *,
+    minimum: float = 0.0,
+    maximum: float | None = None,
+) -> float:
+    if not isinstance(value, float) or not math.isfinite(value) or value < minimum:
+        raise _structural_error(name)
+    if maximum is not None and value > maximum:
+        raise _structural_error(name)
+    return value
+
+
+def _preflight_bool(value: object, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise _structural_error(name)
+    return value
+
+
+def _preflight_frame(frame: object, name: str) -> None:
+    if not isinstance(frame, FrameTimestamp):
+        raise _structural_error(f"{name} item type")
+    _preflight_int(frame.frame_index, f"{name} frame_index")
+    _preflight_float(frame.timestamp_seconds, f"{name} timestamp_seconds")
+
+
 def _preflight_artifact(artifact: object) -> None:
     if not isinstance(artifact, CvEvidenceArtifact):
         raise _structural_error("artifact")
@@ -1115,6 +1483,19 @@ def _preflight_artifact(artifact: object) -> None:
         "checkpoint_sha256",
     ):
         _preflight_text(getattr(artifact, field_name, None), f"artifact.{field_name}")
+    if not isinstance(getattr(artifact, "status", None), EvidenceStatus):
+        raise _structural_error("artifact.status")
+    processed_timeline = getattr(artifact, "processed_timeline", None)
+    if processed_timeline is not None:
+        if not isinstance(processed_timeline, FrameTimeline):
+            raise _structural_error("artifact.processed_timeline")
+        processed_frames = _preflight_tuple(
+            processed_timeline.frames,
+            "artifact.processed_timeline.frames",
+            _ABS_MAX_PROCESSED_FRAMES,
+        )
+        for frame in processed_frames:
+            _preflight_frame(frame, "artifact.processed_timeline")
     entities = _preflight_tuple(
         getattr(artifact, "entities", None),
         "artifact.entities",
@@ -1125,6 +1506,8 @@ def _preflight_artifact(artifact: object) -> None:
             raise _structural_error("artifact.entities item type")
         _preflight_text(entity.entity_id, "artifact entity_id")
         _preflight_text(entity.canonical_label, "artifact canonical_label")
+        if not isinstance(entity.role, EntityRole):
+            raise _structural_error("artifact entity role")
         aliases = _preflight_tuple(
             entity.aliases,
             "artifact entity aliases",
@@ -1144,6 +1527,8 @@ def _preflight_artifact(artifact: object) -> None:
             raise _structural_error("artifact.tracks item type")
         _preflight_text(track.track_id, "artifact track_id")
         _preflight_text(track.entity_id, "artifact track entity_id")
+        if not isinstance(track.status, EvidenceStatus):
+            raise _structural_error("artifact track status")
         observations = _preflight_tuple(
             track.observations,
             "artifact track observations",
@@ -1161,6 +1546,28 @@ def _preflight_artifact(artifact: object) -> None:
             _preflight_tuple(
                 observation.center_xy, "artifact observation center", 2
             )
+            _preflight_int(
+                observation.frame_index, "artifact observation frame_index"
+            )
+            _preflight_float(
+                observation.timestamp_seconds,
+                "artifact observation timestamp_seconds",
+            )
+            for value in (*observation.bbox_xyxy, *observation.center_xy):
+                _preflight_float(
+                    value, "artifact observation geometry", maximum=1.0
+                )
+            _preflight_bool(observation.visible, "artifact observation visible")
+            _preflight_float(
+                observation.confidence,
+                "artifact observation confidence",
+                maximum=1.0,
+            )
+            _preflight_float(
+                observation.area_fraction,
+                "artifact observation area_fraction",
+                maximum=1.0,
+            )
             if observation.mask_ref is not None:
                 _preflight_text(observation.mask_ref, "artifact mask_ref")
 
@@ -1174,6 +1581,18 @@ def _preflight_artifact(artifact: object) -> None:
             raise _structural_error("artifact.files item type")
         _preflight_text(artifact_file.path, "artifact file path")
         _preflight_text(artifact_file.sha256, "artifact file sha256")
+        _preflight_int(artifact_file.size_bytes, "artifact file size_bytes")
+    overlay_records = _preflight_tuple(
+        getattr(artifact, "overlay_records", None),
+        "artifact.overlay_records",
+        _MAX_OVERLAY_LIMIT,
+    )
+    for record in overlay_records:
+        if not isinstance(record, OverlayRecord):
+            raise _structural_error("artifact.overlay_records item type")
+        _preflight_text(record.path, "artifact overlay path")
+        _preflight_text(record.track_id, "artifact overlay track_id")
+        _preflight_int(record.frame_index, "artifact overlay frame_index")
     artifact_warnings = _preflight_tuple(
         getattr(artifact, "warnings", None),
         "artifact.warnings",
@@ -1192,8 +1611,7 @@ def _preflight_timeline(timeline: object) -> None:
         _ABS_MAX_TIMELINE_FRAMES,
     )
     for frame in frames:
-        if not isinstance(frame, FrameTimestamp):
-            raise _structural_error("timeline.frames item type")
+        _preflight_frame(frame, "timeline.frames")
 
 
 def _preflight_summary(summary: object) -> None:
@@ -1205,10 +1623,18 @@ def _preflight_summary(summary: object) -> None:
     observed_clock = _preflight_tuple(
         getattr(summary, "observed_clock", None),
         "summary.observed_clock",
-        _ABS_MAX_TIMELINE_FRAMES,
+        _ABS_MAX_PROCESSED_FRAMES,
     )
     if any(not isinstance(item, FrameTimestamp) for item in observed_clock):
         raise _structural_error("summary.observed_clock item type")
+    for frame in observed_clock:
+        _preflight_frame(frame, "summary.observed_clock")
+    if not isinstance(getattr(summary, "status", None), EvidenceStatus):
+        raise _structural_error("summary.status")
+    _preflight_bool(
+        getattr(summary, "candidate_search_complete", None),
+        "summary.candidate_search_complete",
+    )
     entities = _preflight_tuple(
         getattr(summary, "entities", None),
         "summary.entities",
@@ -1219,6 +1645,8 @@ def _preflight_summary(summary: object) -> None:
             raise _structural_error("summary.entities item type")
         _preflight_text(entity.entity_id, "summary entity_id")
         _preflight_text(entity.canonical_label, "summary canonical_label")
+        if not isinstance(entity.role, EntityRole):
+            raise _structural_error("summary entity role")
         aliases = _preflight_tuple(
             entity.aliases, "summary entity aliases", _MAX_ALIASES_PER_ENTITY
         )
@@ -1233,6 +1661,20 @@ def _preflight_summary(summary: object) -> None:
             raise _structural_error("summary.tracks item type")
         _preflight_text(track.track_id, "summary track_id")
         _preflight_text(track.entity_id, "summary track entity_id")
+        if not isinstance(track.status, EvidenceStatus):
+            raise _structural_error("summary track status")
+        _preflight_int(
+            track.source_observation_count,
+            "summary track source_observation_count",
+        )
+        _preflight_bool(
+            track.visibility_lifecycle_complete,
+            "summary track visibility_lifecycle_complete",
+        )
+        _preflight_bool(
+            track.candidate_search_complete,
+            "summary track candidate_search_complete",
+        )
         observations = _preflight_tuple(
             track.observations,
             "summary track observations",
@@ -1243,6 +1685,46 @@ def _preflight_summary(summary: object) -> None:
                 raise _structural_error("summary observations item type")
             _preflight_tuple(observation.bbox_xyxy, "summary observation bbox", 4)
             _preflight_tuple(observation.center_xy, "summary observation center", 2)
+            _preflight_int(
+                observation.source_ordinal, "summary observation source_ordinal"
+            )
+            _preflight_int(
+                observation.frame_index, "summary observation frame_index"
+            )
+            _preflight_float(
+                observation.timestamp_seconds,
+                "summary observation timestamp_seconds",
+            )
+            for value in (
+                *observation.bbox_xyxy,
+                *observation.center_xy,
+                observation.confidence,
+                observation.area_fraction,
+                observation.edge_proximity,
+            ):
+                _preflight_float(
+                    value, "summary observation scalar", maximum=1.0
+                )
+            _preflight_bool(observation.visible, "summary observation visible")
+        runs = _preflight_tuple(
+            track.visibility_runs,
+            "summary visibility runs",
+            _MAX_VISIBILITY_RUNS_PER_TRACK,
+        )
+        for run in runs:
+            if not isinstance(run, VisibilityRun):
+                raise _structural_error("summary visibility run item type")
+            _preflight_text(run.state, "summary visibility run state")
+            _preflight_int(run.start_frame, "summary visibility run start_frame")
+            _preflight_float(run.start_time, "summary visibility run start_time")
+            _preflight_int(run.end_frame, "summary visibility run end_frame")
+            _preflight_float(run.end_time, "summary visibility run end_time")
+            if run.minimum_confidence is not None:
+                _preflight_float(
+                    run.minimum_confidence,
+                    "summary visibility run minimum_confidence",
+                    maximum=1.0,
+                )
         gaps = _preflight_tuple(
             track.missing_intervals,
             "summary missing intervals",
@@ -1250,6 +1732,40 @@ def _preflight_summary(summary: object) -> None:
         )
         if any(not isinstance(item, VisibilityGap) for item in gaps):
             raise _structural_error("summary missing intervals item type")
+        for gap in gaps:
+            for field_name in (
+                "last_visible_frame",
+                "first_missing_frame",
+                "last_missing_frame",
+            ):
+                _preflight_int(
+                    getattr(gap, field_name), f"summary gap {field_name}"
+                )
+            for field_name in (
+                "last_visible_time",
+                "first_missing_time",
+                "last_missing_time",
+            ):
+                _preflight_float(
+                    getattr(gap, field_name), f"summary gap {field_name}"
+                )
+            if gap.first_revisible_frame is not None:
+                _preflight_int(
+                    gap.first_revisible_frame,
+                    "summary gap first_revisible_frame",
+                )
+            if gap.first_revisible_time is not None:
+                _preflight_float(
+                    gap.first_revisible_time,
+                    "summary gap first_revisible_time",
+                )
+            if gap.minimum_confidence is not None:
+                _preflight_float(
+                    gap.minimum_confidence,
+                    "summary gap minimum_confidence",
+                    maximum=1.0,
+                )
+            _preflight_bool(gap.edge_departure, "summary gap edge_departure")
 
     relations = _preflight_tuple(
         getattr(summary, "relations", None),
@@ -1265,6 +1781,26 @@ def _preflight_summary(summary: object) -> None:
         _preflight_text(
             relation.object_track_id, "summary relation object_track_id"
         )
+        _preflight_int(relation.frame_index, "summary relation frame_index")
+        _preflight_float(
+            relation.timestamp_seconds, "summary relation timestamp_seconds"
+        )
+        for value in (
+            relation.bbox_iou,
+            relation.subject_bbox_covered_fraction,
+            relation.object_bbox_covered_fraction,
+            relation.center_distance_fraction,
+            relation.area_similarity,
+        ):
+            _preflight_float(value, "summary relation scalar", maximum=1.0)
+        _preflight_bool(
+            relation.subject_inside_object,
+            "summary relation subject_inside_object",
+        )
+        _preflight_bool(
+            relation.object_inside_subject,
+            "summary relation object_inside_subject",
+        )
     overlays = _preflight_tuple(
         getattr(summary, "overlay_refs", None),
         "summary.overlay_refs",
@@ -1272,6 +1808,17 @@ def _preflight_summary(summary: object) -> None:
     )
     for overlay in overlays:
         _preflight_text(overlay, "summary overlay reference")
+    structured_overlays = _preflight_tuple(
+        getattr(summary, "overlays", None),
+        "summary.overlays",
+        _MAX_OVERLAY_LIMIT,
+    )
+    for overlay in structured_overlays:
+        if not isinstance(overlay, SummaryOverlay):
+            raise _structural_error("summary.overlays item type")
+        _preflight_text(overlay.path, "summary overlay path")
+        _preflight_text(overlay.track_id, "summary overlay track_id")
+        _preflight_int(overlay.frame_index, "summary overlay frame_index")
     summary_warnings = _preflight_tuple(
         getattr(summary, "warnings", None),
         "summary.warnings",
@@ -1281,51 +1828,113 @@ def _preflight_summary(summary: object) -> None:
         if not isinstance(warning, SummaryWarning):
             raise _structural_error("summary warning item type")
         _preflight_text(warning.code, "summary warning code")
-
-
-def _preflight_candidates(candidates: object) -> None:
-    values = _preflight_tuple(
-        candidates, "candidates", _ABS_MAX_CANDIDATE_INPUTS
-    )
-    for candidate in values:
-        if not isinstance(candidate, OcclusionCandidate):
-            raise _structural_error("candidates item type")
-        _preflight_text(candidate.candidate_id, "candidate_id")
-        _preflight_text(candidate.target_entity_id, "candidate target_entity_id")
-        _preflight_text(candidate.target_track_id, "candidate target_track_id")
-        possible_occluders = _preflight_tuple(
-            candidate.possible_occluders,
-            "candidate possible_occluders",
-            _MAX_TRACK_LIMIT,
-        )
-        for provenance in possible_occluders:
-            if not isinstance(provenance, OccluderProvenance):
-                raise _structural_error("candidate possible_occluders item type")
-            _preflight_text(provenance.entity_id, "candidate occluder entity_id")
-            _preflight_text(provenance.track_id, "candidate occluder track_id")
-            _preflight_tuple(
-                provenance.supporting_frames,
-                "candidate occluder supporting_frames",
-                _MAX_OBSERVATION_LIMIT,
+        for field_name in ("kept", "omitted", "count", "tracks"):
+            value = getattr(warning, field_name)
+            if value is not None:
+                _preflight_int(value, f"summary warning {field_name}")
+        if warning.priority is not None:
+            _preflight_text(warning.priority, "summary warning priority")
+        if warning.budget_enforced is not None:
+            _preflight_bool(
+                warning.budget_enforced, "summary warning budget_enforced"
             )
-        possible_entity_ids = _preflight_tuple(
-            candidate.possible_occluder_entity_ids,
-            "candidate possible_occluder_entity_ids",
-            _MAX_ENTITY_SUMMARIES,
+    _preflight_bool(summary.relations_complete, "summary.relations_complete")
+    _preflight_bool(summary.overlays_complete, "summary.overlays_complete")
+    _preflight_int(summary.prompt_char_limit, "summary.prompt_char_limit", minimum=1)
+
+
+def _preflight_candidate(candidate: object) -> None:
+    if not isinstance(candidate, OcclusionCandidate):
+        raise _structural_error("candidate item type")
+    _preflight_text(candidate.candidate_id, "candidate_id")
+    _preflight_text(candidate.target_entity_id, "candidate target_entity_id")
+    _preflight_text(candidate.target_track_id, "candidate target_track_id")
+    possible_occluders = _preflight_tuple(
+        candidate.possible_occluders,
+        "candidate possible_occluders",
+        _MAX_TRACK_LIMIT,
+    )
+    for provenance in possible_occluders:
+        if not isinstance(provenance, OccluderProvenance):
+            raise _structural_error("candidate possible_occluders item type")
+        _preflight_text(provenance.entity_id, "candidate occluder entity_id")
+        _preflight_text(provenance.track_id, "candidate occluder track_id")
+        supporting_frames = _preflight_tuple(
+            provenance.supporting_frames,
+            "candidate occluder supporting_frames",
+            _MAX_OBSERVATION_LIMIT,
         )
-        for entity_id in possible_entity_ids:
-            _preflight_text(entity_id, "candidate possible occluder entity_id")
-        _preflight_tuple(
-            candidate.allowed_start_times, "candidate start times", 8
+        for frame_index in supporting_frames:
+            _preflight_int(frame_index, "candidate occluder supporting frame")
+    possible_entity_ids = _preflight_tuple(
+        candidate.possible_occluder_entity_ids,
+        "candidate possible_occluder_entity_ids",
+        _MAX_ENTITY_SUMMARIES,
+    )
+    for entity_id in possible_entity_ids:
+        _preflight_text(entity_id, "candidate possible occluder entity_id")
+    _preflight_tuple(candidate.allowed_start_times, "candidate start times", 8)
+    _preflight_tuple(candidate.allowed_end_times, "candidate end times", 8)
+    overlays = _preflight_tuple(
+        candidate.overlay_refs,
+        "candidate overlay_refs",
+        _MAX_OVERLAY_LIMIT,
+    )
+    for overlay in overlays:
+        _preflight_text(overlay, "candidate overlay reference")
+    for value in (*candidate.allowed_start_times, *candidate.allowed_end_times):
+        _preflight_float(value, "candidate boundary timestamp")
+    _preflight_int(candidate.last_visible_frame, "candidate last_visible_frame")
+    if candidate.first_revisible_frame is not None:
+        _preflight_int(
+            candidate.first_revisible_frame,
+            "candidate first_revisible_frame",
         )
-        _preflight_tuple(candidate.allowed_end_times, "candidate end times", 8)
-        overlays = _preflight_tuple(
-            candidate.overlay_refs,
-            "candidate overlay_refs",
-            _MAX_OVERLAY_LIMIT,
+    for field_name in (
+        "edge_departure",
+        "low_confidence",
+        "observation_support_complete",
+        "relation_support_complete",
+        "overlay_support_complete",
+        "support_complete",
+        "source_search_complete",
+    ):
+        _preflight_bool(getattr(candidate, field_name), f"candidate {field_name}")
+
+
+def _preflight_thresholds(thresholds: object) -> None:
+    if not isinstance(thresholds, EvidenceThresholds):
+        raise _structural_error("thresholds")
+    for field_name in (
+        "min_confidence",
+        "min_area_fraction",
+        "occlusion_visibility_drop",
+    ):
+        _preflight_float(
+            getattr(thresholds, field_name),
+            f"thresholds.{field_name}",
+            maximum=1.0,
         )
-        for overlay in overlays:
-            _preflight_text(overlay, "candidate overlay reference")
+
+
+def _preflight_bundle(bundle: object) -> None:
+    if not isinstance(bundle, CvPromptBundle):
+        raise _structural_error("bundle")
+    _preflight_text(bundle.schema_version, "bundle.schema_version")
+    _preflight_summary(bundle.summary)
+    _preflight_thresholds(bundle.thresholds)
+    candidates = _preflight_tuple(
+        bundle.candidates, "bundle.candidates", _MAX_BUNDLE_CANDIDATES
+    )
+    for candidate in candidates:
+        _preflight_candidate(candidate)
+    codes = _preflight_tuple(bundle.truncation_codes, "bundle.truncation_codes", 4)
+    for code in codes:
+        _preflight_text(code, "bundle truncation code")
+    _preflight_bool(bundle.source_search_complete, "bundle.source_search_complete")
+    _preflight_bool(bundle.candidates_complete, "bundle.candidates_complete")
+    _preflight_int(bundle.prompt_char_limit, "bundle.prompt_char_limit", minimum=1)
+    _preflight_int(bundle.candidate_limit, "bundle.candidate_limit", minimum=1)
 
 
 def _revalidate_artifact(artifact: CvEvidenceArtifact) -> CvEvidenceArtifact:
@@ -1364,6 +1973,15 @@ def _revalidate_candidate(candidate: OcclusionCandidate) -> OcclusionCandidate:
     return OcclusionCandidate.model_validate(payload, strict=True)
 
 
+def _revalidate_bundle(bundle: CvPromptBundle) -> CvPromptBundle:
+    payload = (
+        bundle.model_dump(mode="python", warnings=False)
+        if isinstance(bundle, CvPromptBundle)
+        else bundle
+    )
+    return CvPromptBundle.model_validate(payload, strict=True)
+
+
 def _revalidate_thresholds(thresholds: EvidenceThresholds) -> EvidenceThresholds:
     payload = (
         thresholds.model_dump(mode="python", warnings=False)
@@ -1393,41 +2011,25 @@ def _validated_frame_clock(
     artifact: CvEvidenceArtifact,
     timeline: FrameTimeline | None,
 ) -> tuple[FrameTimestamp, ...]:
-    observed: dict[int, float] = {}
-    evidence_tracks = (
-        artifact.tracks
-        if artifact.status is EvidenceStatus.AVAILABLE
+    processed = (
+        artifact.processed_timeline.frames
+        if artifact.processed_timeline is not None
         else ()
     )
-    for track in evidence_tracks:
-        if track.status is not EvidenceStatus.AVAILABLE:
-            continue
-        for observation in track.observations:
-            prior = observed.setdefault(
-                observation.frame_index, observation.timestamp_seconds
-            )
-            if prior != observation.timestamp_seconds:
-                raise ValueError("frame timeline has conflicting timestamps")
-
+    if artifact.status is EvidenceStatus.AVAILABLE and not processed:
+        raise ValueError("available artifact has no processed timeline")
     if timeline is not None:
         declared = {
             item.frame_index: item.timestamp_seconds for item in timeline.frames
         }
         if any(
-            frame_index not in declared or declared[frame_index] != timestamp
-            for frame_index, timestamp in observed.items()
+            declared.get(frame.frame_index) != frame.timestamp_seconds
+            for frame in processed
         ):
-            raise ValueError("frame timeline does not align with observations")
-        return timeline.frames
-
-    ordered = tuple(
-        FrameTimestamp(frame_index=frame_index, timestamp_seconds=timestamp)
-        for frame_index, timestamp in sorted(observed.items())
-    )
-    for previous, current in zip(ordered, ordered[1:]):
-        if previous.timestamp_seconds >= current.timestamp_seconds:
-            raise ValueError("frame timeline must increase globally")
-    return ordered
+            raise ValueError(
+                "processed timeline must be an exact subset of the source timeline"
+            )
+    return processed if artifact.status is EvidenceStatus.AVAILABLE else ()
 
 
 def _assemble_summary(
@@ -1461,6 +2063,13 @@ def _assemble_summary(
     mandatory_conflicts = 0
     total_gaps = 0
     kept_gaps = 0
+    total_visibility_runs = 0
+    kept_visibility_runs = 0
+    overlay_frames_by_track: dict[str, set[int]] = {}
+    for record in artifact.overlay_records:
+        overlay_frames_by_track.setdefault(record.track_id, set()).add(
+            record.frame_index
+        )
     for track in selected_tracks:
         if track.status is not EvidenceStatus.AVAILABLE:
             summary_tracks.append(
@@ -1470,47 +2079,65 @@ def _assemble_summary(
                     status=track.status,
                     source_observation_count=len(track.observations),
                     observations=(),
+                    visibility_runs=(),
+                    visibility_lifecycle_complete=False,
                     missing_intervals=(),
                     candidate_search_complete=False,
                 )
             )
             continue
+        retained_runs, source_run_count, track_gap_count = _derive_visibility_runs(
+            track,
+            frame_clock,
+            cap=min(observation_cap, _MAX_VISIBILITY_RUNS_PER_TRACK),
+        )
+        lifecycle_complete = len(retained_runs) == source_run_count
+        lifecycle_boundary_frames = {
+            frame_index
+            for run in retained_runs
+            for frame_index in (run.start_frame, run.end_frame)
+            if run.state == "visible"
+        }
+        lifecycle_boundary_frames.update(
+            overlay_frames_by_track.get(track.track_id, ())
+        )
         selected, mandatory_conflict = _reduce_observations(
-            track.observations, observation_cap
+            track.observations,
+            observation_cap,
+            priority_frames=lifecycle_boundary_frames,
+            maximum_frame=(
+                None
+                if lifecycle_complete
+                else (retained_runs[-1].end_frame if retained_runs else -1)
+            ),
         )
         mandatory_conflicts += int(mandatory_conflict)
-        derived_gaps, track_gap_count = _derive_missing_intervals(
-            track, frame_clock, cap=observation_cap
+        summary_observations = tuple(
+            _summary_observation(source_ordinal, observation)
+            for source_ordinal, observation in selected
         )
-        retained_visible_frames = {
-            observation.frame_index
-            for _, observation in selected
-            if observation.visible
-        }
-        retained_gaps = tuple(
-            gap
-            for gap in derived_gaps
-            if gap.last_visible_frame in retained_visible_frames
-            and (
-                gap.first_revisible_frame is None
-                or gap.first_revisible_frame in retained_visible_frames
-            )
+        retained_gaps = _gaps_from_visibility_runs(
+            retained_runs,
+            summary_observations,
+            lifecycle_complete=lifecycle_complete,
         )
         total_gaps += track_gap_count
         kept_gaps += len(retained_gaps)
+        total_visibility_runs += source_run_count
+        kept_visibility_runs += len(retained_runs)
         summary_tracks.append(
             SummaryTrack(
                 track_id=track.track_id,
                 entity_id=track.entity_id,
                 status=track.status,
                 source_observation_count=len(track.observations),
-                observations=tuple(
-                    _summary_observation(source_ordinal, observation)
-                    for source_ordinal, observation in selected
-                ),
+                observations=summary_observations,
+                visibility_runs=retained_runs,
+                visibility_lifecycle_complete=lifecycle_complete,
                 missing_intervals=retained_gaps,
                 candidate_search_complete=(
                     len(selected) == len(track.observations)
+                    and lifecycle_complete
                     and len(retained_gaps) == track_gap_count
                 ),
             )
@@ -1524,13 +2151,41 @@ def _assemble_summary(
             include_untracked=include_untracked_entities,
         )
     )
-    relations, total_relations = _relations(tracks, cap=relation_cap)
-    all_overlays = _overlay_refs(artifact)
-    overlays = (
-        all_overlays[:overlay_cap]
-        if artifact.status is EvidenceStatus.AVAILABLE
-        else ()
+    relations, total_relations, relation_scan_complete = _relations(
+        tracks, cap=relation_cap
     )
+    all_overlays = tuple(
+        SummaryOverlay(
+            path=record.path,
+            track_id=record.track_id,
+            frame_index=record.frame_index,
+        )
+        for record in sorted(artifact.overlay_records, key=lambda item: item.path)
+        if artifact.status is EvidenceStatus.AVAILABLE
+    )
+    retained_visible = {
+        (track.track_id, observation.frame_index)
+        for track in tracks
+        for observation in track.observations
+        if observation.visible
+    }
+    eligible_overlays = tuple(
+        overlay
+        for overlay in all_overlays
+        if (overlay.track_id, overlay.frame_index) in retained_visible
+    )
+    overlays = eligible_overlays[:overlay_cap]
+    uncovered_entity_count = 0
+    if artifact.status is EvidenceStatus.AVAILABLE:
+        available_entity_ids = {
+            track.entity_id
+            for track in all_tracks
+            if track.status is EvidenceStatus.AVAILABLE
+        }
+        uncovered_entity_count = sum(
+            entity.entity_id not in available_entity_ids
+            for entity in artifact.entities
+        )
     metadata = _AssemblyMetadata(
         total_entities=total_entity_count,
         kept_entities=len(entities),
@@ -1543,11 +2198,14 @@ def _assemble_summary(
         mandatory_conflicts=mandatory_conflicts,
         total_gaps=total_gaps,
         kept_gaps=kept_gaps,
+        total_visibility_runs=total_visibility_runs,
+        kept_visibility_runs=kept_visibility_runs,
         total_relations=total_relations,
         kept_relations=len(relations),
         total_overlays=len(all_overlays),
         kept_overlays=len(overlays),
         artifact_warning_count=len(artifact.warnings),
+        uncovered_entity_count=uncovered_entity_count,
         unavailable_evidence_count=(
             len(all_tracks)
             if artifact.status is not EvidenceStatus.AVAILABLE
@@ -1564,13 +2222,18 @@ def _assemble_summary(
             artifact.status is EvidenceStatus.AVAILABLE
             and len(selected_tracks) == len(all_tracks)
             and all(track.candidate_search_complete for track in tracks)
+            and not artifact.warnings
+            and uncovered_entity_count == 0
         ),
         observed_clock=_retained_observed_clock(frame_clock, tracks),
         entities=entities,
         tracks=tracks,
         relations=relations,
-        relations_complete=total_relations == len(relations),
-        overlay_refs=overlays,
+        relations_complete=(
+            relation_scan_complete and total_relations == len(relations)
+        ),
+        overlay_refs=tuple(item.path for item in overlays),
+        overlays=overlays,
         overlays_complete=len(all_overlays) == len(overlays),
         warnings=_summary_warnings(metadata, prompt_truncated=prompt_truncated),
         prompt_char_limit=prompt_char_limit,
@@ -1584,6 +2247,8 @@ def _retained_observed_clock(
     required_frames: set[int] = set()
     for track in tracks:
         required_frames.update(item.frame_index for item in track.observations)
+        for run in track.visibility_runs:
+            required_frames.update((run.start_frame, run.end_frame))
         for gap in track.missing_intervals:
             required_frames.update(
                 frame_index
@@ -1653,10 +2318,20 @@ def _truncate_text(value: str, maximum: int) -> tuple[str, bool]:
 
 
 def _reduce_observations(
-    observations: tuple[TrackObservation, ...], cap: int
+    observations: tuple[TrackObservation, ...],
+    cap: int,
+    *,
+    priority_frames: set[int] | None = None,
+    maximum_frame: int | None = None,
 ) -> tuple[tuple[tuple[int, TrackObservation], ...], bool]:
-    if not observations:
+    indexed_observations = tuple(
+        (source_ordinal, observation)
+        for source_ordinal, observation in enumerate(observations)
+        if maximum_frame is None or observation.frame_index <= maximum_frame
+    )
+    if not indexed_observations:
         return (), False
+    bounded_observations = tuple(item[1] for item in indexed_observations)
     priority: list[int] = []
     selected_indices: set[int] = set()
     mandatory_conflict = False
@@ -1673,58 +2348,66 @@ def _reduce_observations(
 
     def add_context(index: int) -> None:
         for contextual_index in (index - 1, index, index + 1):
-            if 0 <= contextual_index < len(observations):
+            if 0 <= contextual_index < len(bounded_observations):
                 add(contextual_index)
 
     add(0)
-    add(len(observations) - 1)
+    add(len(bounded_observations) - 1)
+    positions_by_frame = {
+        observation.frame_index: index
+        for index, observation in enumerate(bounded_observations)
+    }
+    for frame_index in sorted(priority_frames or ()):
+        position = positions_by_frame.get(frame_index)
+        if position is not None:
+            add(position)
     for index, (previous, current) in enumerate(
-        zip(observations, observations[1:]), start=1
+        zip(bounded_observations, bounded_observations[1:]), start=1
     ):
         if previous.visible != current.visible:
             add(index - 1)
             add(index)
     add_context(
         min(
-            range(len(observations)),
+            range(len(bounded_observations)),
             key=lambda index: (
-                observations[index].area_fraction,
-                observations[index].frame_index,
+                bounded_observations[index].area_fraction,
+                bounded_observations[index].frame_index,
             ),
         )
     )
     add(
         min(
-            range(len(observations)),
+            range(len(bounded_observations)),
             key=lambda index: (
-                -observations[index].area_fraction,
-                observations[index].frame_index,
+                -bounded_observations[index].area_fraction,
+                bounded_observations[index].frame_index,
             ),
         )
     )
     add_context(
         min(
-            range(len(observations)),
+            range(len(bounded_observations)),
             key=lambda index: (
-                observations[index].confidence,
-                observations[index].frame_index,
+                bounded_observations[index].confidence,
+                bounded_observations[index].frame_index,
             ),
         )
     )
     chosen = list(priority)
     remaining_slots = cap - len(chosen)
-    if remaining_slots > 0 and len(selected_indices) < len(observations):
+    if remaining_slots > 0 and len(selected_indices) < len(bounded_observations):
         for slot in range(1, remaining_slots + 1):
-            ideal = slot * (len(observations) - 1) / (remaining_slots + 1)
+            ideal = slot * (len(bounded_observations) - 1) / (remaining_slots + 1)
             selected = _nearest_unselected_index(
-                ideal, len(observations), selected_indices
+                ideal, len(bounded_observations), selected_indices
             )
             if selected is None:
                 break
             chosen.append(selected)
             selected_indices.add(selected)
     if len(chosen) < cap:
-        for index in range(len(observations)):
+        for index in range(len(bounded_observations)):
             if index in selected_indices:
                 continue
             chosen.append(index)
@@ -1732,7 +2415,7 @@ def _reduce_observations(
             if len(chosen) == cap:
                 break
     return (
-        tuple((index, observations[index]) for index in sorted(chosen)),
+        tuple(indexed_observations[index] for index in sorted(chosen)),
         mandatory_conflict,
     )
 
@@ -1774,78 +2457,131 @@ def _summary_observation(
     )
 
 
-def _derive_missing_intervals(
+def _derive_visibility_runs(
     track: CvTrack,
     frame_clock: tuple[FrameTimestamp, ...],
     *,
     cap: int,
-) -> tuple[tuple[VisibilityGap, ...], int]:
+) -> tuple[tuple[VisibilityRun, ...], int, int]:
     if not frame_clock:
-        return (), 0
+        return (), 0, 0
     observations = {item.frame_index: item for item in track.observations}
-    gaps: list[VisibilityGap] = []
+    retained: list[VisibilityRun] = []
+    total_runs = 0
     gap_count = 0
-    last_visible: TrackObservation | None = None
-    offset = 0
-    while offset < len(frame_clock):
-        frame = frame_clock[offset]
-        observation = observations.get(frame.frame_index)
-        if observation is not None and observation.visible:
-            last_visible = observation
-            offset += 1
-            continue
-        if last_visible is None:
-            offset += 1
-            continue
-        first_missing = frame
-        last_missing = frame
-        scan = offset
-        revisible: TrackObservation | None = None
-        missing_confidences: list[float] = []
-        while scan < len(frame_clock):
-            current_frame = frame_clock[scan]
-            current = observations.get(current_frame.frame_index)
-            if current is not None and current.visible:
-                revisible = current
-                break
-            if current is not None:
-                missing_confidences.append(current.confidence)
-            last_missing = current_frame
-            scan += 1
-        gap_count += 1
-        if len(gaps) < cap:
-            gaps.append(
-                VisibilityGap(
-                    last_visible_frame=last_visible.frame_index,
-                    last_visible_time=last_visible.timestamp_seconds,
-                    first_missing_frame=first_missing.frame_index,
-                    first_missing_time=first_missing.timestamp_seconds,
-                    last_missing_frame=last_missing.frame_index,
-                    last_missing_time=last_missing.timestamp_seconds,
-                    first_revisible_frame=(
-                        revisible.frame_index if revisible is not None else None
-                    ),
-                    first_revisible_time=(
-                        revisible.timestamp_seconds
-                        if revisible is not None
-                        else None
-                    ),
+    has_seen_visible = False
+    state: Literal["visible", "missing"] | None = None
+    start: FrameTimestamp | None = None
+    end: FrameTimestamp | None = None
+    minimum_confidence: float | None = None
+
+    def finish() -> None:
+        nonlocal total_runs, gap_count, has_seen_visible
+        if state is None or start is None or end is None:
+            return
+        total_runs += 1
+        if state == "missing" and has_seen_visible:
+            gap_count += 1
+        if state == "visible":
+            has_seen_visible = True
+        if len(retained) < cap:
+            retained.append(
+                VisibilityRun(
+                    state=state,
+                    start_frame=start.frame_index,
+                    start_time=start.timestamp_seconds,
+                    end_frame=end.frame_index,
+                    end_time=end.timestamp_seconds,
                     minimum_confidence=(
-                        min(missing_confidences) if missing_confidences else None
+                        minimum_confidence if state == "missing" else None
                     ),
-                    edge_departure=_edge_departure(last_visible),
                 )
             )
-        if revisible is None:
-            break
-        last_visible = revisible
-        offset = scan + 1
-    return tuple(gaps), gap_count
+
+    for frame in frame_clock:
+        observation = observations.get(frame.frame_index)
+        current_state: Literal["visible", "missing"] = (
+            "visible"
+            if observation is not None and observation.visible
+            else "missing"
+        )
+        if current_state != state:
+            finish()
+            state = current_state
+            start = frame
+            minimum_confidence = None
+        end = frame
+        if current_state == "missing" and observation is not None:
+            minimum_confidence = (
+                observation.confidence
+                if minimum_confidence is None
+                else min(minimum_confidence, observation.confidence)
+            )
+    finish()
+    if total_runs > len(retained) and retained:
+        # A truncated suffix cannot truthfully turn its final missing run into a
+        # permanent disappearance.  Drop that unresolved boundary witness.
+        retained.pop()
+    return tuple(retained), total_runs, gap_count
+
+
+def _gaps_from_visibility_runs(
+    runs: tuple[VisibilityRun, ...],
+    observations: tuple[SummaryObservation, ...],
+    *,
+    lifecycle_complete: bool,
+) -> tuple[VisibilityGap, ...]:
+    observations_by_frame = {
+        observation.frame_index: observation for observation in observations
+    }
+    gaps: list[VisibilityGap] = []
+    for index, run in enumerate(runs):
+        if run.state != "missing" or index == 0:
+            continue
+        previous = runs[index - 1]
+        if previous.state != "visible":
+            continue
+        last_visible = observations_by_frame.get(previous.end_frame)
+        if last_visible is None or not last_visible.visible:
+            continue
+        following = runs[index + 1] if index + 1 < len(runs) else None
+        if following is None and not lifecycle_complete:
+            continue
+        first_revisible = (
+            observations_by_frame.get(following.start_frame)
+            if following is not None and following.state == "visible"
+            else None
+        )
+        if following is not None and (
+            first_revisible is None or not first_revisible.visible
+        ):
+            continue
+        gaps.append(
+            VisibilityGap(
+                last_visible_frame=previous.end_frame,
+                last_visible_time=previous.end_time,
+                first_missing_frame=run.start_frame,
+                first_missing_time=run.start_time,
+                last_missing_frame=run.end_frame,
+                last_missing_time=run.end_time,
+                first_revisible_frame=(
+                    following.start_frame if following is not None else None
+                ),
+                first_revisible_time=(
+                    following.start_time if following is not None else None
+                ),
+                minimum_confidence=run.minimum_confidence,
+                edge_departure=(
+                    last_visible.edge_proximity <= _EDGE_PROXIMITY_THRESHOLD
+                ),
+            )
+        )
+    return tuple(gaps)
 
 
 def _relations(
     tracks: tuple[SummaryTrack, ...], *, cap: int
-) -> tuple[tuple[SpatialRelation, ...], int]:
+) -> tuple[tuple[SpatialRelation, ...], int, bool]:
     by_frame: dict[int, list[tuple[str, SummaryObservation]]] = {}
     for track in tracks:
         if track.status is not EvidenceStatus.AVAILABLE:
@@ -1861,34 +2597,51 @@ def _relations(
         for frame_index, values in by_frame.items()
     }
     total_relations = sum(
-        len(values) * (len(values) - 1) for values in aligned_by_frame.values()
+        len(values) * (len(values) - 1) // 2
+        for values in aligned_by_frame.values()
     )
     if cap == 0:
-        return (), total_relations
+        return (), total_relations, True
+    pair_scans = 0
+    scan_complete = True
     for retain_positive in (True, False):
         for frame_index in sorted(aligned_by_frame):
             aligned = aligned_by_frame[frame_index]
-            for subject_track_id, subject in aligned:
-                for object_track_id, object_observation in aligned:
-                    if subject_track_id == object_track_id:
-                        continue
-                    relation = _spatial_relation(
-                        subject_track_id,
-                        subject,
-                        object_track_id,
-                        object_observation,
+            for subject_index, (subject_track_id, subject) in enumerate(aligned):
+                for object_index in range(subject_index + 1, len(aligned)):
+                    object_track_id, object_observation = aligned[object_index]
+                    pair_scans += 1
+                    if pair_scans > _MAX_RELATION_PAIR_SCANS:
+                        scan_complete = False
+                        return tuple(relations), total_relations, scan_complete
+                    positive = _boxes_overlap(
+                        subject.bbox_xyxy, object_observation.bbox_xyxy
                     )
-                    positive = max(
-                        relation.bbox_iou,
-                        relation.subject_bbox_covered_fraction,
-                        relation.object_bbox_covered_fraction,
-                    ) > 0.0
                     if positive != retain_positive:
                         continue
-                    relations.append(relation)
+                    relations.append(
+                        _spatial_relation(
+                            subject_track_id,
+                            subject,
+                            object_track_id,
+                            object_observation,
+                        )
+                    )
                     if len(relations) == cap:
-                        return tuple(relations), total_relations
-    return tuple(relations), total_relations
+                        return tuple(relations), total_relations, scan_complete
+    return tuple(relations), total_relations, scan_complete
+
+
+def _boxes_overlap(
+    left_box: tuple[float, float, float, float],
+    right_box: tuple[float, float, float, float],
+) -> bool:
+    left, top, right, bottom = left_box
+    other_left, other_top, other_right, other_bottom = right_box
+    return (
+        min(right, other_right) > max(left, other_left)
+        and min(bottom, other_bottom) > max(top, other_top)
+    )
 
 
 def _spatial_relation(
@@ -1950,16 +2703,6 @@ def _unit_float(value: float) -> float:
     if not math.isfinite(value):
         raise ValueError("relation feature must be finite")
     return min(1.0, max(0.0, float(value)))
-
-
-def _overlay_refs(artifact: CvEvidenceArtifact) -> tuple[str, ...]:
-    references: list[str] = []
-    for artifact_file in artifact.files:
-        if not artifact_file.path.startswith("overlays/"):
-            continue
-        _validate_overlay_ref(artifact_file.path)
-        references.append(artifact_file.path)
-    return tuple(sorted(references))
 
 
 def _validate_overlay_ref(value: str) -> str:
@@ -2041,6 +2784,17 @@ def _summary_warnings(
                 omitted=metadata.total_gaps - metadata.kept_gaps,
             )
         )
+    if metadata.total_visibility_runs > metadata.kept_visibility_runs:
+        warnings.append(
+            SummaryWarning(
+                code="VISIBILITY_RUNS_TRUNCATED",
+                kept=metadata.kept_visibility_runs,
+                omitted=(
+                    metadata.total_visibility_runs
+                    - metadata.kept_visibility_runs
+                ),
+            )
+        )
     if metadata.total_relations > metadata.kept_relations:
         warnings.append(
             SummaryWarning(
@@ -2062,6 +2816,13 @@ def _summary_warnings(
             SummaryWarning(
                 code="ARTIFACT_WARNINGS_OMITTED",
                 count=metadata.artifact_warning_count,
+            )
+        )
+    if metadata.uncovered_entity_count:
+        warnings.append(
+            SummaryWarning(
+                code="ENTITIES_WITHOUT_AVAILABLE_TRACKS",
+                count=metadata.uncovered_entity_count,
             )
         )
     if metadata.unavailable_evidence_count:
@@ -2106,6 +2867,9 @@ def _summary_prompt_record(summary: CvEvidenceSummary) -> dict[str, Any]:
                 "status": track.status.value,
                 "source_observation_count": track.source_observation_count,
                 "candidate_search_complete": track.candidate_search_complete,
+                "visibility_lifecycle_complete": (
+                    track.visibility_lifecycle_complete
+                ),
                 "observations": [
                     {
                         "source_ordinal": observation.source_ordinal,
@@ -2119,6 +2883,17 @@ def _summary_prompt_record(summary: CvEvidenceSummary) -> dict[str, Any]:
                         "edge_proximity": observation.edge_proximity,
                     }
                     for observation in track.observations
+                ],
+                "visibility_runs": [
+                    {
+                        "state": run.state,
+                        "start_frame": run.start_frame,
+                        "start_time": run.start_time,
+                        "end_frame": run.end_frame,
+                        "end_time": run.end_time,
+                        "minimum_confidence": run.minimum_confidence,
+                    }
+                    for run in track.visibility_runs
                 ],
                 "missing_intervals": [
                     {
@@ -2160,6 +2935,14 @@ def _summary_prompt_record(summary: CvEvidenceSummary) -> dict[str, Any]:
         ],
         "relations_complete": summary.relations_complete,
         "overlay_refs": list(summary.overlay_refs),
+        "overlays": [
+            {
+                "path": overlay.path,
+                "track_id": overlay.track_id,
+                "frame_index": overlay.frame_index,
+            }
+            for overlay in summary.overlays
+        ],
         "overlays_complete": summary.overlays_complete,
         "warnings": [_warning_prompt_record(item) for item in summary.warnings],
     }
@@ -2183,15 +2966,23 @@ def _warning_prompt_record(warning: SummaryWarning) -> dict[str, Any]:
 
 def _bundle_prompt_record_values(
     summary: CvEvidenceSummary,
+    thresholds: EvidenceThresholds,
     candidates: tuple[OcclusionCandidate, ...],
     *,
+    source_search_complete: bool,
     candidates_complete: bool,
     truncation_codes: tuple[str, ...],
 ) -> dict[str, Any]:
     return {
         "schema_version": "cv_prompt_bundle_v1",
-        "summary": summary.prompt_record(),
-        "candidates": [candidate.prompt_record() for candidate in candidates],
+        "summary": _summary_prompt_record(summary),
+        "thresholds": {
+            "min_confidence": thresholds.min_confidence,
+            "min_area_fraction": thresholds.min_area_fraction,
+            "occlusion_visibility_drop": thresholds.occlusion_visibility_drop,
+        },
+        "candidates": [_candidate_prompt_record(candidate) for candidate in candidates],
+        "source_search_complete": source_search_complete,
         "candidates_complete": candidates_complete,
         "truncation_codes": list(truncation_codes),
     }
@@ -2200,7 +2991,9 @@ def _bundle_prompt_record_values(
 def _bundle_prompt_record(bundle: CvPromptBundle) -> dict[str, Any]:
     return _bundle_prompt_record_values(
         bundle.summary,
+        bundle.thresholds,
         bundle.candidates,
+        source_search_complete=bundle.source_search_complete,
         candidates_complete=bundle.candidates_complete,
         truncation_codes=bundle.truncation_codes,
     )
@@ -2314,7 +3107,8 @@ def _possible_occluders(
     possible: dict[tuple[str, str], set[int]] = {}
     for relation in relations:
         if (
-            relation.subject_track_id != draft.target_track_id
+            draft.target_track_id
+            not in (relation.subject_track_id, relation.object_track_id)
             or relation.frame_index not in frames
             or max(
                 relation.bbox_iou,
@@ -2324,11 +3118,16 @@ def _possible_occluders(
             <= 0.0
         ):
             continue
-        entity_id = track_entities.get(relation.object_track_id)
+        other_track_id = (
+            relation.object_track_id
+            if relation.subject_track_id == draft.target_track_id
+            else relation.subject_track_id
+        )
+        entity_id = track_entities.get(other_track_id)
         entity = entities.get(entity_id) if entity_id is not None else None
-        if entity is not None and relation.object_track_id != draft.target_track_id:
+        if entity is not None and other_track_id != draft.target_track_id:
             possible.setdefault(
-                (entity.entity_id, relation.object_track_id), set()
+                (entity.entity_id, other_track_id), set()
             ).add(relation.frame_index)
     return tuple(
         OccluderProvenance(
@@ -2352,22 +3151,6 @@ def _draft_sort_key(draft: _CandidateDraft) -> tuple[Any, ...]:
         draft.allowed_start_times,
         draft.allowed_end_times,
         draft.target_track_id,
-    )
-
-
-def _candidate_sort_key(candidate: OcclusionCandidate) -> tuple[Any, ...]:
-    return (
-        candidate.target_entity_id,
-        candidate.target_track_id,
-        candidate.last_visible_frame,
-        (
-            candidate.first_revisible_frame
-            if candidate.first_revisible_frame is not None
-            else 2**63 - 1
-        ),
-        candidate.allowed_start_times,
-        candidate.allowed_end_times,
-        candidate.candidate_id,
     )
 
 
@@ -2406,92 +3189,45 @@ def _candidate_hash_prefix(payload: Mapping[str, Any]) -> str:
 
 
 def _candidate_overlay_fields(
-    overlay_refs: tuple[str, ...],
+    overlays: tuple[SummaryOverlay, ...],
     target_track_id: str,
     possible_occluders: tuple[OccluderProvenance, ...],
     evidence_frames: tuple[int, ...],
-    track_entities: Mapping[str, str],
     *,
     overlays_complete: bool,
 ) -> dict[str, Any]:
-    selected: list[str] = []
     involved_track_ids = (
         target_track_id,
         *(item.track_id for item in possible_occluders),
     )
-    involved_entities = {
-        track_entities[track_id] for track_id in involved_track_ids
-    }
     evidence_frame_set = set(evidence_frames)
-    complete = overlays_complete
-    resolved_selected: list[tuple[str, int, str]] = []
-    for reference in overlay_refs:
-        resolved = _resolve_overlay_track(reference, track_entities)
-        if resolved is None:
-            if _overlay_may_describe(
-                reference, involved_entities, evidence_frame_set
-            ):
-                complete = False
-            continue
-        track_id, frame_index = resolved
-        if track_id in involved_track_ids and frame_index in evidence_frame_set:
-            resolved_selected.append((track_id, frame_index, reference))
     track_rank = {
         track_id: ordinal for ordinal, track_id in enumerate(involved_track_ids)
     }
-    selected.extend(
-        reference
-        for track_id, _, reference in sorted(
-            resolved_selected,
-            key=lambda item: (track_rank[item[0]], item[1], item[2]),
+    selected = tuple(
+        overlay.path
+        for overlay in sorted(
+            (
+                item
+                for item in overlays
+                if item.track_id in involved_track_ids
+                and item.frame_index in evidence_frame_set
+            ),
+            key=lambda item: (
+                track_rank[item.track_id],
+                item.frame_index,
+                item.path,
+            ),
         )
     )
     return {
-        "overlay_refs": tuple(selected),
-        "overlay_support_complete": complete,
+        "overlay_refs": selected,
+        "overlay_support_complete": overlays_complete,
     }
-
-
-def _resolve_overlay_track(
-    reference: str, track_entities: Mapping[str, str]
-) -> tuple[str, int] | None:
-    name = reference.rsplit("/", 1)[-1]
-    match = re.fullmatch(r"(.+)-([0-9]{8})\.png", name)
-    if match is None:
-        return None
-    stem, frame_text = match.groups()
-    matches: list[str] = []
-    for track_id, entity_id in track_entities.items():
-        prefix = f"{entity_id}_"
-        if not track_id.startswith(prefix):
-            continue
-        object_id = track_id[len(prefix) :]
-        if object_id.isdigit() and stem == f"{entity_id}-{object_id}":
-            matches.append(track_id)
-    if len(matches) != 1:
-        return None
-    return matches[0], int(frame_text)
-
-
-def _overlay_may_describe(
-    reference: str,
-    entity_ids: set[str],
-    evidence_frames: set[int],
-) -> bool:
-    name = reference.rsplit("/", 1)[-1]
-    match = re.fullmatch(r"(.+)-([0-9]{8})\.png", name)
-    if match is None or int(match.group(2)) not in evidence_frames:
-        return False
-    return any(match.group(1).startswith(f"{entity_id}-") for entity_id in entity_ids)
 
 
 def _ordered_frames(*values: int | None) -> tuple[int, ...]:
     return tuple(sorted({value for value in values if value is not None}))
-
-
-def _edge_departure(observation: TrackObservation) -> bool:
-    left, top, right, bottom = observation.bbox_xyxy
-    return min(left, top, 1.0 - right, 1.0 - bottom) <= _EDGE_PROXIMITY_THRESHOLD
 
 
 __all__ = [
@@ -2503,9 +3239,11 @@ __all__ = [
     "SpatialRelation",
     "SummaryEntity",
     "SummaryObservation",
+    "SummaryOverlay",
     "SummaryTrack",
     "SummaryWarning",
     "VisibilityGap",
+    "VisibilityRun",
     "build_occlusion_candidates",
     "build_cv_prompt_bundle",
     "summarize_cv_evidence",

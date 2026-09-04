@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+import las_repro.cv as cv_public
+import las_repro.cv.contracts as cv_contracts
 from las_repro.cv.contracts import (
     ArtifactFile,
     CvEvidenceArtifact,
@@ -90,9 +92,13 @@ def valid_artifact() -> CvEvidenceArtifact:
         model_identity="fake-sam31-v1",
         video_sha256=SHA256,
         checkpoint_sha256="b" * 64,
+        processed_timeline=FrameTimeline(
+            frames=(FrameTimestamp(frame_index=0, timestamp_seconds=0.0),)
+        ),
         entities=(entity,),
         tracks=(CvTrack(track_id="cup_1", entity_id="cup", observations=(observation,)),),
         files=(ArtifactFile(path="masks/0.npz", sha256="c" * 64, size_bytes=4),),
+        overlay_records=(),
     )
 
 
@@ -187,9 +193,13 @@ def test_artifact_requires_unique_track_ids_and_closed_entity_references():
             model_identity="fake-sam31-v1",
             video_sha256=SHA256,
             checkpoint_sha256="b" * 64,
+            processed_timeline=FrameTimeline(
+                frames=(FrameTimestamp(frame_index=0, timestamp_seconds=0.0),)
+            ),
             entities=(known,),
             tracks=duplicate_tracks,
             files=(ArtifactFile(path="masks/0.npz", sha256="c" * 64, size_bytes=4),),
+            overlay_records=(),
         )
     with pytest.raises(ValidationError):
         CvEvidenceArtifact(
@@ -199,9 +209,13 @@ def test_artifact_requires_unique_track_ids_and_closed_entity_references():
             model_identity="fake-sam31-v1",
             video_sha256=SHA256,
             checkpoint_sha256="b" * 64,
+            processed_timeline=FrameTimeline(
+                frames=(FrameTimestamp(frame_index=0, timestamp_seconds=0.0),)
+            ),
             entities=(known,),
             tracks=(CvTrack(track_id="other_1", entity_id="other", observations=(observation,)),),
             files=(ArtifactFile(path="masks/0.npz", sha256="c" * 64, size_bytes=4),),
+            overlay_records=(),
         )
 
 
@@ -227,6 +241,104 @@ def test_artifact_requires_exact_schema_version():
         CvEvidenceArtifact.model_validate(
             {**valid_artifact().model_dump(), "schema_version": "cv_evidence_v2"}
         )
+
+
+def test_available_artifact_requires_processed_clock_and_closes_observations():
+    """A source timeline cannot stand in for the frames the provider processed."""
+    artifact = valid_artifact()
+    payload = artifact.model_dump(mode="json")
+    payload["processed_timeline"] = {
+        "frames": [{"frame_index": 0, "timestamp_seconds": 0.0}]
+    }
+    payload["overlay_records"] = []
+
+    validated = CvEvidenceArtifact.model_validate(payload)
+    assert validated.processed_timeline == FrameTimeline(
+        frames=(FrameTimestamp(frame_index=0, timestamp_seconds=0.0),)
+    )
+
+    del payload["processed_timeline"]
+    with pytest.raises(ValidationError):
+        CvEvidenceArtifact.model_validate(payload)
+
+    payload["processed_timeline"] = {
+        "frames": [{"frame_index": 0, "timestamp_seconds": 0.125}]
+    }
+    with pytest.raises(ValidationError, match="processed timeline"):
+        CvEvidenceArtifact.model_validate(payload)
+
+
+def test_overlay_record_requires_real_file_track_and_visible_observation():
+    """Filename-shaped files must not manufacture track/frame provenance."""
+    overlay_type = getattr(cv_contracts, "OverlayRecord")
+    artifact = valid_artifact()
+    payload = artifact.model_dump(mode="json")
+    payload["files"].append(
+        {"path": "overlays/opaque.png", "sha256": "d" * 64, "size_bytes": 8}
+    )
+    payload["processed_timeline"] = {
+        "frames": [{"frame_index": 0, "timestamp_seconds": 0.0}]
+    }
+    payload["overlay_records"] = [
+        overlay_type(path="overlays/opaque.png", track_id="cup_1", frame_index=0)
+    ]
+
+    validated = CvEvidenceArtifact.model_validate(payload)
+    assert validated.overlay_records[0].track_id == "cup_1"
+
+    for update in (
+        {"track_id": "missing_1"},
+        {"frame_index": 1},
+        {"path": "overlays/unlisted.png"},
+    ):
+        forged = dict(payload)
+        forged["overlay_records"] = [
+            {**payload["overlay_records"][0].model_dump(mode="json"), **update}
+        ]
+        with pytest.raises(ValidationError):
+            CvEvidenceArtifact.model_validate(forged)
+
+
+def test_overlay_record_is_exported_as_a_public_cv_contract() -> None:
+    """Consumers should not need to import a private implementation module."""
+    assert cv_public.OverlayRecord is cv_contracts.OverlayRecord
+    assert "OverlayRecord" in cv_public.__all__
+
+
+def test_public_contracts_enforce_nested_resource_bounds_directly():
+    """Direct model validation must reject attacker-sized text containers."""
+    with pytest.raises(ValidationError):
+        EntityPrompt(
+            entity_id="cup",
+            canonical_label="cup",
+            aliases=("alias",) * 257,
+            role=EntityRole.OTHER,
+        )
+
+    artifact = valid_artifact().model_dump(mode="json")
+    artifact["processed_timeline"] = {
+        "frames": [{"frame_index": 0, "timestamp_seconds": 0.0}]
+    }
+    artifact["overlay_records"] = []
+    artifact["warnings"] = ["x" * 257]
+    with pytest.raises(ValidationError):
+        CvEvidenceArtifact.model_validate(artifact)
+
+    valid = valid_artifact()
+    observation_block = valid.tracks[0].observations * 10_000
+    oversized_tracks = tuple(
+        CvTrack.model_construct(
+            track_id=f"cup_{ordinal}",
+            entity_id="cup",
+            observations=observation_block,
+            status=EvidenceStatus.AVAILABLE,
+        )
+        for ordinal in range(1, 8)
+    )
+    oversized_payload = valid.model_dump(mode="python")
+    oversized_payload["tracks"] = oversized_tracks
+    with pytest.raises(ValidationError, match="total observations"):
+        CvEvidenceArtifact.model_validate(oversized_payload)
 
 
 @pytest.mark.parametrize("digest", ["A" * 64, "a" * 63, "g" * 64])

@@ -85,6 +85,7 @@ def artifact_for(request: CvEvidenceRequest, payload: bytes) -> CvEvidenceArtifa
         model_identity=request.model_identity,
         video_sha256=request.video_sha256,
         checkpoint_sha256=request.checkpoint_sha256,
+        processed_timeline=request.timeline,
         entities=request.entities,
         tracks=(
             CvTrack(
@@ -111,6 +112,7 @@ def artifact_for(request: CvEvidenceRequest, payload: bytes) -> CvEvidenceArtifa
                 size_bytes=len(payload),
             ),
         ),
+        overlay_records=(),
     )
 
 

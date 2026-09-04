@@ -79,6 +79,8 @@ def test_fake_provider_is_deterministic_and_writes_valid_artifact(
     assert isinstance(first_provider, CvEvidenceProvider)
     assert first.model_dump(mode="json") == second.model_dump(mode="json")
     assert first.status is EvidenceStatus.AVAILABLE
+    assert first.processed_timeline == cv_request.timeline
+    assert first.overlay_records == ()
     assert {track.entity_id for track in first.tracks} == {"right_hand", "cup"}
     assert any(
         previous.visible and not current.visible

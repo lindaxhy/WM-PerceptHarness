@@ -19,6 +19,7 @@ from .contracts import (
     EvidenceThresholds,
     FrameTimeline,
     FrameTimestamp,
+    OverlayRecord,
     SamplingPolicy,
     TrackObservation,
 )
@@ -42,6 +43,7 @@ __all__ = [
     "FrameTimestamp",
     "FakeCvEvidenceProvider",
     "NormalizedEntities",
+    "OverlayRecord",
     "SamplingPolicy",
     "Sam31EvidenceProvider",
     "TrackObservation",

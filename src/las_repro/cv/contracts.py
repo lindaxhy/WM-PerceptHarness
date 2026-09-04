@@ -2,16 +2,49 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
+
+
+_MAX_IDENTIFIER_CHARS = 128
+_MAX_MODEL_IDENTITY_CHARS = 256
+_MAX_ENTITY_LABEL_CHARS = 256
+_MAX_ENTITY_ALIASES = 256
+_MAX_ALIAS_CHARS = 128
+_MAX_TIMELINE_FRAMES = 100_000
+_MAX_PROCESSED_FRAMES = 10_000
+_MAX_ARTIFACT_ENTITIES = 64
+_MAX_ARTIFACT_TRACKS = 256
+_MAX_TRACK_OBSERVATIONS = 10_000
+_MAX_TOTAL_ARTIFACT_OBSERVATIONS = 64_000
+_MAX_ARTIFACT_FILES = 1_024
+_MAX_ARTIFACT_WARNINGS = 64
+_MAX_WARNING_CHARS = 256
+_MAX_ARTIFACT_PATH_CHARS = 512
+_MAX_OVERLAY_RECORDS = 24
 
 
 Sha256 = Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{64}$")]
-ObjectId = Annotated[StrictStr, Field(pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")]
-TrackId = Annotated[StrictStr, Field(pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")]
+ObjectId = Annotated[
+    StrictStr,
+    Field(
+        max_length=_MAX_IDENTIFIER_CHARS,
+        pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$",
+    ),
+]
+TrackId = ObjectId
 Timestamp = Annotated[float, Field(ge=0, allow_inf_nan=False, strict=True)]
 PositiveTimestamp = Annotated[float, Field(gt=0, allow_inf_nan=False, strict=True)]
 Confidence = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False, strict=True)]
@@ -55,8 +88,13 @@ class EvidenceStatus(StrEnum):
 
 class EntityPrompt(StrictModel):
     entity_id: ObjectId
-    canonical_label: StrictStr
-    aliases: tuple[StrictStr, ...]
+    canonical_label: Annotated[
+        StrictStr, Field(max_length=_MAX_ENTITY_LABEL_CHARS)
+    ]
+    aliases: Annotated[
+        tuple[Annotated[StrictStr, Field(max_length=_MAX_ALIAS_CHARS)], ...],
+        Field(max_length=_MAX_ENTITY_ALIASES),
+    ]
     role: EntityRole
 
     @field_validator("role", mode="before")
@@ -78,7 +116,9 @@ class FrameTimestamp(StrictModel):
 
 
 class FrameTimeline(StrictModel):
-    frames: tuple[FrameTimestamp, ...]
+    frames: Annotated[
+        tuple[FrameTimestamp, ...], Field(max_length=_MAX_TIMELINE_FRAMES)
+    ]
 
     @model_validator(mode="after")
     def require_strictly_increasing_frames(self) -> FrameTimeline:
@@ -114,14 +154,18 @@ class EvidenceThresholds(StrictModel):
 class CvEvidenceRequest(StrictModel):
     schema_version: Literal["cv_request_v1"]
     provider: Literal["fake", "sam31"]
-    model_identity: StrictStr
+    model_identity: Annotated[
+        StrictStr, Field(max_length=_MAX_MODEL_IDENTITY_CHARS)
+    ]
     video_path: Path
     video_sha256: Sha256
     duration_seconds: PositiveTimestamp
     frame_count: PositiveInt
     checkpoint_sha256: Sha256
     timeline: FrameTimeline
-    entities: tuple[EntityPrompt, ...]
+    entities: Annotated[
+        tuple[EntityPrompt, ...], Field(max_length=_MAX_ARTIFACT_ENTITIES)
+    ]
     sampling: SamplingPolicy
     thresholds: EvidenceThresholds
 
@@ -151,7 +195,12 @@ class CvEvidenceRequest(StrictModel):
 
 
 def _validate_relative_posix_path(value: str) -> str:
-    if not value or "\\" in value or value.startswith("/"):
+    if (
+        not value
+        or len(value) > _MAX_ARTIFACT_PATH_CHARS
+        or "\\" in value
+        or value.startswith("/")
+    ):
         raise ValueError("artifact path must be a relative POSIX path")
     parts = value.split("/")
     if any(part in {"", ".", ".."} for part in parts):
@@ -185,7 +234,9 @@ class TrackObservation(StrictModel):
 class CvTrack(StrictModel):
     track_id: TrackId
     entity_id: ObjectId
-    observations: tuple[TrackObservation, ...]
+    observations: Annotated[
+        tuple[TrackObservation, ...], Field(max_length=_MAX_TRACK_OBSERVATIONS)
+    ]
     status: EvidenceStatus = EvidenceStatus.AVAILABLE
 
     @field_validator("status", mode="before")
@@ -204,7 +255,7 @@ class CvTrack(StrictModel):
 
 
 class ArtifactFile(StrictModel):
-    path: StrictStr
+    path: Annotated[StrictStr, Field(max_length=_MAX_ARTIFACT_PATH_CHARS)]
     sha256: Sha256
     size_bytes: NonnegativeInt
 
@@ -214,17 +265,111 @@ class ArtifactFile(StrictModel):
         return _validate_relative_posix_path(value)
 
 
+class OverlayRecord(StrictModel):
+    """Structured provenance for one prompt-safe rendered overlay."""
+
+    path: Annotated[StrictStr, Field(max_length=_MAX_ARTIFACT_PATH_CHARS)]
+    track_id: TrackId
+    frame_index: NonnegativeInt
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        value = _validate_relative_posix_path(value)
+        if not value.startswith("overlays/") or not value.endswith(".png"):
+            raise ValueError("overlay path must be an overlays/*.png artifact")
+        return value
+
+
 class CvEvidenceArtifact(StrictModel):
     schema_version: Literal["cv_evidence_v1"]
     status: EvidenceStatus
     provider: Literal["fake", "sam31"]
-    model_identity: StrictStr
+    model_identity: Annotated[
+        StrictStr, Field(max_length=_MAX_MODEL_IDENTITY_CHARS)
+    ]
     video_sha256: Sha256
     checkpoint_sha256: Sha256
-    entities: tuple[EntityPrompt, ...]
-    tracks: tuple[CvTrack, ...]
-    files: tuple[ArtifactFile, ...]
-    warnings: tuple[StrictStr, ...] = ()
+    processed_timeline: FrameTimeline | None
+    entities: Annotated[
+        tuple[EntityPrompt, ...], Field(max_length=_MAX_ARTIFACT_ENTITIES)
+    ]
+    tracks: Annotated[
+        tuple[CvTrack, ...], Field(max_length=_MAX_ARTIFACT_TRACKS)
+    ]
+    files: Annotated[
+        tuple[ArtifactFile, ...], Field(max_length=_MAX_ARTIFACT_FILES)
+    ]
+    overlay_records: Annotated[
+        tuple[OverlayRecord, ...], Field(max_length=_MAX_OVERLAY_RECORDS)
+    ]
+    warnings: Annotated[
+        tuple[Annotated[StrictStr, Field(max_length=_MAX_WARNING_CHARS)], ...],
+        Field(max_length=_MAX_ARTIFACT_WARNINGS),
+    ] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def enforce_raw_structural_bounds(cls, value: Any) -> Any:
+        """Reject oversized nested containers before validating their items."""
+        if not isinstance(value, Mapping):
+            return value
+
+        def bounded_sequence(name: str, maximum: int) -> tuple[Any, ...] | list[Any]:
+            sequence = value.get(name, ())
+            if isinstance(sequence, (tuple, list)) and len(sequence) > maximum:
+                raise ValueError(f"artifact {name} exceeds its structural bound")
+            return sequence if isinstance(sequence, (tuple, list)) else []
+
+        entities = bounded_sequence("entities", _MAX_ARTIFACT_ENTITIES)
+        for entity in entities:
+            aliases = (
+                entity.aliases
+                if isinstance(entity, EntityPrompt)
+                else entity.get("aliases", ())
+                if isinstance(entity, Mapping)
+                else ()
+            )
+            if isinstance(aliases, (tuple, list)) and (
+                len(aliases) > _MAX_ENTITY_ALIASES
+            ):
+                raise ValueError("artifact entity aliases exceed their structural bound")
+
+        tracks = bounded_sequence("tracks", _MAX_ARTIFACT_TRACKS)
+        total_observations = 0
+        for track in tracks:
+            observations = (
+                track.observations
+                if isinstance(track, CvTrack)
+                else track.get("observations", ())
+                if isinstance(track, Mapping)
+                else ()
+            )
+            if isinstance(observations, (tuple, list)):
+                if len(observations) > _MAX_TRACK_OBSERVATIONS:
+                    raise ValueError(
+                        "artifact track observations exceed their structural bound"
+                    )
+                total_observations += len(observations)
+                if total_observations > _MAX_TOTAL_ARTIFACT_OBSERVATIONS:
+                    raise ValueError("artifact has too many total observations")
+
+        bounded_sequence("files", _MAX_ARTIFACT_FILES)
+        bounded_sequence("overlay_records", _MAX_OVERLAY_RECORDS)
+        bounded_sequence("warnings", _MAX_ARTIFACT_WARNINGS)
+        processed_timeline = value.get("processed_timeline")
+        processed_frames = (
+            processed_timeline.frames
+            if isinstance(processed_timeline, FrameTimeline)
+            else processed_timeline.get("frames", ())
+            if isinstance(processed_timeline, Mapping)
+            else ()
+        )
+        if isinstance(processed_frames, (tuple, list)) and (
+            len(processed_frames) > _MAX_PROCESSED_FRAMES
+        ):
+            raise ValueError("processed timeline exceeds its artifact bound")
+        return value
 
     @field_validator("status", mode="before")
     @classmethod
@@ -240,6 +385,23 @@ class CvEvidenceArtifact(StrictModel):
 
     @model_validator(mode="after")
     def require_closed_references(self) -> CvEvidenceArtifact:
+        if self.status is EvidenceStatus.AVAILABLE and self.processed_timeline is None:
+            raise ValueError("available artifact requires a processed timeline")
+        if self.processed_timeline is not None and (
+            len(self.processed_timeline.frames) > _MAX_PROCESSED_FRAMES
+        ):
+            raise ValueError("processed timeline exceeds its artifact bound")
+        if self.status is EvidenceStatus.DISABLED and (
+            self.processed_timeline is not None
+            or self.tracks
+            or self.files
+            or self.overlay_records
+        ):
+            raise ValueError("disabled artifact cannot contain processed evidence")
+        if self.processed_timeline is None and any(
+            track.observations for track in self.tracks
+        ):
+            raise ValueError("observations require a processed timeline")
         entity_ids = [entity.entity_id for entity in self.entities]
         if len(entity_ids) != len(set(entity_ids)):
             raise ValueError("artifact entity IDs must be unique")
@@ -251,10 +413,49 @@ class CvEvidenceArtifact(StrictModel):
             raise ValueError("artifact file paths must be unique")
         known_entities = set(entity_ids)
         known_files = set(file_paths)
+        processed_clock = (
+            {
+                frame.frame_index: frame.timestamp_seconds
+                for frame in self.processed_timeline.frames
+            }
+            if self.processed_timeline is not None
+            else {}
+        )
+        total_observations = 0
         for track in self.tracks:
             if track.entity_id not in known_entities:
                 raise ValueError("track entity_id must reference an artifact entity")
+            total_observations += len(track.observations)
+            if total_observations > _MAX_TOTAL_ARTIFACT_OBSERVATIONS:
+                raise ValueError("artifact has too many total observations")
             for observation in track.observations:
+                if processed_clock.get(observation.frame_index) != (
+                    observation.timestamp_seconds
+                ):
+                    raise ValueError(
+                        "observation must close to the processed timeline"
+                    )
                 if observation.mask_ref is not None and observation.mask_ref not in known_files:
                     raise ValueError("mask_ref must reference an artifact file")
+        tracks_by_id = {track.track_id: track for track in self.tracks}
+        overlay_paths = [record.path for record in self.overlay_records]
+        if len(overlay_paths) != len(set(overlay_paths)):
+            raise ValueError("overlay record paths must be unique")
+        declared_overlay_paths = {
+            artifact_file.path
+            for artifact_file in self.files
+            if artifact_file.path.startswith("overlays/")
+        }
+        if set(overlay_paths) != declared_overlay_paths:
+            raise ValueError("overlay records must exactly cover overlay files")
+        for record in self.overlay_records:
+            track = tracks_by_id.get(record.track_id)
+            if track is None:
+                raise ValueError("overlay track_id must reference an artifact track")
+            if not any(
+                observation.frame_index == record.frame_index
+                and observation.visible
+                for observation in track.observations
+            ):
+                raise ValueError("overlay frame must reference a visible observation")
         return self

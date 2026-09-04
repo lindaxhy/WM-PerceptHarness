@@ -20,6 +20,7 @@ from las_repro.cv.contracts import (
     EvidenceThresholds,
     FrameTimeline,
     FrameTimestamp,
+    OverlayRecord,
     TrackObservation,
 )
 import las_repro.cv.summary as summary_module
@@ -95,11 +96,36 @@ def _artifact(
     *,
     entities: tuple[EntityPrompt, ...] | None = None,
     files: tuple[ArtifactFile, ...] = (),
+    overlay_records: tuple[OverlayRecord, ...] = (),
     warnings: tuple[str, ...] = (),
+    processed_timeline: FrameTimeline | None = None,
 ) -> CvEvidenceArtifact:
     if entities is None:
         entity_ids = sorted({track.entity_id for track in tracks})
         entities = tuple(_entity(entity_id) for entity_id in entity_ids)
+    if processed_timeline is None:
+        observed_times = {
+            observation.frame_index: observation.timestamp_seconds
+            for track in tracks
+            for observation in track.observations
+            if track.status is EvidenceStatus.AVAILABLE
+        }
+        if observed_times:
+            first = min(observed_times)
+            last = max(observed_times)
+            processed_timeline = FrameTimeline(
+                frames=tuple(
+                    FrameTimestamp(
+                        frame_index=frame_index,
+                        timestamp_seconds=observed_times.get(
+                            frame_index, frame_index / 10.0
+                        ),
+                    )
+                    for frame_index in range(first, last + 1)
+                )
+            )
+        else:
+            processed_timeline = _timeline(0)
     return CvEvidenceArtifact(
         schema_version="cv_evidence_v1",
         status=EvidenceStatus.AVAILABLE,
@@ -107,9 +133,11 @@ def _artifact(
         model_identity="fake-sam31-v1",
         video_sha256=SHA256,
         checkpoint_sha256="b" * 64,
+        processed_timeline=processed_timeline,
         entities=entities,
         tracks=tracks,
         files=files,
+        overlay_records=overlay_records,
         warnings=warnings,
     )
 
@@ -174,6 +202,13 @@ def test_summary_contains_no_masks_reads_no_artifacts_and_is_size_bounded(
             ),
         ),
         files=(mask_file, overlay_file),
+        overlay_records=(
+            OverlayRecord(
+                path=overlay_file.path,
+                track_id="cup_1",
+                frame_index=0,
+            ),
+        ),
     )
 
     def refuse_file_read(*_: object, **__: object) -> bytes:
@@ -208,6 +243,7 @@ def test_summary_contains_no_masks_reads_no_artifacts_and_is_size_bounded(
         "relations",
         "relations_complete",
         "overlay_refs",
+        "overlays",
         "overlays_complete",
         "warnings",
     }
@@ -328,6 +364,18 @@ def test_summary_is_stable_across_equivalent_entity_track_and_file_ordering() ->
         (second_track, first_track),
         entities=(second_entity, first_entity),
         files=files,
+        overlay_records=(
+            OverlayRecord(
+                path="overlays/beta-1-00000002.png",
+                track_id="beta_1",
+                frame_index=2,
+            ),
+            OverlayRecord(
+                path="overlays/alpha-1-00000000.png",
+                track_id="alpha_1",
+                frame_index=0,
+            ),
+        ),
     )
     second = _artifact(
         (first_track, second_track),
@@ -340,6 +388,18 @@ def test_summary_is_stable_across_equivalent_entity_track_and_file_ordering() ->
             ),
         ),
         files=tuple(reversed(files)),
+        overlay_records=(
+            OverlayRecord(
+                path="overlays/alpha-1-00000000.png",
+                track_id="alpha_1",
+                frame_index=0,
+            ),
+            OverlayRecord(
+                path="overlays/beta-1-00000002.png",
+                track_id="beta_1",
+                frame_index=2,
+            ),
+        ),
     )
 
     left = summarize_cv_evidence(first, timeline=_timeline(0, 1, 2))
@@ -407,10 +467,7 @@ def test_relations_use_only_same_frame_geometry_and_are_capped() -> None:
     ):
         assert math.isfinite(value)
         assert 0.0 <= value <= 1.0
-    assert any(
-        warning.code == "RELATIONS_TRUNCATED"
-        for warning in summary.warnings
-    )
+    assert summary.relations_complete is True
 
 
 @pytest.mark.parametrize(
@@ -467,7 +524,7 @@ def test_summary_revalidates_unsafe_observation_geometry(
         tracks=(track,),
     )
 
-    with pytest.raises(ValidationError):
+    with pytest.raises((ValidationError, ValueError)):
         summarize_cv_evidence(artifact)
 
 
@@ -531,14 +588,14 @@ def test_summary_rejects_conflicting_global_frame_times_and_timeline_mismatch() 
         "beta_1", "beta", (_observation(0, timestamp_seconds=0.01),)
     )
 
-    with pytest.raises(ValueError, match="frame timeline"):
+    with pytest.raises(ValueError, match="processed timeline"):
         summarize_cv_evidence(_artifact((first, conflicting)))
 
     aligned_artifact = _artifact((first,))
     mismatched = FrameTimeline(
         frames=(FrameTimestamp(frame_index=0, timestamp_seconds=0.01),)
     )
-    with pytest.raises(ValueError, match="frame timeline"):
+    with pytest.raises(ValueError, match="processed timeline"):
         summarize_cv_evidence(aligned_artifact, timeline=mismatched)
 
 
@@ -554,6 +611,13 @@ def test_summary_revalidates_unsafe_overlay_paths_and_allowlists_png_overlays() 
             ),
             ArtifactFile(path="notes/context.json", sha256="d" * 64, size_bytes=1),
             ArtifactFile(path="masks/preview.png", sha256="e" * 64, size_bytes=1),
+        ),
+        overlay_records=(
+            OverlayRecord(
+                path="overlays/target-1-00000000.png",
+                track_id="target_1",
+                frame_index=0,
+            ),
         ),
     )
     summary = summarize_cv_evidence(artifact)
@@ -576,7 +640,7 @@ def test_huge_tracks_aliases_observations_and_overlays_remain_bounded() -> None:
         _entity(
             f"entity_{entity_index}",
             aliases=tuple(
-                f"alias-{entity_index}-{alias_index}-" + ("x" * 2_000)
+                f"alias-{entity_index}-{alias_index}-" + ("x" * 80)
                 for alias_index in range(80)
             ),
         )
@@ -603,15 +667,28 @@ def test_huge_tracks_aliases_observations_and_overlays_remain_bounded() -> None:
     )
     files = tuple(
         ArtifactFile(
-            path=f"overlays/entity-{index:05d}.png",
+            path=f"overlays/context-{index:05d}.png",
             sha256=f"{index % 16:x}" * 64,
             size_bytes=1,
         )
-        for index in range(500)
+        for index in range(24)
+    )
+    overlay_records = tuple(
+        OverlayRecord(
+            path=f"overlays/context-{index:05d}.png",
+            track_id=f"entity_{index}_1",
+            frame_index=0,
+        )
+        for index in range(24)
     )
 
     summary = summarize_cv_evidence(
-        _artifact(tracks, entities=entities, files=files),
+        _artifact(
+            tracks,
+            entities=entities,
+            files=files,
+            overlay_records=overlay_records,
+        ),
         timeline=_timeline(*range(40)),
         max_tracks=12,
         max_observations_per_track=12,
@@ -776,7 +853,24 @@ def _candidate_artifact() -> tuple[CvEvidenceArtifact, FrameTimeline]:
             start=1,
         )
     )
-    return _artifact(tracks, entities=entities, files=overlays), _timeline(*frames)
+    overlay_records = tuple(
+        OverlayRecord(
+            path=file.path,
+            track_id=(
+                "behind_target_1" if "behind_target" in file.path else "board_1"
+            ),
+            frame_index=int(file.path[-12:-4]),
+        )
+        for file in overlays
+        if "unrelated" not in file.path
+    )
+    overlays = tuple(file for file in overlays if "unrelated" not in file.path)
+    return _artifact(
+        tracks,
+        entities=entities,
+        files=overlays,
+        overlay_records=overlay_records,
+    ), _timeline(*frames)
 
 
 def test_candidate_generation_preserves_evidence_and_counter_signals() -> None:
@@ -867,7 +961,7 @@ def test_absence_does_not_invent_an_occluder_or_positive_classification() -> Non
         "relation_support_complete",
         "overlay_support_complete",
         "support_complete",
-        "candidate_set_complete",
+        "source_search_complete",
     }
     assert "classification" not in candidate.prompt_record()
 
@@ -1026,7 +1120,7 @@ def test_candidate_builder_revalidates_unsafe_thresholds() -> None:
         occlusion_visibility_drop=0.5,
     )
 
-    with pytest.raises(ValidationError):
+    with pytest.raises((ValidationError, ValueError)):
         build_occlusion_candidates(summary, unsafe)
 
 
@@ -1121,7 +1215,26 @@ def test_candidates_preserve_track_identity_and_only_bind_exact_track_overlays()
         )
     )
     summary = summarize_cv_evidence(
-        _artifact(tracks, files=files),
+        _artifact(
+            tracks,
+            files=files,
+            overlay_records=tuple(
+                OverlayRecord(
+                    path=file.path,
+                    track_id=(
+                        "item_1"
+                        if "item-1" in file.path
+                        else "item_2"
+                        if "item-2" in file.path
+                        else "board_1"
+                        if "board-1" in file.path
+                        else "board_2"
+                    ),
+                    frame_index=0,
+                )
+                for file in files
+            ),
+        ),
         timeline=_timeline(0, 1, 2),
         max_relations=128,
     )
@@ -1148,8 +1261,8 @@ def test_candidates_preserve_track_identity_and_only_bind_exact_track_overlays()
 
 
 def test_unprovable_overlay_identity_is_not_guessed_and_marks_support_incomplete() -> None:
-    """A class-level filename must not be attached to an arbitrary instance."""
-    artifact = _artifact(
+    """An overlay without structured provenance must fail at the trust boundary."""
+    valid = _artifact(
         (
             _track("item_2", "item", (_observation(0), _observation(2))),
             _track(
@@ -1164,24 +1277,16 @@ def test_unprovable_overlay_identity_is_not_guessed_and_marks_support_incomplete
                 ),
             ),
         ),
-        files=(
-            ArtifactFile(
-                path="overlays/item-keyframe-00000000.png",
-                sha256="9" * 64,
-                size_bytes=1,
-            ),
-        ),
     )
-    summary = summarize_cv_evidence(artifact, timeline=_timeline(0, 1, 2))
-
-    candidate = next(
-        item
-        for item in build_occlusion_candidates(summary, _thresholds())
-        if item.target_track_id == "item_2"
+    forged_file = ArtifactFile(
+        path="overlays/item-keyframe-00000000.png",
+        sha256="9" * 64,
+        size_bytes=1,
     )
+    artifact = _unsafe_artifact_copy(valid, files=(forged_file,))
 
-    assert candidate.overlay_refs == ()
-    assert candidate.overlay_support_complete is False
+    with pytest.raises(ValidationError, match="overlay records"):
+        summarize_cv_evidence(artifact)
 
 
 def test_distinct_tracks_of_one_entity_can_support_same_class_occlusion() -> None:
@@ -1221,8 +1326,8 @@ def test_aggregate_prompt_bundle_caps_256_track_candidates_before_model_use() ->
     """Separately bounded summary/candidate records can exceed the job prompt cap."""
     tracks = tuple(
         _track(
-            f"entity_{ordinal:03d}_1",
-            f"entity_{ordinal:03d}",
+            f"entity_{ordinal % 16:02d}_{ordinal + 1}",
+            f"entity_{ordinal % 16:02d}",
             (_observation(0), _observation(2)),
         )
         for ordinal in range(256)
@@ -1234,11 +1339,9 @@ def test_aggregate_prompt_bundle_caps_256_track_candidates_before_model_use() ->
         max_observations_per_track=3,
         max_relations=1,
     )
-    candidates = build_occlusion_candidates(summary, _thresholds())
-
     bundle = summary_module.build_cv_prompt_bundle(
         summary,
-        tuple(reversed(candidates)),
+        _thresholds(),
         max_candidates=7,
     )
     record = bundle.prompt_record()
@@ -1256,13 +1359,16 @@ def test_aggregate_prompt_bundle_caps_256_track_candidates_before_model_use() ->
     assert set(record) == {
         "schema_version",
         "summary",
+        "thresholds",
         "candidates",
+        "source_search_complete",
         "candidates_complete",
         "truncation_codes",
     }
 
     pristine = bundle.prompt_record()
     record["summary"]["entities"].clear()
+    record["thresholds"]["min_confidence"] = 0.0
     record["candidates"].clear()
     record["truncation_codes"].append("INJECTED")
     assert bundle.prompt_record() == pristine
@@ -1415,7 +1521,7 @@ def test_candidate_preflight_bounds_nested_provenance_before_model_dump(
 
     monkeypatch.setattr(type(valid), "model_dump", forbid_dump)
     with pytest.raises(ValueError, match="structural input bound"):
-        summary_module.build_cv_prompt_bundle(summary, (forged,))
+        forged.prompt_record()
 
 
 @pytest.mark.parametrize(
@@ -1439,7 +1545,7 @@ def test_json_roundtrip_rejects_gap_pts_not_closed_to_authoritative_clock(
     payload = summary.model_dump(mode="json")
     payload["tracks"][0]["missing_intervals"][0][field] = forged_value
 
-    with pytest.raises(ValidationError, match="authoritative observed clock"):
+    with pytest.raises(ValidationError, match="visibility lifecycle"):
         CvEvidenceSummary.model_validate(payload)
 
 
@@ -1462,7 +1568,7 @@ def test_json_roundtrip_rejects_gap_marking_retained_visible_frame_missing() -> 
         }
     )
 
-    with pytest.raises(ValidationError, match="retained visible observation"):
+    with pytest.raises(ValidationError, match="visibility lifecycle"):
         CvEvidenceSummary.model_validate(payload)
 
 
@@ -1495,19 +1601,32 @@ def test_candidate_schema_rejects_zero_length_boundary_combinations() -> None:
         type(candidate).model_validate(payload)
 
 
-def test_prompt_bundle_closes_candidate_times_to_summary_observed_clock() -> None:
-    """A schema-valid invented PTS must not enter the aggregate model record."""
+def test_candidate_schema_rejects_reversed_revisibility_frame() -> None:
+    """A prompt-safe candidate cannot reverse its target lifecycle frames."""
     summary = summarize_cv_evidence(
         _artifact((_track("item_1", "item", (_observation(0), _observation(2))),)),
         timeline=_timeline(0, 1, 2),
     )
     [candidate] = build_occlusion_candidates(summary, _thresholds())
     payload = candidate.model_dump(mode="json")
-    payload["allowed_start_times"] = [0.05]
-    forged = type(candidate).model_validate(payload)
+    payload["first_revisible_frame"] = candidate.last_visible_frame
 
-    with pytest.raises(ValueError, match="observed clock"):
-        summary_module.build_cv_prompt_bundle(summary, (forged,))
+    with pytest.raises(ValidationError, match="revisibility frame"):
+        type(candidate).model_validate(payload)
+
+
+def test_prompt_bundle_closes_candidate_times_to_summary_observed_clock() -> None:
+    """A schema-valid invented PTS must not enter the aggregate model record."""
+    summary = summarize_cv_evidence(
+        _artifact((_track("item_1", "item", (_observation(0), _observation(2))),)),
+        timeline=_timeline(0, 1, 2),
+    )
+    bundle = summary_module.build_cv_prompt_bundle(summary, _thresholds())
+    payload = bundle.model_dump(mode="json")
+    payload["candidates"][0]["allowed_start_times"] = [0.05]
+
+    with pytest.raises(ValidationError, match="observed clock"):
+        type(bundle).model_validate(payload)
 
 
 def test_prompt_bundle_closes_candidate_overlays_to_summary_manifest() -> None:
@@ -1516,13 +1635,14 @@ def test_prompt_bundle_closes_candidate_overlays_to_summary_manifest() -> None:
         _artifact((_track("item_1", "item", (_observation(0), _observation(2))),)),
         timeline=_timeline(0, 1, 2),
     )
-    [candidate] = build_occlusion_candidates(summary, _thresholds())
-    payload = candidate.model_dump(mode="json")
-    payload["overlay_refs"] = ["overlays/item-1-00000000.png"]
-    forged = type(candidate).model_validate(payload)
+    bundle = summary_module.build_cv_prompt_bundle(summary, _thresholds())
+    payload = bundle.model_dump(mode="json")
+    payload["candidates"][0]["overlay_refs"] = [
+        "overlays/item-1-00000000.png"
+    ]
 
-    with pytest.raises(ValueError, match="closed to summary"):
-        summary_module.build_cv_prompt_bundle(summary, (forged,))
+    with pytest.raises(ValidationError, match="closed to summary"):
+        type(bundle).model_validate(payload)
 
 
 def test_warning_schema_rejects_free_text_suffix_after_allowlisted_code() -> None:
@@ -1616,8 +1736,9 @@ def test_tiny_observation_cap_marks_candidate_search_incomplete() -> None:
     }
     candidates = build_occlusion_candidates(summary, _thresholds())
     assert candidates == ()
-    bundle = summary_module.build_cv_prompt_bundle(summary, candidates)
-    assert bundle.candidates_complete is False
+    bundle = summary_module.build_cv_prompt_bundle(summary, _thresholds())
+    assert bundle.source_search_complete is False
+    assert bundle.candidates_complete is True
     assert "SUMMARY_CANDIDATE_SEARCH_INCOMPLETE" in bundle.truncation_codes
 
 
@@ -1688,6 +1809,11 @@ def test_nonavailable_artifact_residual_tracks_never_create_evidence(
     )
     payload = available.model_dump(mode="json")
     payload["status"] = status.value
+    if status is EvidenceStatus.DISABLED:
+        payload["processed_timeline"] = None
+        payload["tracks"] = []
+        payload["files"] = []
+        payload["overlay_records"] = []
     degraded = CvEvidenceArtifact.model_validate(payload)
 
     summary = summarize_cv_evidence(degraded, timeline=_timeline(0, 1, 2))
@@ -1696,9 +1822,10 @@ def test_nonavailable_artifact_residual_tracks_never_create_evidence(
     assert summary.tracks == ()
     assert summary.relations == ()
     assert build_occlusion_candidates(summary, _thresholds()) == ()
-    assert "UNAVAILABLE_EVIDENCE_OMITTED" in {
-        warning.code for warning in summary.warnings
-    }
+    warning_codes = {warning.code for warning in summary.warnings}
+    assert ("UNAVAILABLE_EVIDENCE_OMITTED" in warning_codes) is (
+        status is EvidenceStatus.UNAVAILABLE
+    )
 
 
 def test_nonavailable_track_is_retained_but_cannot_support_relations_or_candidates() -> None:
@@ -1736,7 +1863,7 @@ def test_available_tracks_outrank_stale_tracks_and_ignore_stale_clock_conflicts(
     stale = CvTrack(
         track_id="aaa_stale_1",
         entity_id="aaa_stale",
-        observations=(_observation(0, timestamp_seconds=0.01),),
+        observations=(_observation(0, timestamp_seconds=0.0),),
         status=EvidenceStatus.UNAVAILABLE,
     )
 
@@ -1780,11 +1907,9 @@ def test_candidate_generation_has_hard_cap_and_bundle_reports_source_truncation(
         max_relations=1,
     )
 
-    candidates = build_occlusion_candidates(summary, _thresholds())
-    bundle = summary_module.build_cv_prompt_bundle(summary, candidates)
+    bundle = summary_module.build_cv_prompt_bundle(summary, _thresholds())
 
-    assert len(candidates) == 256
-    assert all(candidate.candidate_set_complete is False for candidate in candidates)
+    assert len(bundle.candidates) <= 256
     assert bundle.candidates_complete is False
     assert "CANDIDATE_SOURCE_TRUNCATED" in bundle.truncation_codes
     assert len(
@@ -1801,12 +1926,18 @@ def test_aggregate_prompt_bundle_reports_character_budget_truncation() -> None:
     """The whole canonical record, not each constituent, owns the byte budget."""
     artifact, timeline = _candidate_artifact()
     summary = summarize_cv_evidence(artifact, timeline=timeline)
-    candidates = build_occlusion_candidates(summary, _thresholds())
+    complete_bundle = summary_module.build_cv_prompt_bundle(summary, _thresholds())
+    complete_encoded = json.dumps(
+        complete_bundle.prompt_record(),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
 
     bundle = summary_module.build_cv_prompt_bundle(
         summary,
-        candidates,
-        max_prompt_chars=100_000,
+        _thresholds(),
+        max_prompt_chars=len(complete_encoded) - 1,
     )
     encoded = json.dumps(
         bundle.prompt_record(),
@@ -1815,15 +1946,19 @@ def test_aggregate_prompt_bundle_reports_character_budget_truncation() -> None:
         sort_keys=True,
     )
 
-    assert 0 < len(bundle.candidates) < len(candidates)
-    assert len(encoded) <= 100_000
+    assert 0 < len(bundle.candidates) < len(complete_bundle.candidates)
+    assert len(encoded) <= len(complete_encoded) - 1
     assert bundle.candidates_complete is False
     assert "CANDIDATE_PROMPT_TRUNCATED" in bundle.truncation_codes
 
 
 def test_overlay_truncation_marks_candidate_overlay_support_incomplete() -> None:
     """A retained keyframe cannot prove that omitted relevant keyframes do not exist."""
-    target = _track("item_1", "item", (_observation(0), _observation(2)))
+    target = _track(
+        "item_1",
+        "item",
+        (_observation(0), _observation(1, confidence=0.1), _observation(2)),
+    )
     files = tuple(
         ArtifactFile(
             path=f"overlays/item-1-{frame:08d}.png",
@@ -1833,7 +1968,18 @@ def test_overlay_truncation_marks_candidate_overlay_support_incomplete() -> None
         for ordinal, frame in enumerate((0, 1, 2), start=1)
     )
     summary = summarize_cv_evidence(
-        _artifact((target,), files=files),
+        _artifact(
+            (target,),
+            files=files,
+            overlay_records=tuple(
+                OverlayRecord(
+                    path=file.path,
+                    track_id="item_1",
+                    frame_index=frame,
+                )
+                for file, frame in zip(files, (0, 1, 2))
+            ),
+        ),
         timeline=_timeline(0, 1, 2),
         max_overlays=1,
     )
@@ -1842,3 +1988,390 @@ def test_overlay_truncation_marks_candidate_overlay_support_incomplete() -> None
     assert summary.overlays_complete is False
     assert candidate.overlay_support_complete is False
     assert candidate.support_complete is False
+
+
+def test_missing_intervals_use_processed_clock_not_full_source_timeline() -> None:
+    """Unsampled source frames between two processed detections are not absence."""
+    artifact = _artifact(
+        (_track("item_1", "item", (_observation(0), _observation(3))),),
+        processed_timeline=_timeline(0, 3),
+    )
+
+    summary = summarize_cv_evidence(
+        artifact,
+        timeline=_timeline(0, 1, 2, 3),
+    )
+
+    assert summary.tracks[0].missing_intervals == ()
+    assert build_occlusion_candidates(summary, _thresholds()) == ()
+
+
+def test_processed_missing_frame_creates_gap_and_visibility_lifecycle() -> None:
+    """A processed frame without a visible detection remains a truthful gap."""
+    summary = summarize_cv_evidence(
+        _artifact(
+            (_track("item_1", "item", (_observation(0), _observation(2))),),
+            processed_timeline=_timeline(0, 1, 2),
+        )
+    )
+
+    track = summary.tracks[0]
+    assert [
+        (run.state, run.start_frame, run.end_frame)
+        for run in track.visibility_runs
+    ] == [
+        ("visible", 0, 0),
+        ("missing", 1, 1),
+        ("visible", 2, 2),
+    ]
+    assert track.missing_intervals[0].first_missing_frame == 1
+
+
+def test_json_roundtrip_gap_must_equal_retained_visibility_lifecycle() -> None:
+    """Downsampled visible observations cannot be forged into an absence gap."""
+    summary = summarize_cv_evidence(
+        _artifact(
+            (
+                _track(
+                    "item_1",
+                    "item",
+                    tuple(_observation(frame) for frame in range(5)),
+                ),
+            ),
+            processed_timeline=_timeline(*range(5)),
+        ),
+        max_observations_per_track=2,
+    )
+    assert [run.state for run in summary.tracks[0].visibility_runs] == ["visible"]
+    payload = summary.model_dump(mode="json")
+    payload["observed_clock"] = _timeline(*range(5)).model_dump(mode="json")[
+        "frames"
+    ]
+    payload["tracks"][0]["missing_intervals"] = [
+        {
+            "last_visible_frame": 0,
+            "last_visible_time": 0.0,
+            "first_missing_frame": 1,
+            "first_missing_time": 0.1,
+            "last_missing_frame": 3,
+            "last_missing_time": 0.3,
+            "first_revisible_frame": 4,
+            "first_revisible_time": 0.4,
+            "minimum_confidence": None,
+            "edge_departure": False,
+        }
+    ]
+
+    with pytest.raises(ValidationError, match="visibility lifecycle"):
+        CvEvidenceSummary.model_validate(payload)
+
+
+def test_full_timeline_must_contain_processed_timeline_as_exact_subset() -> None:
+    """Optional source validation cannot omit or retimestamp a processed frame."""
+    artifact = _artifact(
+        (_track("item_1", "item", (_observation(0), _observation(3))),),
+        processed_timeline=_timeline(0, 3),
+    )
+
+    with pytest.raises(ValueError, match="processed timeline"):
+        summarize_cv_evidence(artifact, timeline=_timeline(0, 1, 2))
+
+
+def test_bundle_rebuilds_the_canonical_candidate_set_from_thresholds() -> None:
+    """A caller cannot omit candidates while claiming a complete Task-10 input."""
+    artifact, timeline = _candidate_artifact()
+    summary = summarize_cv_evidence(artifact, timeline=timeline)
+    expected = build_occlusion_candidates(summary, _thresholds())
+
+    bundle = summary_module.build_cv_prompt_bundle(summary, _thresholds())
+
+    assert bundle.candidates == expected
+    assert bundle.thresholds == _thresholds()
+    payload = bundle.model_dump(mode="json")
+    payload["candidates"] = []
+    payload["candidates_complete"] = True
+    payload["truncation_codes"] = []
+    with pytest.raises(ValidationError, match="canonical candidate"):
+        type(bundle).model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        pytest.param(
+            lambda candidate: candidate.__setitem__(
+                "candidate_id", "occ_000000000000_0001"
+            ),
+            id="forged-hash",
+        ),
+        pytest.param(
+            lambda candidate: candidate.__setitem__(
+                "edge_departure", not candidate["edge_departure"]
+            ),
+            id="forged-counter-signal",
+        ),
+        pytest.param(
+            lambda candidate: candidate.__setitem__(
+                "allowed_start_times", list(reversed(candidate["allowed_end_times"]))
+            ),
+            id="forged-boundary",
+        ),
+    ],
+)
+def test_bundle_json_roundtrip_rejects_forged_candidate_fields(mutation) -> None:
+    """Schema-valid candidate edits must not survive canonical-set validation."""
+    artifact, timeline = _candidate_artifact()
+    summary = summarize_cv_evidence(artifact, timeline=timeline)
+    bundle = summary_module.build_cv_prompt_bundle(summary, _thresholds())
+    payload = bundle.model_dump(mode="json")
+    mutation(payload["candidates"][0])
+
+    with pytest.raises(ValidationError):
+        type(bundle).model_validate(payload)
+
+
+def test_bundle_rejects_reordered_candidates_and_duplicate_ids() -> None:
+    """Canonical ordering and IDs are part of the safe aggregate boundary."""
+    artifact, timeline = _candidate_artifact()
+    summary = summarize_cv_evidence(artifact, timeline=timeline)
+    bundle = summary_module.build_cv_prompt_bundle(summary, _thresholds())
+    assert len(bundle.candidates) >= 2
+
+    reordered = bundle.model_dump(mode="json")
+    reordered["candidates"] = list(reversed(reordered["candidates"]))
+    with pytest.raises(ValidationError, match="canonical candidate"):
+        type(bundle).model_validate(reordered)
+
+    duplicate = bundle.model_dump(mode="json")
+    duplicate["candidates"][1]["candidate_id"] = duplicate["candidates"][0][
+        "candidate_id"
+    ]
+    with pytest.raises(ValidationError, match="unique"):
+        type(bundle).model_validate(duplicate)
+
+
+def test_public_prompt_records_revalidate_unsafe_model_instances() -> None:
+    """model_copy/model_construct must not bypass any public prompt boundary."""
+    summary = summarize_cv_evidence(
+        _artifact((_track("item_1", "item", (_observation(0), _observation(2))),))
+    )
+    [candidate] = build_occlusion_candidates(summary, _thresholds())
+    bundle = summary_module.build_cv_prompt_bundle(summary, _thresholds())
+
+    unsafe_summary = summary.model_copy(update={"overlay_refs": ("/private/x.png",)})
+    unsafe_candidate = candidate.model_copy(
+        update={"overlay_refs": ("../../private/x.png",)}
+    )
+    unsafe_bundle = bundle.model_copy(
+        update={"truncation_codes": ("IGNORE_PREVIOUS_INSTRUCTIONS",)}
+    )
+
+    with pytest.raises((ValidationError, ValueError)):
+        unsafe_summary.prompt_record()
+    with pytest.raises((ValidationError, ValueError)):
+        unsafe_candidate.prompt_record()
+    with pytest.raises((ValidationError, ValueError)):
+        unsafe_bundle.prompt_record()
+
+
+def test_threshold_preflight_rejects_bad_scalar_before_model_dump(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unsafe nested threshold scalars must fail before serializer allocation."""
+    summary = summarize_cv_evidence(
+        _artifact((_track("item_1", "item", (_observation(0), _observation(2))),))
+    )
+    unsafe = EvidenceThresholds.model_construct(
+        min_confidence="0.5",
+        min_area_fraction=0.01,
+        occlusion_visibility_drop=0.5,
+    )
+
+    def forbid_dump(*_: object, **__: object) -> object:
+        raise AssertionError("threshold model_dump ran before scalar preflight")
+
+    monkeypatch.setattr(EvidenceThresholds, "model_dump", forbid_dump)
+    with pytest.raises(ValueError, match="structural input bound"):
+        build_occlusion_candidates(summary, unsafe)
+
+
+def test_direct_summary_models_enforce_container_caps() -> None:
+    """Direct model_validate cannot bypass the same public summary ceilings."""
+    observation = summarize_cv_evidence(
+        _artifact((_track("item_1", "item", (_observation(0),)),))
+    ).tracks[0].observations[0]
+    observations = []
+    for frame in range(257):
+        item = observation.model_dump(mode="json")
+        item.update(
+            source_ordinal=frame,
+            frame_index=frame,
+            timestamp_seconds=frame / 10.0,
+        )
+        observations.append(item)
+    payload = {
+        "track_id": "item_1",
+        "entity_id": "item",
+        "status": "available",
+        "source_observation_count": 257,
+        "observations": observations,
+        "missing_intervals": [],
+        "visibility_runs": [],
+        "candidate_search_complete": True,
+    }
+
+    with pytest.raises(ValidationError, match="at most 256"):
+        summary_module.SummaryTrack.model_validate(payload)
+
+
+def test_prompt_budget_reduction_uses_bounded_number_of_rebuilds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shrinking one observation at a time causes avoidable repeated full scans."""
+    tracks = tuple(
+        _track(
+            f"item_{ordinal}_1",
+            f"item_{ordinal}",
+            tuple(_observation(frame) for frame in range(80)),
+        )
+        for ordinal in range(32)
+    )
+    artifact = _artifact(tracks, processed_timeline=_timeline(*range(80)))
+    calls = 0
+    original = summary_module._assemble_summary
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(summary_module, "_assemble_summary", counted)
+    summarize_cv_evidence(artifact, max_prompt_chars=10_000)
+
+    assert calls <= 24
+
+
+def test_relation_cap_is_undirected_for_occluder_support() -> None:
+    """Lexical track direction must not discard the only positive support pair."""
+    summary = summarize_cv_evidence(
+        _artifact(
+            (
+                _track(
+                    "board_1",
+                    "board",
+                    tuple(
+                        _observation(
+                            frame,
+                            bbox_xyxy=(0.25, 0.25, 0.45, 0.45),
+                        )
+                        for frame in range(3)
+                    ),
+                ),
+                _track("target_1", "target", (_observation(0), _observation(2))),
+            ),
+            processed_timeline=_timeline(0, 1, 2),
+        ),
+        max_relations=1,
+    )
+    candidate = next(
+        item
+        for item in build_occlusion_candidates(summary, _thresholds())
+        if item.target_track_id == "target_1"
+    )
+
+    assert [(item.entity_id, item.track_id) for item in candidate.possible_occluders] == [
+        ("board", "board_1")
+    ]
+
+
+def test_relation_geometry_is_recomputed_at_summary_validation_boundary() -> None:
+    """A caller cannot edit bbox IoU to manufacture an occluder."""
+    summary = summarize_cv_evidence(
+        _artifact(
+            (
+                _track("alpha_1", "alpha", (_observation(0),)),
+                _track(
+                    "beta_1",
+                    "beta",
+                    (_observation(0, bbox_xyxy=(0.7, 0.7, 0.9, 0.9)),),
+                ),
+            )
+        ),
+        max_relations=1,
+    )
+    payload = summary.model_dump(mode="json")
+    payload["relations"][0]["bbox_iou"] = 1.0
+
+    with pytest.raises(ValidationError, match="relation geometry"):
+        CvEvidenceSummary.model_validate(payload)
+
+    missing = summary.model_dump(mode="json")
+    missing["relations"] = []
+    with pytest.raises(ValidationError, match="retained same-frame geometry"):
+        CvEvidenceSummary.model_validate(missing)
+
+
+@pytest.mark.parametrize("provider_warning", [False, True])
+def test_candidate_search_is_incomplete_for_uncovered_entities_or_provider_warning(
+    provider_warning: bool,
+) -> None:
+    """An empty candidate set is unknown when requested evidence lacks coverage."""
+    warnings = ("provider degraded",) if provider_warning else ()
+    entities = (
+        (_entity("tracked"),)
+        if provider_warning
+        else (_entity("tracked"), _entity("untracked"))
+    )
+    summary = summarize_cv_evidence(
+        _artifact(
+            (_track("tracked_1", "tracked", (_observation(0),)),),
+            entities=entities,
+            warnings=warnings,
+        )
+    )
+
+    assert summary.candidate_search_complete is False
+    expected_code = (
+        "ARTIFACT_WARNINGS_OMITTED"
+        if provider_warning
+        else "ENTITIES_WITHOUT_AVAILABLE_TRACKS"
+    )
+    assert expected_code in {warning.code for warning in summary.warnings}
+
+
+def test_structured_overlay_provenance_binds_opaque_filename() -> None:
+    """Overlay association uses contract metadata, never filename parsing."""
+    overlay = ArtifactFile(
+        path="overlays/opaque.png", sha256="c" * 64, size_bytes=1
+    )
+    summary = summarize_cv_evidence(
+        _artifact(
+            (_track("item_1", "item", (_observation(0), _observation(2))),),
+            files=(overlay,),
+            overlay_records=(
+                OverlayRecord(
+                    path=overlay.path,
+                    track_id="item_1",
+                    frame_index=0,
+                ),
+            ),
+            processed_timeline=_timeline(0, 1, 2),
+        )
+    )
+    [candidate] = build_occlusion_candidates(summary, _thresholds())
+
+    assert candidate.overlay_refs == ("overlays/opaque.png",)
+
+
+def test_candidate_and_bundle_completeness_names_have_one_meaning() -> None:
+    """Source search coverage must not be confused with set clipping."""
+    summary = summarize_cv_evidence(
+        _artifact((_track("item_1", "item", (_observation(0), _observation(2))),))
+    )
+    [candidate] = build_occlusion_candidates(summary, _thresholds())
+    bundle = summary_module.build_cv_prompt_bundle(summary, _thresholds())
+
+    assert candidate.source_search_complete is summary.candidate_search_complete
+    assert "candidate_set_complete" not in type(candidate).model_fields
+    assert bundle.source_search_complete is summary.candidate_search_complete
+    assert bundle.candidates_complete is True

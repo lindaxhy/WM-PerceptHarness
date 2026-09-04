@@ -21,6 +21,7 @@ from las_repro.cv.contracts import (
     CvEvidenceRequest,
     EntityPrompt,
     EntityRole,
+    EvidenceStatus,
     EvidenceThresholds,
     FrameTimeline,
     FrameTimestamp,
@@ -338,6 +339,8 @@ def test_adapter_uses_official_sequence_and_numbered_sample_directory(
 
     assert artifact.provider == "sam31"
     assert artifact.entities == request.entities
+    assert artifact.processed_timeline == request.timeline
+    assert artifact.overlay_records == ()
     assert predictor.requests[0]["type"] == "start_session"
     assert predictor.requests[-1]["type"] == "close_session"
     assert [item["type"] for item in predictor.requests] == [
@@ -369,6 +372,26 @@ def test_adapter_uses_official_sequence_and_numbered_sample_directory(
     assert materializer.calls[0][0] == request.video_path
     assert materializer.calls[0][1] == (0, 1, 2)
     assert len(materializer.calls) == 1
+
+
+def test_request_without_entities_reports_consistently_unprocessed_evidence(
+    tmp_path: Path, fake_torch: SimpleNamespace
+) -> None:
+    """A provider short-circuit cannot claim available evidence without a clock."""
+    request = make_request(tmp_path, entities=())
+    predictor = PredictorDouble()
+    materializer = MaterializerDouble()
+    provider = make_provider(predictor, fake_torch, materializer)
+
+    artifact = provider.analyze(request, tmp_path / "staging")
+
+    assert artifact.status is EvidenceStatus.DISABLED
+    assert artifact.processed_timeline is None
+    assert artifact.tracks == ()
+    assert artifact.files == ()
+    assert artifact.overlay_records == ()
+    assert predictor.requests == []
+    assert materializer.calls == []
 
 
 def test_adapter_namespaces_instances_and_derives_validated_geometry(
@@ -649,6 +672,7 @@ def test_empty_detections_are_valid_and_still_close_the_session(
     artifact = provider.analyze(request, tmp_path / "staging")
 
     assert artifact.tracks == ()
+    assert artifact.processed_timeline == request.timeline
     assert [file.path for file in artifact.files] == ["masks/right_hand.npz"]
     assert predictor.requests[-1]["type"] == "close_session"
 
@@ -1034,6 +1058,12 @@ def test_long_video_scans_refines_union_and_discards_preliminary_outputs(
         for track in artifact.tracks
         for observation in track.observations
     ))
+    assert [
+        frame.frame_index for frame in artifact.processed_timeline.frames
+    ] == [0, 3, 4, 5, 7, 8, 9]
+    assert [
+        frame.timestamp_seconds for frame in artifact.processed_timeline.frames
+    ] == [0.0, 3.0, 4.0, 5.0, 7.0, 8.0, 9.0]
     assert all(not path.exists() for path in predictor.resources)
 
 
@@ -1086,6 +1116,19 @@ def test_visibility_overlay_files_are_bounded_to_twenty_four(
 
     overlays = [file for file in artifact.files if file.path.endswith(".png")]
     assert 0 < len(overlays) <= 24
+    assert {record.path for record in artifact.overlay_records} == {
+        file.path for file in overlays
+    }
+    observations = {
+        (track.track_id, observation.frame_index)
+        for track in artifact.tracks
+        for observation in track.observations
+        if observation.visible
+    }
+    assert {
+        (record.track_id, record.frame_index)
+        for record in artifact.overlay_records
+    } <= observations
     assert len(rendered) == len(overlays)
     assert len({file.path for file in overlays}) == len(overlays)
 

@@ -12,6 +12,7 @@ from .contracts import (
     CvEvidenceRequest,
     CvTrack,
     EvidenceStatus,
+    FrameTimeline,
     TrackObservation,
 )
 
@@ -58,31 +59,29 @@ class FakeCvEvidenceProvider:
             files: list[ArtifactFile] = []
             for entity_index, entity in enumerate(request.entities):
                 observations: list[TrackObservation] = []
+                mask_ref = f"masks/{entity.entity_id}.mask"
+                payload = (
+                    f"fake-cv-mask-v1\n{entity.entity_id}\n"
+                    + "\n".join(
+                        f"{frame.frame_index}:{frame.timestamp_seconds:.9f}"
+                        for frame in request.timeline.frames
+                    )
+                    + "\n"
+                ).encode("ascii")
+                (staging / mask_ref).parent.mkdir(mode=0o700, exist_ok=True)
+                (staging / mask_ref).write_bytes(payload)
+                files.append(
+                    ArtifactFile(
+                        path=mask_ref,
+                        sha256=hashlib.sha256(payload).hexdigest(),
+                        size_bytes=len(payload),
+                    )
+                )
                 for observation_index, frame in enumerate(request.timeline.frames):
                     visible = (
                         len(request.timeline.frames) == 1
                         or observation_index < len(request.timeline.frames) - 1
                     )
-                    mask_ref: str | None = None
-                    if visible:
-                        mask_ref = (
-                            f"masks/{entity.entity_id}-{frame.frame_index:08d}.mask"
-                        )
-                        payload = (
-                            f"fake-cv-mask-v1\n{entity.entity_id}\n"
-                            f"{frame.frame_index}\n{frame.timestamp_seconds:.9f}\n"
-                        ).encode("ascii")
-                        (staging / mask_ref).parent.mkdir(
-                            mode=0o700, exist_ok=True
-                        )
-                        (staging / mask_ref).write_bytes(payload)
-                        files.append(
-                            ArtifactFile(
-                                path=mask_ref,
-                                sha256=hashlib.sha256(payload).hexdigest(),
-                                size_bytes=len(payload),
-                            )
-                        )
                     left = 0.1 + 0.1 * (entity_index % 5)
                     top = 0.1 + 0.05 * (entity_index % 5)
                     observations.append(
@@ -90,7 +89,7 @@ class FakeCvEvidenceProvider:
                             frame_index=frame.frame_index,
                             timestamp_seconds=frame.timestamp_seconds,
                             bbox_xyxy=(left, top, left + 0.08, top + 0.08),
-                            mask_ref=mask_ref,
+                            mask_ref=mask_ref if visible else None,
                             visible=visible,
                             confidence=max(request.thresholds.min_confidence, 0.9),
                             area_fraction=max(
@@ -113,9 +112,11 @@ class FakeCvEvidenceProvider:
                 model_identity=request.model_identity,
                 video_sha256=request.video_sha256,
                 checkpoint_sha256=request.checkpoint_sha256,
+                processed_timeline=FrameTimeline(frames=request.timeline.frames),
                 entities=request.entities,
                 tracks=tuple(tracks),
                 files=tuple(files),
+                overlay_records=(),
             )
             self._metrics = {
                 "processed_frames": len(request.timeline.frames),
