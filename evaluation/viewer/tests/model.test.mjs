@@ -130,7 +130,7 @@ test("all three local layers normalize without changing source values", () => {
     ],
   };
 
-  const result = normalizeLocal(source, 2);
+  const result = normalizeLocal(source, 2, "demo_0001");
 
   assert.deepEqual(Object.keys(result), ["grouped", "fine", "scene"]);
   assert.deepEqual(
@@ -146,6 +146,21 @@ test("all three local layers normalize without changing source values", () => {
     ["scene-0", "reach", "block"],
   );
   assert.equal("lane" in source.grouped_events[0], false);
+});
+
+
+test("local normalization requires the selected manifest sample ID", () => {
+  const source = {
+    schema_version: "comparison_viewer_local_v1",
+    sample_id: "wrong_sample",
+    duration_seconds: 2,
+    fine_segments: [],
+    grouped_events: [],
+    scene_events: [],
+  };
+
+  assert.throws(() => normalizeLocal(source, 2, "demo_0001"), /INVALID_LOCAL_DATA/);
+  assert.throws(() => normalizeLocal(source, 2), /INVALID_LOCAL_DATA/);
 });
 
 

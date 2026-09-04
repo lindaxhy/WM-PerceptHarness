@@ -51,6 +51,20 @@ SCENE_FIELDS = (
 OBJECT_FIELDS = ("object_id", "name", "description")
 STATE_FIELDS = ("object_id", "state", "visual_evidence", "confidence")
 OUTCOME_FIELDS = ("status", "description", "confidence")
+FINE_TEXT_FIELDS = (
+    "description",
+    "actor",
+    "actor_state",
+    "skill",
+    "target",
+    "visual_motion_state",
+    "event_type",
+)
+GROUPED_TEXT_FIELDS = ("description", "actor", "action", "target")
+SCENE_TEXT_FIELDS = ("event_type", "actor", "target_object_id", "description")
+OBJECT_TEXT_FIELDS = ("object_id", "name", "description")
+STATE_TEXT_FIELDS = ("object_id", "state", "visual_evidence")
+OUTCOME_TEXT_FIELDS = ("status", "description")
 
 
 class ViewerDataError(ValueError):
@@ -78,6 +92,33 @@ def _finite_number(value: object, code: str) -> float:
     return number
 
 
+def _text(value: object, code: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ViewerDataError(code)
+    return value
+
+
+def _index(value: object, code: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ViewerDataError(code)
+    return value
+
+
+def _confidence(value: object, code: str) -> float:
+    number = _finite_number(value, code)
+    if not 0.0 <= number <= 1.0:
+        raise ViewerDataError(code)
+    return number
+
+
+def _index_list(value: object, code: str) -> list[int]:
+    if not isinstance(value, list):
+        raise ViewerDataError(code)
+    for item in value:
+        _index(item, code)
+    return value
+
+
 def _validate_interval(item: Mapping[str, object], duration: float) -> None:
     start = _finite_number(item.get("start"), "INVALID_INTERVAL")
     end = _finite_number(item.get("end"), "INVALID_INTERVAL")
@@ -95,6 +136,35 @@ def _required_fields(
 
 def _project_fields(value: Mapping[str, object], fields: Sequence[str]) -> dict[str, object]:
     return {field: value[field] for field in fields}
+
+
+def _project_record(
+    item: Mapping[str, object],
+    fields: Sequence[str],
+    *,
+    collection: str,
+    missing_code: str,
+    text_fields: Sequence[str] = (),
+    index_fields: Sequence[str] = (),
+    index_list_fields: Sequence[str] = (),
+    confidence_field: str | None = None,
+    duration: float | None = None,
+) -> dict[str, object]:
+    _required_fields(item, fields, missing_code)
+    if duration is not None:
+        _validate_interval(item, duration)
+    for field in text_fields:
+        _text(item[field], f"INVALID_TEXT:{collection}.{field}")
+    for field in index_fields:
+        _index(item[field], f"INVALID_INDEX:{collection}.{field}")
+    for field in index_list_fields:
+        _index_list(item[field], f"INVALID_INDEX_LIST:{collection}.{field}")
+    if confidence_field is not None:
+        _confidence(
+            item[confidence_field],
+            f"INVALID_CONFIDENCE:{collection}.{confidence_field}",
+        )
+    return _project_fields(item, fields)
 
 
 def project_local_result(
@@ -117,45 +187,90 @@ def project_local_result(
     initial = _array(source.get("initial_state"), "EXPECTED_ARRAY:initial_state")
     final = _array(source.get("final_state"), "EXPECTED_ARRAY:final_state")
     outcome = _mapping(source.get("outcome"), "EXPECTED_OBJECT:outcome")
-    for collection in (fine, grouped, scene):
-        for item in collection:
-            _validate_interval(item, duration)
-
     return {
         "schema_version": "comparison_viewer_local_v1",
         "sample_id": sample_id,
         "duration_seconds": duration,
         "source_result_sha256": source_sha256,
         "fine_segments": [
-            _project_fields(_required_fields(item, FINE_FIELDS, "MISSING_FINE_FIELD"), FINE_FIELDS)
+            _project_record(
+                item,
+                FINE_FIELDS,
+                collection="segments",
+                missing_code="MISSING_FINE_FIELD",
+                text_fields=FINE_TEXT_FIELDS,
+                index_fields=("segment_index", "action_index"),
+                confidence_field="confidence",
+                duration=duration,
+            )
             for item in fine
         ],
         "grouped_events": [
-            _project_fields(
-                _required_fields(item, GROUPED_FIELDS, "MISSING_GROUPED_FIELD"),
+            _project_record(
+                item,
                 GROUPED_FIELDS,
+                collection="grouped_semantic_events",
+                missing_code="MISSING_GROUPED_FIELD",
+                text_fields=GROUPED_TEXT_FIELDS,
+                index_fields=("event_index",),
+                index_list_fields=("source_segment_indices",),
+                confidence_field="confidence",
+                duration=duration,
             )
             for item in grouped
         ],
         "scene_events": [
-            _project_fields(_required_fields(item, SCENE_FIELDS, "MISSING_SCENE_FIELD"), SCENE_FIELDS)
+            _project_record(
+                item,
+                SCENE_FIELDS,
+                collection="semantic_events",
+                missing_code="MISSING_SCENE_FIELD",
+                text_fields=SCENE_TEXT_FIELDS,
+                index_fields=("event_index",),
+                confidence_field="confidence",
+                duration=duration,
+            )
             for item in scene
         ],
         "objects": [
-            _project_fields(_required_fields(item, OBJECT_FIELDS, "MISSING_OBJECT_FIELD"), OBJECT_FIELDS)
+            _project_record(
+                item,
+                OBJECT_FIELDS,
+                collection="objects",
+                missing_code="MISSING_OBJECT_FIELD",
+                text_fields=OBJECT_TEXT_FIELDS,
+            )
             for item in objects
         ],
         "initial_state": [
-            _project_fields(_required_fields(item, STATE_FIELDS, "MISSING_STATE_FIELD"), STATE_FIELDS)
+            _project_record(
+                item,
+                STATE_FIELDS,
+                collection="initial_state",
+                missing_code="MISSING_STATE_FIELD",
+                text_fields=STATE_TEXT_FIELDS,
+                confidence_field="confidence",
+            )
             for item in initial
         ],
         "final_state": [
-            _project_fields(_required_fields(item, STATE_FIELDS, "MISSING_STATE_FIELD"), STATE_FIELDS)
+            _project_record(
+                item,
+                STATE_FIELDS,
+                collection="final_state",
+                missing_code="MISSING_STATE_FIELD",
+                text_fields=STATE_TEXT_FIELDS,
+                confidence_field="confidence",
+            )
             for item in final
         ],
-        "outcome": _project_fields(
-            _required_fields(outcome, OUTCOME_FIELDS, "MISSING_OUTCOME_FIELD"),
+        "outcome": _project_record(
+            outcome,
             OUTCOME_FIELDS,
+            collection="outcome",
+            missing_code="MISSING_OUTCOME_FIELD",
+            text_fields=OUTCOME_TEXT_FIELDS,
+            confidence_field="confidence",
         ),
     }
 

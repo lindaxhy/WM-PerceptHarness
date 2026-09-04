@@ -282,4 +282,3 @@ git push origin feat/las-alignment
 
 Update PR #2 with viewer scope, start command, tests, and the video privacy
 boundary. Keep the worktree for review.
-

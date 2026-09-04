@@ -141,4 +141,3 @@ Follow red-green-refactor for executable behavior.
   metrics remain the source for aggregate scores.
 - No video transcoding or copying in the exporter.
 - No attempt to make machine-only LAS outputs into human ground truth.
-

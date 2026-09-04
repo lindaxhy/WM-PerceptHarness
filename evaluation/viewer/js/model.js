@@ -186,13 +186,16 @@ function normalizeLocalLayer(events, duration, mode) {
 }
 
 
-export function normalizeLocal(displayData, duration) {
+export function normalizeLocal(displayData, duration, expectedSampleId) {
   validateDuration(duration);
   if (displayData === null || typeof displayData !== "object") {
     throw new Error("INVALID_LOCAL_DATA");
   }
   if (
     displayData.schema_version !== "comparison_viewer_local_v1" ||
+    typeof expectedSampleId !== "string" ||
+    expectedSampleId.length === 0 ||
+    displayData.sample_id !== expectedSampleId ||
     displayData.duration_seconds !== duration
   ) {
     throw new Error("INVALID_LOCAL_DATA");

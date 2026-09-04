@@ -389,7 +389,11 @@ async function loadSample(sampleId) {
       loadJson(sample.local_path),
     ]);
     const lasEvents = normalizeLas(lasReference, sample.duration_seconds);
-    const localLayers = normalizeLocal(localData, sample.duration_seconds);
+    const localLayers = normalizeLocal(
+      localData,
+      sample.duration_seconds,
+      sample.sample_id,
+    );
     if (sequence !== state.loadSequence) return;
     state.sample = sample;
     state.lasReference = lasReference;

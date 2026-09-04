@@ -287,6 +287,81 @@ def test_export_validates_every_sample_before_publishing(tmp_path: Path) -> None
     assert not output_dir.exists()
 
 
+@pytest.mark.parametrize(
+    ("collection", "field", "value", "error"),
+    [
+        ("segments", "description", {"task_id": "private-task"}, "INVALID_TEXT"),
+        ("segments", "segment_index", True, "INVALID_INDEX"),
+        (
+            "grouped_semantic_events",
+            "source_segment_indices",
+            [0, "private-task"],
+            "INVALID_INDEX_LIST",
+        ),
+        ("objects", "name", ["block"], "INVALID_TEXT"),
+        ("initial_state", "confidence", 1.1, "INVALID_CONFIDENCE"),
+    ],
+)
+def test_export_rejects_invalid_display_field_values(
+    tmp_path: Path,
+    collection: str,
+    field: str,
+    value: object,
+    error: str,
+) -> None:
+    from scripts.build_comparison_viewer_data import ViewerDataError, main
+
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    manifest_path = tmp_path / "manifest.json"
+    source = _local_result()
+    source[collection][0][field] = value
+    _write_json(input_dir / "demo_0001.json", source)
+    _write_json(manifest_path, _manifest())
+
+    with pytest.raises(ViewerDataError, match=error):
+        main(
+            [
+                "--input-dir",
+                str(input_dir),
+                "--output-dir",
+                str(output_dir),
+                "--manifest",
+                str(manifest_path),
+            ]
+        )
+
+    assert not output_dir.exists()
+
+
+def test_export_rejects_nested_metadata_in_outcome(tmp_path: Path) -> None:
+    from scripts.build_comparison_viewer_data import ViewerDataError, main
+
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    manifest_path = tmp_path / "manifest.json"
+    source = _local_result()
+    source["outcome"]["description"] = {
+        "request": {"video_url": "https://private.invalid/video.mp4"}
+    }
+    _write_json(input_dir / "demo_0001.json", source)
+    _write_json(manifest_path, _manifest())
+
+    with pytest.raises(ViewerDataError, match="INVALID_TEXT"):
+        main(
+            [
+                "--input-dir",
+                str(input_dir),
+                "--output-dir",
+                str(output_dir),
+                "--manifest",
+                str(manifest_path),
+            ]
+        )
+
+    assert not output_dir.exists()
+
+
 def test_repository_viewer_data_is_complete() -> None:
     repository = Path(__file__).resolve().parents[1]
     manifest_path = repository / "evaluation/viewer/data/demo-manifest.json"
