@@ -10,6 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
+from .scene_semantics import SceneSemantics, validate_scene_semantics
 from .validators import (
     BoundaryPlan,
     CoarsePlan,
@@ -19,6 +20,7 @@ from .validators import (
     validate_boundary_plan,
     validate_coarse_plan,
     validate_enrichment,
+    valid_fine_description,
 )
 
 
@@ -99,6 +101,7 @@ _BOUNDARY_TEMPORAL_CODES = (
     "BOUNDARY_TIME_MISMATCH",
     "SEGMENT_BOUNDARY_NOT_ADJACENT",
     "SEGMENT_BOUNDARY_DISCONTINUITY",
+    "SEGMENT_DESCRIPTION_INVALID",
     "MISSING_COARSE_ACTION",
 )
 _ENRICHMENT_TEMPORAL_CODES = (
@@ -106,6 +109,19 @@ _ENRICHMENT_TEMPORAL_CODES = (
     "ENRICHMENT_INDEX_NOT_ORDERED",
     "MISSING_ENRICHMENT_INDEX",
     "UNEXPECTED_ENRICHMENT_INDEX",
+)
+_SCENE_TEMPORAL_CODES = (
+    "EMPTY_SCENE_OBJECTS",
+    "EMPTY_SCENE_EVENTS",
+    "SCENE_REQUIRED_OBJECT_MISSING",
+    "SCENE_OBJECT_ID_DUPLICATE",
+    "SCENE_STATE_UNKNOWN_OBJECT",
+    "SCENE_STATE_DUPLICATE_OBJECT",
+    "SCENE_EVENT_INDEX_NOT_CONTIGUOUS",
+    "SCENE_EVENT_NONPOSITIVE_DURATION",
+    "SCENE_EVENT_OUTSIDE_VIDEO",
+    "SCENE_EVENT_START_NOT_ORDERED",
+    "SCENE_EVENT_UNKNOWN_OBJECT",
 )
 _ENRICHMENT_ENUM_FIELDS = (
     "actor",
@@ -119,6 +135,11 @@ _ENRICHMENT_ENUM_FIELD_CODES = {
     "skill": "ENRICHMENT_RESULT_SKILL_ENUM_VALUE",
     "visual_motion_state": "ENRICHMENT_RESULT_VISUAL_MOTION_STATE_ENUM_VALUE",
 }
+_BOUNDARY_NORMALIZABLE_CODES = (
+    "SEGMENT_TOO_LONG",
+    "SEGMENT_BOUNDARY_NOT_ADJACENT",
+    "SEGMENT_DESCRIPTION_INVALID",
+)
 _GENERAL_SEGMENT_TEMPORAL_CODES = (
     "GENERAL_SEGMENT_TIMESTAMP_OUT_OF_SPAN",
 )
@@ -262,7 +283,15 @@ class OutputSchemaRegistry:
     ) -> NormalizedSchemaOutput | None:
         """Parse and independently revalidate an exact normalized envelope."""
         entry = self._entries.get(schema_name)
-        if entry is None or schema_name != "EnrichmentResult":
+        if entry is None:
+            return None
+        if schema_name == "BoundaryPlan":
+            return _normalized_boundary_envelope(
+                entry.validator,
+                result,
+                validation_context,
+            )
+        if schema_name != "EnrichmentResult":
             return None
         try:
             if set(result) != {SCHEMA_VALIDATION_FIELD, "data"}:
@@ -510,8 +539,8 @@ def _validate_coarse_output(
 
 def _validate_boundary_output(
     result: Mapping[str, Any], validation_context: Mapping[str, Any] | None
-) -> dict[str, Any]:
-    context = _exact_context(validation_context, {"coarse_plan", "max_segment_seconds"})
+) -> dict[str, Any] | NormalizedSchemaOutput:
+    context = _boundary_validation_context(validation_context)
     coarse_value = context["coarse_plan"]
     if not isinstance(coarse_value, Mapping):
         raise ValueError("BoundaryPlan validation context is invalid")
@@ -520,8 +549,13 @@ def _validate_boundary_output(
     except ValidationError:
         raise ValueError("BoundaryPlan validation context is invalid") from None
     maximum = _finite_real(context["max_segment_seconds"], positive=True)
+    allow_fallback = context["allow_topology_fallback"]
     try:
-        plan = _model_from_json(BoundaryPlan, result)
+        snapshot = _finite_json_snapshot(result)
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        raise DeclaredSchemaOutputError(("BOUNDARY_PLAN_SCHEMA_INVALID",)) from None
+    try:
+        plan = _model_from_json(BoundaryPlan, snapshot)
     except ValidationError as error:
         raise DeclaredSchemaOutputError(
             _pydantic_issue_codes(error, "BOUNDARY_PLAN")
@@ -531,10 +565,237 @@ def _validate_boundary_output(
     try:
         validate_boundary_plan(plan, coarse, max_segment_seconds=maximum)
     except TemporalValidationError as error:
+        issue_codes = tuple(dict.fromkeys(issue.code for issue in error.issues))
+        if allow_fallback and set(issue_codes) <= set(_BOUNDARY_NORMALIZABLE_CODES):
+            normalized = _normalize_boundary_topology(
+                plan,
+                coarse,
+                maximum,
+                issue_codes,
+            )
+            if normalized is not None:
+                return normalized
         raise DeclaredSchemaOutputError(
-            tuple(dict.fromkeys(issue.code for issue in error.issues))
+            issue_codes
         ) from None
     return plan.model_dump(mode="json")
+
+
+def _boundary_validation_context(
+    validation_context: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Parse the strict boundary context while retaining old strict callers."""
+    if not isinstance(validation_context, Mapping):
+        raise ValueError("BoundaryPlan validation context is invalid")
+    keys = set(validation_context)
+    legacy = {"coarse_plan", "max_segment_seconds"}
+    current = legacy | {"allow_topology_fallback"}
+    if keys not in (legacy, current):
+        raise ValueError("BoundaryPlan validation context is invalid")
+    enabled = validation_context.get("allow_topology_fallback", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("BoundaryPlan validation context is invalid")
+    return {
+        "coarse_plan": validation_context["coarse_plan"],
+        "max_segment_seconds": validation_context["max_segment_seconds"],
+        "allow_topology_fallback": enabled,
+    }
+
+
+def _normalize_boundary_topology(
+    plan: BoundaryPlan,
+    coarse: CoarsePlan,
+    maximum: float,
+    issue_codes: tuple[str, ...],
+) -> NormalizedSchemaOutput | None:
+    """Rebuild references from trusted ordered points after the sole repair."""
+    try:
+        actions: list[dict[str, Any]] = []
+        next_segment_index = 0
+        total_segments = 0
+        for action in plan.actions:
+            original_points = [point.model_dump(mode="json") for point in action.boundary_points]
+            original_segments = [
+                segment.model_dump(mode="json") for segment in action.fine_segments
+            ]
+            points: list[dict[str, Any]] = []
+            existing_ids = {point["boundary_id"] for point in original_points}
+            for point_index, (left, right) in enumerate(
+                zip(original_points, original_points[1:], strict=False)
+            ):
+                points.append(left)
+                duration = right["time"] - left["time"]
+                piece_count = _minimum_safe_piece_count(
+                    left["time"], right["time"], maximum
+                )
+                if piece_count > 10_000:
+                    return None
+                for piece_index in range(1, piece_count):
+                    boundary_id = (
+                        f"local_a{action.action_index}_p{point_index}_s{piece_index}"
+                    )
+                    if boundary_id in existing_ids:
+                        return None
+                    existing_ids.add(boundary_id)
+                    points.append(
+                        {
+                            "boundary_id": boundary_id,
+                            "time": left["time"]
+                            + duration * piece_index / piece_count,
+                            "event_type": "unknown_transition",
+                            "visual_evidence": "local hard-cap subdivision",
+                        }
+                    )
+            points.append(original_points[-1])
+            if len(points) > 10_001:
+                return None
+
+            fine_segments: list[dict[str, Any]] = []
+            for left, right in zip(points, points[1:], strict=False):
+                source = _maximum_overlap_segment(
+                    original_segments,
+                    left["time"],
+                    right["time"],
+                )
+                if source is None:
+                    return None
+                description = source["description"]
+                if not valid_fine_description(description):
+                    description = action.description
+                if not valid_fine_description(description):
+                    return None
+                fine_segments.append(
+                    {
+                        "segment_index": next_segment_index,
+                        "start": left["time"],
+                        "end": right["time"],
+                        "description": description,
+                        "event_type": source["event_type"],
+                        "start_boundary_id": left["boundary_id"],
+                        "end_boundary_id": right["boundary_id"],
+                    }
+                )
+                next_segment_index += 1
+            total_segments += len(fine_segments)
+            actions.append(
+                {
+                    "action_index": action.action_index,
+                    "start": action.start,
+                    "end": action.end,
+                    "description": action.description,
+                    "event_type": action.event_type.value,
+                    "boundary_points": points,
+                    "fine_segments": fine_segments,
+                }
+            )
+
+        normalized = BoundaryPlan.model_validate(
+            {"task_description": plan.task_description, "actions": actions}
+        )
+        validate_boundary_plan(normalized, coarse, max_segment_seconds=maximum)
+    except (ValidationError, TemporalValidationError, ValueError, TypeError, OverflowError):
+        return None
+    return NormalizedSchemaOutput(
+        data=normalized.model_dump(mode="json"),
+        issue_codes=tuple(
+            code for code in _BOUNDARY_NORMALIZABLE_CODES if code in issue_codes
+        ),
+        normalized_field_count=total_segments,
+    )
+
+
+def _maximum_overlap_segment(
+    segments: list[dict[str, Any]], start: float, end: float
+) -> dict[str, Any] | None:
+    best: dict[str, Any] | None = None
+    best_overlap = 0.0
+    for segment in segments:
+        overlap = min(end, segment["end"]) - max(start, segment["start"])
+        if overlap > best_overlap:
+            best = segment
+            best_overlap = overlap
+    return best
+
+
+def _minimum_safe_piece_count(start: float, end: float, maximum: float) -> int:
+    """Use the fewest equal pieces whose materialized floats pass the hard cap."""
+    duration = end - start
+    piece_count = max(1, math.ceil(duration / maximum))
+    while piece_count <= 10_000:
+        times = [
+            start + duration * index / piece_count
+            for index in range(piece_count + 1)
+        ]
+        if all(
+            right - left <= maximum
+            for left, right in zip(times, times[1:], strict=False)
+        ):
+            return piece_count
+        piece_count += 1
+    return piece_count
+
+
+def _normalized_boundary_envelope(
+    validator: OutputValidator,
+    result: Mapping[str, Any],
+    validation_context: Mapping[str, Any] | None,
+) -> NormalizedSchemaOutput | None:
+    """Revalidate an exact repair-only BoundaryPlan normalization envelope."""
+    try:
+        if set(result) != {SCHEMA_VALIDATION_FIELD, "data"}:
+            return None
+        envelope = result.get(SCHEMA_VALIDATION_FIELD)
+        data = result.get("data")
+        if not isinstance(envelope, Mapping) or set(envelope) != {
+            "schema_name",
+            "status",
+            "issue_codes",
+            "normalized_field_count",
+        }:
+            return None
+        codes = envelope.get("issue_codes")
+        count = envelope.get("normalized_field_count")
+        if (
+            envelope.get("schema_name") != "BoundaryPlan"
+            or envelope.get("status") != "normalized"
+            or not isinstance(codes, list)
+            or not codes
+            or codes
+            != [code for code in _BOUNDARY_NORMALIZABLE_CODES if code in codes]
+            or isinstance(count, bool)
+            or not isinstance(count, int)
+            or count <= 0
+            or not isinstance(data, Mapping)
+        ):
+            return None
+        context = _boundary_validation_context(validation_context)
+        if context["allow_topology_fallback"] is not True:
+            return None
+        strict_context = {
+            "coarse_plan": context["coarse_plan"],
+            "max_segment_seconds": context["max_segment_seconds"],
+            "allow_topology_fallback": False,
+        }
+        canonical = validator(data, strict_context)
+        if not isinstance(canonical, dict):
+            return None
+        actions = canonical.get("actions")
+        if not isinstance(actions, list):
+            return None
+        segment_count = sum(
+            len(action["fine_segments"])
+            for action in actions
+            if isinstance(action, dict) and isinstance(action.get("fine_segments"), list)
+        )
+        if segment_count != count:
+            return None
+        return NormalizedSchemaOutput(
+            data=canonical,
+            issue_codes=tuple(codes),
+            normalized_field_count=count,
+        )
+    except Exception:
+        return None
 
 
 def _validate_enrichment_output(
@@ -566,6 +827,46 @@ def _validate_enrichment_output(
             tuple(dict.fromkeys(issue.code for issue in error.issues))
         ) from None
     return enrichment.model_dump(mode="json")
+
+
+def _validate_scene_semantics_output(
+    result: Mapping[str, Any], validation_context: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    context = _exact_context(
+        validation_context,
+        {"duration", "require_observed_content", "required_object_ids"},
+    )
+    duration = _finite_real(context["duration"], positive=True)
+    require_content = context["require_observed_content"]
+    if not isinstance(require_content, bool):
+        raise ValueError("SceneSemantics validation context is invalid")
+    required_ids = context["required_object_ids"]
+    if (
+        not isinstance(required_ids, list)
+        or len(set(required_ids)) != len(required_ids)
+        or any(not isinstance(value, str) or not value for value in required_ids)
+    ):
+        raise ValueError("SceneSemantics validation context is invalid")
+    try:
+        scene = _model_from_json(SceneSemantics, result)
+    except ValidationError as error:
+        raise DeclaredSchemaOutputError(
+            _pydantic_issue_codes(error, "SCENE_SEMANTICS")
+        ) from None
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        raise DeclaredSchemaOutputError(("SCENE_SEMANTICS_SCHEMA_INVALID",)) from None
+    try:
+        validate_scene_semantics(
+            scene,
+            duration,
+            require_observed_content=require_content,
+            required_object_ids=tuple(required_ids),
+        )
+    except TemporalValidationError as error:
+        raise DeclaredSchemaOutputError(
+            tuple(dict.fromkeys(issue.code for issue in error.issues))
+        ) from None
+    return scene.model_dump(mode="json")
 
 
 def _enrichment_validation_context(
@@ -813,6 +1114,12 @@ DEFAULT_OUTPUT_SCHEMAS.register(
     + _ENRICHMENT_TEMPORAL_CODES,
     generic_issue_code="ENRICHMENT_RESULT_SCHEMA_INVALID",
     preserve_issue_code_order=True,
+)
+DEFAULT_OUTPUT_SCHEMAS.register(
+    "SceneSemantics",
+    _validate_scene_semantics_output,
+    allowed_issue_codes=_schema_codes("SCENE_SEMANTICS") + _SCENE_TEMPORAL_CODES,
+    generic_issue_code="SCENE_SEMANTICS_SCHEMA_INVALID",
 )
 DEFAULT_OUTPUT_SCHEMAS.register(
     "general_segment",

@@ -15,6 +15,12 @@ from numbers import Real
 from pathlib import Path
 from typing import Literal, TypeVar, final
 
+from .pipelines.scene_semantics import (
+    SceneSemantics,
+    trusted_target_skeleton,
+    unavailable_scene_semantics,
+    validate_scene_semantics,
+)
 from .pipelines.validators import (
     Actor,
     ActorState,
@@ -22,6 +28,7 @@ from .pipelines.validators import (
     Skill,
     VisualMotionState,
 )
+from .pipelines.semantic_events import validate_semantic_events
 
 
 _ANNOTATION_STAGE = "boundary_fine_segments_0805"
@@ -36,10 +43,23 @@ _UNSUPPORTED_DIRECTORY_SYNC_ERRNOS = frozenset(
         getattr(errno, "EOPNOTSUPP", errno.ENOTSUP),
     }
 )
-_RESULT_KEYS = frozenset({"task_description", "segments"})
-_RESULT_KEYS_WITH_WARNINGS = frozenset({"task_description", "segments", "warnings"})
+_REQUIRED_RESULT_KEYS = frozenset({"task_description", "segments"})
+_SCENE_RESULT_KEYS = frozenset(
+    {"objects", "initial_state", "final_state", "outcome", "semantic_events"}
+)
+_OPTIONAL_RESULT_KEYS = frozenset(
+    {"warnings", "grouped_semantic_events"}
+) | _SCENE_RESULT_KEYS
 _NORMALIZATION_WARNING_KEYS = frozenset({"code", "fields", "count"})
 _NORMALIZATION_WARNING_CODE = "ENRICHMENT_ENUM_NORMALIZED_TO_UNKNOWN"
+_BOUNDARY_WARNING_KEYS = frozenset({"code", "issue_codes", "count"})
+_BOUNDARY_WARNING_CODE = "BOUNDARY_TOPOLOGY_NORMALIZED"
+_SCENE_WARNING_CODE = "SCENE_SEMANTICS_UNAVAILABLE"
+_BOUNDARY_WARNING_ISSUE_CODES = (
+    "SEGMENT_TOO_LONG",
+    "SEGMENT_BOUNDARY_NOT_ADJACENT",
+    "SEGMENT_DESCRIPTION_INVALID",
+)
 _NORMALIZABLE_ENUM_FIELDS = (
     "actor",
     "actor_state",
@@ -267,7 +287,9 @@ def _completed_segments(
             raise ValueError
         result_data = embodied_result.copy()
         result_keys = set(result_data)
-        if result_keys not in (_RESULT_KEYS, _RESULT_KEYS_WITH_WARNINGS):
+        if not _REQUIRED_RESULT_KEYS <= result_keys or not result_keys <= (
+            _REQUIRED_RESULT_KEYS | _OPTIONAL_RESULT_KEYS
+        ):
             raise ValueError
         task_description = result_data["task_description"]
         raw_segments = result_data["segments"]
@@ -278,8 +300,47 @@ def _completed_segments(
 
         segments = tuple(_segment(value) for value in raw_segments)
         _validate_segment_order(segments)
-        if result_keys == _RESULT_KEYS_WITH_WARNINGS:
-            _validate_normalization_warnings(result_data["warnings"], segments)
+        if "grouped_semantic_events" in result_data:
+            validate_semantic_events(
+                result_data["grouped_semantic_events"], raw_segments
+            )
+        present_scene_keys = result_keys & _SCENE_RESULT_KEYS
+        if present_scene_keys and present_scene_keys != _SCENE_RESULT_KEYS:
+            raise ValueError
+        if present_scene_keys:
+            scene = SceneSemantics.model_validate_json(
+                json.dumps(
+                    {key: result_data[key] for key in _SCENE_RESULT_KEYS},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ),
+                strict=True,
+            )
+            raw_warnings = result_data.get("warnings", [])
+            scene_unavailable = isinstance(raw_warnings, list) and any(
+                isinstance(warning, Mapping)
+                and warning.get("code") == _SCENE_WARNING_CODE
+                for warning in raw_warnings
+            )
+            required_targets = trusted_target_skeleton(raw_segments)
+            validate_scene_semantics(
+                scene,
+                raw_segments[-1]["end"],
+                require_observed_content=(
+                    not scene_unavailable
+                    and bool(required_targets)
+                ),
+                required_object_ids=(
+                    ()
+                    if scene_unavailable
+                    else tuple(target["object_id"] for target in required_targets)
+                ),
+            )
+        if "warnings" in result_data:
+            _validate_normalization_warnings(
+                result_data["warnings"], segments, result_data
+            )
         return segments
     except Exception:
         raise ActionCaptionExportError("completed embodied result is invalid") from None
@@ -288,12 +349,39 @@ def _completed_segments(
 def _validate_normalization_warnings(
     value: object,
     segments: tuple[_CompletedSegment, ...],
+    result: Mapping[str, object],
 ) -> None:
-    if type(value) is not list or len(value) != 1:
+    if type(value) is not list or not 1 <= len(value) <= 3:
         raise ValueError
-    warning = value[0]
-    if not isinstance(warning, Mapping):
-        raise ValueError
+    codes: list[str] = []
+    for warning in value:
+        if not isinstance(warning, Mapping):
+            raise ValueError
+        code = warning.get("code")
+        if type(code) is not str or code in codes:
+            raise ValueError
+        codes.append(code)
+        if code == _NORMALIZATION_WARNING_CODE:
+            _validate_enrichment_warning(warning, segments)
+        elif code == _BOUNDARY_WARNING_CODE:
+            _validate_boundary_warning(warning, segments)
+        elif code == _SCENE_WARNING_CODE:
+            if dict(warning) != {"code": _SCENE_WARNING_CODE}:
+                raise ValueError
+            if set(result) & _SCENE_RESULT_KEYS != _SCENE_RESULT_KEYS:
+                raise ValueError
+            if {
+                key: result[key] for key in _SCENE_RESULT_KEYS
+            } != unavailable_scene_semantics():
+                raise ValueError
+        else:
+            raise ValueError
+
+
+def _validate_enrichment_warning(
+    warning: Mapping[str, object],
+    segments: tuple[_CompletedSegment, ...],
+) -> None:
     warning_data = dict(warning)
     if set(warning_data) != _NORMALIZATION_WARNING_KEYS:
         raise ValueError
@@ -329,6 +417,29 @@ def _validate_normalization_warnings(
     if any(field_count == 0 for field_count in unknown_counts.values()):
         raise ValueError
     if count > sum(unknown_counts.values()):
+        raise ValueError
+
+
+def _validate_boundary_warning(
+    warning: Mapping[str, object],
+    segments: tuple[_CompletedSegment, ...],
+) -> None:
+    warning_data = dict(warning)
+    if set(warning_data) != _BOUNDARY_WARNING_KEYS:
+        raise ValueError
+    code = warning_data["code"]
+    if type(code) is not str or code != _BOUNDARY_WARNING_CODE:
+        raise ValueError
+    issue_codes = warning_data["issue_codes"]
+    if type(issue_codes) is not list or not issue_codes:
+        raise ValueError
+    canonical = [
+        value for value in _BOUNDARY_WARNING_ISSUE_CODES if value in issue_codes
+    ]
+    if issue_codes != canonical:
+        raise ValueError
+    count = warning_data["count"]
+    if type(count) is not int or count != len(segments):
         raise ValueError
 
 

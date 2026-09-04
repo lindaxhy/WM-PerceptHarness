@@ -35,6 +35,7 @@ class FakeVideoModel(VideoModel):
             "embodied_pass_a",
             "embodied_pass_b",
             "embodied_enrichment",
+            "scene_semantics",
             "general_summary",
         }
     )
@@ -119,6 +120,35 @@ class FakeVideoModel(VideoModel):
                     }
                     for index in _requested_segment_indexes(request.prompt)
                 ]
+            }
+        if request.stage == "scene_semantics":
+            return {
+                "objects": [
+                    {
+                        "object_id": "red_container",
+                        "name": "red container",
+                        "description": "visible red rectangular container",
+                    }
+                ],
+                "initial_state": [],
+                "final_state": [],
+                "outcome": {
+                    "status": "unknown",
+                    "description": "task outcome is not fully visible",
+                    "confidence": 0.4,
+                },
+                "semantic_events": [
+                    {
+                        "event_index": 0,
+                        "start": request.span.start,
+                        "end": request.span.end,
+                        "event_type": "move",
+                        "actor": "right_hand",
+                        "target_object_id": "red_container",
+                        "description": "right hand moves red container",
+                        "confidence": 0.9,
+                    }
+                ],
             }
         if request.stage == "general_summary":
             return {

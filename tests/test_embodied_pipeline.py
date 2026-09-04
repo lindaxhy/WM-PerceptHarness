@@ -919,7 +919,7 @@ def test_prompt_assets_state_exact_schemas_enums_and_visual_only_rules(
     assert all(
         token in prompts["enrichment"]
         for token in (
-            "left_gripper|right_gripper|both_grippers|robot_arm|unknown",
+            "left_hand|right_hand|both_hands|left_gripper|right_gripper|both_grippers|robot_arm|unknown",
             "idle|reaching|contacting|grasping|holding|transporting|placing|releasing|retracting|unknown",
             "hold|reach|grasp|pick|lift|move|place|release|push|pull|rotate|open|close|retract|touch|unknown",
             "static|low|active|unknown",
@@ -1790,7 +1790,7 @@ def test_enrichment_total_guard_allows_exactly_ten_thousand_before_materializing
     assert table_calls == 1
 
 
-def test_embodied_action_pipeline_runs_latest_three_complete_video_passes(
+def test_embodied_action_pipeline_runs_four_complete_video_passes(
     tmp_path: Path,
 ) -> None:
     """Removing a stage, clipping the video, or changing merge ownership must fail."""
@@ -1811,6 +1811,7 @@ def test_embodied_action_pipeline_runs_latest_three_complete_video_passes(
         "embodied_pass_a",
         "embodied_pass_b",
         "embodied_enrichment",
+        "scene_semantics",
     ]
     assert all((call.span.start, call.span.end) == (0.0, 2.0) for call in harness.model.calls)
     assert all(call.fps == 3.5 for call in harness.model.calls)
@@ -1818,6 +1819,7 @@ def test_embodied_action_pipeline_runs_latest_three_complete_video_passes(
         "CoarsePlan",
         "BoundaryPlan",
         "EnrichmentResult",
+        "SceneSemantics",
     ]
     assert all(call.video_session_id == completed.task_id for call in harness.model.calls)
     assert all(call.video_session is not None for call in harness.model.calls)
@@ -1837,6 +1839,22 @@ def test_embodied_action_pipeline_runs_latest_three_complete_video_passes(
     assert "warnings" not in result
     assert result["task_description"] == "move the red container"
     segments = result["segments"]
+    assert result["grouped_semantic_events"] == [
+        {
+            "event_index": 0,
+            "start": 0.0,
+            "end": 2.0,
+            "actor": "right_hand",
+            "action": "motion",
+            "target": "red container",
+            "description": "right hand moves red container",
+            "confidence": 0.9,
+            "source_segment_indices": [0, 1, 2, 3],
+        }
+    ]
+    assert result["objects"][0]["object_id"] == "red_container"
+    assert result["semantic_events"][0]["target_object_id"] == "red_container"
+    assert result["outcome"]["status"] == "unknown"
     assert segments
     assert [segment["segment_index"] for segment in segments] == list(
         range(len(segments))
@@ -1869,6 +1887,46 @@ def test_embodied_action_pipeline_runs_latest_three_complete_video_passes(
         (1.0, 1.4525),
         (1.4525, 2.0),
     ]
+
+
+def test_invalid_scene_semantics_repairs_once_then_completes_conservatively(
+    tmp_path: Path,
+) -> None:
+    """A schema-format miss must not discard an otherwise exportable fine track."""
+    invalid = {"objects": [{"private": "must not persist"}]}
+    harness = _ActionHarness(
+        tmp_path,
+        FakeVideoModel(
+            failure_script={"scene_semantics": [invalid, copy.deepcopy(invalid)]}
+        ),
+    )
+
+    completed = harness.run()
+
+    assert completed.status is TaskStatus.COMPLETED
+    jobs = [
+        job
+        for job in harness.store.list_inference_jobs(completed.task_id)
+        if job.stage == "scene_semantics"
+    ]
+    assert [job.ordinal for job in jobs] == [0, 1]
+    assert all("private" not in json.dumps(job.result) for job in jobs)
+    assert completed.result is not None
+    assert completed.result["objects"] == []
+    assert completed.result["initial_state"] == []
+    assert completed.result["final_state"] == []
+    assert completed.result["semantic_events"] == []
+    assert completed.result["outcome"] == {
+        "status": "unknown",
+        "description": "scene semantics unavailable",
+        "confidence": 0.0,
+    }
+    assert completed.result["warnings"] == [
+        {"code": "SCENE_SEMANTICS_UNAVAILABLE"}
+    ]
+    assert len(
+        list(iter_action_captions("scene_fallback", completed.result, source_fps=20.0))
+    ) == len(completed.result["segments"])
 
 
 def test_embodied_action_fake_pipeline_covers_a_non_grid_longer_video(
@@ -2130,6 +2188,88 @@ def test_pass_b_pipeline_uses_nondefault_runtime_cap_in_prompt_and_validation(
     )
 
 
+def test_pass_b_repair_normalizes_only_repairable_topology_and_warns(
+    tmp_path: Path,
+) -> None:
+    """The observed long/non-adjacent repair may complete without a third inference."""
+    invalid = _valid_boundary_output()
+    first_action = invalid["actions"][0]
+    first_action["fine_segments"] = [
+        {
+            "segment_index": 0,
+            "start": 0.0,
+            "end": 1.0,
+            "description": "right hand approaches red container",
+            "event_type": "approach",
+            "start_boundary_id": "a0-b0",
+            "end_boundary_id": "a0-b2",
+        }
+    ]
+    for offset, segment in enumerate(invalid["actions"][1]["fine_segments"], 1):
+        segment["segment_index"] = offset
+    harness = _ActionHarness(
+        tmp_path,
+        FakeVideoModel(
+            failure_script={"embodied_pass_b": [invalid, copy.deepcopy(invalid)]}
+        ),
+        max_fine_segment_seconds=0.75,
+    )
+
+    completed = harness.run()
+
+    assert completed.status is TaskStatus.COMPLETED
+    pass_b_jobs = [
+        job
+        for job in harness.store.list_inference_jobs(completed.task_id)
+        if job.stage == "embodied_pass_b"
+    ]
+    assert [
+        job.payload["schema_context"]["allow_topology_fallback"]
+        for job in pass_b_jobs
+    ] == [False, True]
+    assert pass_b_jobs[0].result == {
+        "_schema_validation": {
+            "schema_name": "BoundaryPlan",
+            "status": "invalid",
+            "issue_codes": [
+                "SEGMENT_TOO_LONG",
+                "SEGMENT_BOUNDARY_NOT_ADJACENT",
+            ],
+        }
+    }
+    assert pass_b_jobs[1].result is not None
+    assert pass_b_jobs[1].result["_schema_validation"]["status"] == "normalized"
+    assert completed.result is not None
+    assert completed.result["warnings"] == [
+        {
+            "code": "BOUNDARY_TOPOLOGY_NORMALIZED",
+            "issue_codes": [
+                "SEGMENT_TOO_LONG",
+                "SEGMENT_BOUNDARY_NOT_ADJACENT",
+            ],
+            "count": 4,
+        }
+    ]
+    assert [segment["segment_index"] for segment in completed.result["segments"]] == [
+        0,
+        1,
+        2,
+        3,
+    ]
+    assert all(
+        segment["end"] - segment["start"] <= 0.75
+        for segment in completed.result["segments"]
+    )
+    exported = list(
+        iter_action_captions(
+            "boundary_normalized",
+            completed.result,
+            source_fps=20.0,
+        )
+    )
+    assert len(exported) == len(completed.result["segments"])
+
+
 def test_same_worker_reuses_video_session_object_and_backend_cache(tmp_path: Path) -> None:
     """Task affinity must reuse actual preprocessing state, not only a shared ID."""
 
@@ -2157,7 +2297,7 @@ def test_same_worker_reuses_video_session_object_and_backend_cache(tmp_path: Pat
 
     assert completed.status is TaskStatus.COMPLETED
     assert backend.preprocessing_count == 1
-    assert len(backend.sessions) == 3
+    assert len(backend.sessions) == 4
     assert all(session is backend.sessions[0] for session in backend.sessions)
     assert backend.sessions[-1].sampled_frames == (
         FrameRef(harness.video_path.resolve(), 0.0),
@@ -2307,6 +2447,7 @@ def test_pass_b_temporal_repair_uses_only_sanitized_codes_and_trusted_inputs(
         "embodied_pass_b",
         "embodied_pass_b",
         "embodied_enrichment",
+        "scene_semantics",
     ]
     repair_prompt = harness.model.calls[2].prompt
     assert "SEGMENT_GAP" in repair_prompt
@@ -3109,6 +3250,7 @@ def test_affinity_fallback_reconstructs_same_local_video_session_on_new_worker(
     assert [call.stage for call in fallback_model.calls] == [
         "embodied_pass_b",
         "embodied_enrichment",
+        "scene_semantics",
     ]
     assert all(call.video_path == harness.video_path.resolve() for call in fallback_model.calls)
     assert all(call.video_session_id == task.task_id for call in fallback_model.calls)
@@ -3121,7 +3263,11 @@ def test_affinity_fallback_reconstructs_same_local_video_session_on_new_worker(
         == fallback_model.calls[0].video_session.metadata
     )
     assert pass_a_backend.initial_cache == [{}]
-    assert fallback_backend.initial_cache == [{}, {"owner": "gpu-1"}]
+    assert fallback_backend.initial_cache == [
+        {},
+        {"owner": "gpu-1"},
+        {"owner": "gpu-1"},
+    ]
     for job in harness.store.list_inference_jobs(task.task_id):
         if job.stage in {"embodied_pass_b", "embodied_enrichment"}:
             assert job.affinity_worker_id == "gpu-0"

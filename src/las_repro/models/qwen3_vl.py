@@ -34,6 +34,7 @@ STAGE_MAX_NEW_TOKENS = {
     "embodied_pass_a": 4_096,
     "embodied_pass_b": 8_192,
     "embodied_enrichment": 4_096,
+    "scene_semantics": 4_096,
 }
 _MEDIA_RESOLUTION_PIXELS = {
     "low": (4 * 32 * 32, 64 * 32 * 32),

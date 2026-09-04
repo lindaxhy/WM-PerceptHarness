@@ -11,6 +11,14 @@
 
 现有证据不支持立即进行广泛微调。更合理的顺序是：先补齐遮挡、状态、结果和人手 actor schema，调整提示词和事件聚合，再用更大的盲测、人工复核集复测。只有视觉语义遗漏或时间边界偏差在这些改动后仍稳定复现，才应针对性 LoRA/SFT。
 
+### 实施后复验（同日，后续证据）
+
+本节是对下文冻结基线的增量更新，不回写或美化原始评分。已落实以下修改：Pass B 唯一修复轮可对仅含 `SEGMENT_TOO_LONG`、`SEGMENT_BOUNDARY_NOT_ADJACENT`、或可由合法 Pass A 父描述替代的 `SEGMENT_DESCRIPTION_INVALID` 做确定性拓扑重建；最终结果仍须通过原严格 validator，并公开 `BOUNDARY_TOPOLOGY_NORMALIZED`。actor 增加 `left_hand/right_hand/both_hands`。最终细片段额外生成确定性的 `grouped_semantic_events`，同时新增完整视频 `SceneSemantics` 阶段，schema 可表达对象清单、初终态、结果、重叠事件及 `occlusion_enter/occluded/occlusion_exit`。场景阶段两次 schema 无效不会丢弃可导出的细片段，而是写入显式 `SCENE_SEMANTICS_UNAVAILABLE`。
+
+冻结的 `full_0021` 在隔离 GPU 复验中由原 FAILED 变为 COMPLETED：14 个严格连续细片段、5 个确定性聚合事件，API、SQLite、导出文件完全一致，JSONL 可导出。该修复解决了结果可用性与 caption 契约问题，但没有改善既有四样本上的语义分数：将 46 个细片段聚为 23 个事件后，action-compatible coverage 仍为 `0.12441008674259292`，最大 IoU 均值由细片段的 `0.42306189086185725` 变为聚合后的约 `0.37116`（聚合不是语义修复）。新 `full_0021` 的 actor 为 `9/9`，action 为 `0/6`，target 为 `3/3`；同样说明角色标签改善不能替代动作语义召回。
+
+场景 schema 的真实 GPU 结果同样必须如实区分“可表达”和“已识别”。对已知含 1 条遮挡记录、3 个遮挡 semantic events 的 `full_0001`，最终 v7 运行在 140.106 秒完成 13 个细片段和 10 个确定性聚合事件；但 Qwen 场景阶段初次与唯一修复输出都为空，被 `EMPTY_SCENE_OBJECTS`、`EMPTY_SCENE_EVENTS`、`SCENE_REQUIRED_OBJECT_MISSING` 拒绝，最终按设计降级，显式遮挡仍为 `0/3`。API、SQLite、保存结果一致，13 行 JSONL 导出通过，非终态 task/job 均为 0，服务随后停止。此前 v5 曾产生 schema 合法但退化的空场景结果，促成了非空和可信目标骨架约束；v6/v7 证明这些约束能阻止假成功，但当前模型/提示组合尚未缩小该样本的遮挡召回差距。因此下面“先改 schema 再决定微调”的建议只完成了 schema 与评估前提，下一步应在人工复核盲测上评估更专门的视觉提示、分阶段检测或针对性训练。
+
 ## 1. 已实现能力
 
 ### 1.1 API、算子与模板

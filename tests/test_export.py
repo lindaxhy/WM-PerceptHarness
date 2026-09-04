@@ -95,6 +95,100 @@ def test_export_uses_half_open_frame_spans_stable_ids_and_current_schema(
     assert rows[0].needs_review is False
 
 
+def test_export_ignores_valid_additive_semantic_events(
+    embodied_result: dict[str, object],
+) -> None:
+    """LAS-aligned grouped output must not break the existing fine-caption export."""
+    embodied_result["grouped_semantic_events"] = [
+        {
+            "event_index": 0,
+            "start": 0.0,
+            "end": 0.41,
+            "actor": "right_hand",
+            "action": "reach",
+            "target": "red container",
+            "description": "right hand reaches the red container",
+            "confidence": 0.9,
+            "source_segment_indices": [0],
+        },
+        {
+            "event_index": 1,
+            "start": 0.41,
+            "end": 1.0,
+            "actor": "right_hand",
+            "action": "grasp",
+            "target": "red container",
+            "description": "right hand grasps the red container",
+            "confidence": 0.95,
+            "source_segment_indices": [1],
+        },
+    ]
+    embodied_result.update(
+        {
+            "objects": [],
+            "initial_state": [],
+            "final_state": [],
+            "outcome": {
+                "status": "unknown",
+                "description": "scene semantics unavailable",
+                "confidence": 0.0,
+            },
+            "semantic_events": [],
+            "warnings": [{"code": "SCENE_SEMANTICS_UNAVAILABLE"}],
+        }
+    )
+
+    rows = list(iter_action_captions("video_semantic", embodied_result, source_fps=30.0))
+
+    assert len(rows) == 2
+    assert [row.source_segment_index for row in rows] == [0, 1]
+
+
+def test_export_revalidates_scene_objects_against_trusted_fine_targets(
+    embodied_result: dict[str, object],
+) -> None:
+    embodied_result.update(
+        {
+            "objects": [
+                {
+                    "object_id": "red_container",
+                    "name": "red container",
+                    "description": "visible red container",
+                }
+            ],
+            "initial_state": [],
+            "final_state": [],
+            "outcome": {
+                "status": "unknown",
+                "description": "task result is not fully visible",
+                "confidence": 0.4,
+            },
+            "semantic_events": [
+                {
+                    "event_index": 0,
+                    "start": 0.0,
+                    "end": 1.0,
+                    "event_type": "move",
+                    "actor": "right_hand",
+                    "target_object_id": "red_container",
+                    "description": "right hand moves red container",
+                    "confidence": 0.9,
+                }
+            ],
+        }
+    )
+
+    assert len(list(iter_action_captions("trusted", embodied_result, source_fps=30))) == 2
+
+    embodied_result["objects"][0].update(
+        {"object_id": "cup", "name": "cup", "description": "visible cup"}
+    )
+    embodied_result["semantic_events"][0]["target_object_id"] = "cup"
+
+    with pytest.raises(ActionCaptionExportError):
+        list(iter_action_captions("tampered", embodied_result, source_fps=30))
+
+
 def test_export_accepts_canonical_enum_normalization_warning_without_mutation(
     embodied_result: dict[str, object],
 ) -> None:

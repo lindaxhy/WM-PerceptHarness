@@ -258,6 +258,28 @@ def test_enrichment_accepts_proven_touch_skill_without_widening_skill_vocabulary
         )
 
 
+@pytest.mark.parametrize("actor", ["left_hand", "right_hand", "both_hands"])
+def test_enrichment_accepts_visible_human_hand_actors(actor: str) -> None:
+    """Human-hand videos must not be lossily relabeled as robot grippers."""
+    result = EnrichmentResult.model_validate(
+        {
+            "segments": [
+                {
+                    "segment_index": 0,
+                    "actor": actor,
+                    "actor_state": "holding",
+                    "skill": "move",
+                    "target": "container",
+                    "visual_motion_state": "active",
+                    "confidence": 0.9,
+                }
+            ]
+        }
+    )
+
+    assert result.segments[0].actor.value == actor
+
+
 @pytest.mark.parametrize("invalid_time", ["0.0", False, True])
 def test_models_reject_coercive_timestamp_inputs(invalid_time: object):
     """Parsing strings or booleans would silently repair model-supplied times."""
@@ -1516,6 +1538,242 @@ def test_boundary_plan_requires_fine_segments_from_adjacent_boundary_points(
     assert "SEGMENT_BOUNDARY_NOT_ADJACENT" in {
         issue.code for issue in error.value.issues
     }
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        "hand places the apple into container",
+        "Right hand places the apple",
+        "right hand moves this object through an excessively wordy visible action phrase",
+        "right hand " + "moves " * 10,
+    ],
+)
+def test_boundary_plan_rejects_fine_descriptions_outside_export_contract(
+    valid_boundary_plan: BoundaryPlan,
+    coarse_plan: CoarsePlan,
+    description: str,
+) -> None:
+    """A task must not complete with a caption that its own exporter rejects."""
+    broken = copy.deepcopy(valid_boundary_plan)
+    broken.actions[0].fine_segments[0].description = description
+
+    with pytest.raises(TemporalValidationError) as error:
+        validate_boundary_plan(broken, coarse_plan)
+
+    assert "SEGMENT_DESCRIPTION_INVALID" in {
+        issue.code for issue in error.value.issues
+    }
+
+
+def _repairable_boundary_output() -> tuple[dict[str, Any], dict[str, Any]]:
+    coarse = {
+        "task_description": "move the red container",
+        "actions": [
+            {
+                "action_index": 0,
+                "start": 0.0,
+                "end": 2.0,
+                "description": "right hand moves red container",
+                "event_type": "transport",
+            }
+        ],
+    }
+    boundary = {
+        "task_description": coarse["task_description"],
+        "actions": [
+            {
+                **coarse["actions"][0],
+                "boundary_points": [
+                    {
+                        "boundary_id": "visible-start",
+                        "time": 0.0,
+                        "event_type": "action_start",
+                        "visual_evidence": "right hand starts moving container",
+                    },
+                    {
+                        "boundary_id": "visible-middle",
+                        "time": 1.0,
+                        "event_type": "transport_continue",
+                        "visual_evidence": "container changes visible direction",
+                    },
+                    {
+                        "boundary_id": "visible-end",
+                        "time": 2.0,
+                        "event_type": "action_end",
+                        "visual_evidence": "container visibly stops",
+                    },
+                ],
+                "fine_segments": [
+                    {
+                        "segment_index": 0,
+                        "start": 0.0,
+                        "end": 2.0,
+                        "description": "right hand moves red container",
+                        "event_type": "transport_continue",
+                        "start_boundary_id": "visible-start",
+                        "end_boundary_id": "visible-end",
+                    }
+                ],
+            }
+        ],
+    }
+    return coarse, boundary
+
+
+def _boundary_fallback_context(
+    coarse: dict[str, Any], enabled: bool
+) -> dict[str, Any]:
+    return {
+        "coarse_plan": coarse,
+        "max_segment_seconds": 1.0,
+        "allow_topology_fallback": enabled,
+    }
+
+
+def test_boundary_topology_fallback_is_repair_only_and_rebuilds_adjacent_segments():
+    """Removing the fallback would restore the observed full_0021 terminal failure."""
+    coarse, boundary = _repairable_boundary_output()
+
+    strict = DEFAULT_OUTPUT_SCHEMAS.sanitize(
+        "BoundaryPlan",
+        boundary,
+        _boundary_fallback_context(coarse, False),
+    )
+    repaired = DEFAULT_OUTPUT_SCHEMAS.sanitize(
+        "BoundaryPlan",
+        boundary,
+        _boundary_fallback_context(coarse, True),
+    )
+
+    assert strict == {
+        "_schema_validation": {
+            "schema_name": "BoundaryPlan",
+            "status": "invalid",
+            "issue_codes": [
+                "SEGMENT_TOO_LONG",
+                "SEGMENT_BOUNDARY_NOT_ADJACENT",
+            ],
+        }
+    }
+    assert repaired["_schema_validation"] == {
+        "schema_name": "BoundaryPlan",
+        "status": "normalized",
+        "issue_codes": [
+            "SEGMENT_TOO_LONG",
+            "SEGMENT_BOUNDARY_NOT_ADJACENT",
+        ],
+        "normalized_field_count": 2,
+    }
+    normalized = repaired["data"]
+    assert normalized["actions"][0]["boundary_points"] == boundary["actions"][0][
+        "boundary_points"
+    ]
+    assert [
+        (
+            segment["segment_index"],
+            segment["start"],
+            segment["end"],
+            segment["start_boundary_id"],
+            segment["end_boundary_id"],
+        )
+        for segment in normalized["actions"][0]["fine_segments"]
+    ] == [
+        (0, 0.0, 1.0, "visible-start", "visible-middle"),
+        (1, 1.0, 2.0, "visible-middle", "visible-end"),
+    ]
+    validate_boundary_plan(
+        BoundaryPlan.model_validate(normalized),
+        CoarsePlan.model_validate(coarse),
+        max_segment_seconds=1.0,
+    )
+
+
+def test_boundary_topology_fallback_rejects_mixed_nonallowlisted_errors():
+    """A real gap must not be hidden by the narrow hard-cap/reference recovery."""
+    coarse, boundary = _repairable_boundary_output()
+    boundary["actions"][0]["fine_segments"][0]["start"] = 0.1
+
+    repaired = DEFAULT_OUTPUT_SCHEMAS.sanitize(
+        "BoundaryPlan",
+        boundary,
+        _boundary_fallback_context(coarse, True),
+    )
+
+    assert repaired["_schema_validation"]["status"] == "invalid"
+    assert "SEGMENT_START_MISMATCH_PARENT" in repaired["_schema_validation"][
+        "issue_codes"
+    ]
+    assert "data" not in repaired
+
+
+def test_boundary_topology_fallback_uses_valid_parent_caption_for_invalid_fine_caption():
+    """Observed repair output may reuse its validated visible parent phase safely."""
+    coarse, boundary = _repairable_boundary_output()
+    boundary["actions"][0]["fine_segments"][0]["description"] = (
+        "hand moves red container"
+    )
+
+    repaired = DEFAULT_OUTPUT_SCHEMAS.sanitize(
+        "BoundaryPlan",
+        boundary,
+        _boundary_fallback_context(coarse, True),
+    )
+
+    assert repaired["_schema_validation"]["status"] == "normalized"
+    assert repaired["_schema_validation"]["issue_codes"] == [
+        "SEGMENT_TOO_LONG",
+        "SEGMENT_BOUNDARY_NOT_ADJACENT",
+        "SEGMENT_DESCRIPTION_INVALID",
+    ]
+    assert {
+        segment["description"]
+        for segment in repaired["data"]["actions"][0]["fine_segments"]
+    } == {"right hand moves red container"}
+
+
+def test_boundary_topology_fallback_rejects_invalid_fine_and_parent_captions():
+    """Fallback must not manufacture an actor when no valid visible caption exists."""
+    coarse, boundary = _repairable_boundary_output()
+    coarse["actions"][0]["description"] = "hand moves red container"
+    boundary["actions"][0]["description"] = "hand moves red container"
+    boundary["actions"][0]["fine_segments"][0]["description"] = (
+        "hand moves red container"
+    )
+
+    repaired = DEFAULT_OUTPUT_SCHEMAS.sanitize(
+        "BoundaryPlan",
+        boundary,
+        _boundary_fallback_context(coarse, True),
+    )
+
+    assert repaired["_schema_validation"]["status"] == "invalid"
+    assert "data" not in repaired
+
+
+def test_boundary_normalized_envelope_is_independently_revalidated():
+    """Coordinator unwrapping must depend on canonical embedded topology."""
+    coarse, boundary = _repairable_boundary_output()
+    context = _boundary_fallback_context(coarse, True)
+    envelope = DEFAULT_OUTPUT_SCHEMAS.sanitize("BoundaryPlan", boundary, context)
+
+    parsed = DEFAULT_OUTPUT_SCHEMAS.normalized_result(
+        "BoundaryPlan", envelope, context
+    )
+    disabled = DEFAULT_OUTPUT_SCHEMAS.normalized_result(
+        "BoundaryPlan",
+        envelope,
+        _boundary_fallback_context(coarse, False),
+    )
+
+    assert parsed is not None
+    assert parsed.data == envelope["data"]
+    assert parsed.issue_codes == (
+        "SEGMENT_TOO_LONG",
+        "SEGMENT_BOUNDARY_NOT_ADJACENT",
+    )
+    assert parsed.normalized_field_count == 2
+    assert disabled is None
 
 
 def test_enrichment_requires_exact_ordered_unique_index_set_and_six_fields():

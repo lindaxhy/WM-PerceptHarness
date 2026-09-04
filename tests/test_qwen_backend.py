@@ -745,6 +745,7 @@ def test_qwen_fails_closed_and_cleans_up_when_video_only_extraction_is_unavailab
         ("embodied_pass_a", 4_096),
         ("embodied_pass_b", 8_192),
         ("embodied_enrichment", 4_096),
+        ("scene_semantics", 4_096),
     ],
 )
 def test_generation_token_budget_never_exceeds_stage_cap(
