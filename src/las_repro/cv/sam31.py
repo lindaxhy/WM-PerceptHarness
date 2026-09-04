@@ -44,6 +44,7 @@ _PINNED_REPOSITORY_REVISION = "660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7"
 _LOAD_FAILURE = "Unable to load local SAM3.1 runtime"
 _INFERENCE_FAILURE = "SAM3.1 CV evidence inference failed"
 _OOM_FAILURE = "SAM3.1 CV evidence inference ran out of memory"
+_CLOSE_FAILURE = "Unable to close SAM3.1 runtime"
 _HASH_READ_BYTES = 1024 * 1024
 _MAX_OVERLAYS = 24
 _MAX_OBJECTS = 16
@@ -92,6 +93,10 @@ class _PinnedBlob:
     path: str
     object_id: str
     size: int
+
+
+class _CleanupFailure(Exception):
+    """Mark a cleanup-only BaseException for boundary sanitization."""
 
 
 @dataclass(slots=True)
@@ -581,6 +586,7 @@ class Sam31EvidenceProvider:
         """Release predictor-owned process state once."""
         if self._closed:
             return
+        caller_error = sys.exception()
         self._closed = True
         predictor = self._predictor
         self._predictor = None
@@ -608,10 +614,8 @@ class Sam31EvidenceProvider:
         finally:
             self._runtime_directory = None
             self._sam_source_root = None
-        if cleanup_error is not None:
-            if isinstance(cleanup_error, Exception):
-                raise CvProviderError("Unable to close SAM3.1 runtime") from None
-            raise cleanup_error
+        if cleanup_error is not None and caller_error is None:
+            raise CvProviderError(_CLOSE_FAILURE) from None
 
     def _materialize(
         self,
@@ -740,7 +744,7 @@ class Sam31EvidenceProvider:
                     if not stream_failed:
                         if writer is not None:
                             writer.abort()
-                        raise
+                        raise _CleanupFailure from None
         try:
             if next_expected_index != frame_count:
                 raise ValueError
@@ -853,16 +857,26 @@ def _validated_repository(value: Path | str) -> Path:
 
 
 def _private_runtime_directory() -> Path:
-    path = Path(tempfile.mkdtemp(prefix=".las-sam31-runtime-"))
-    path.chmod(0o700)
-    status = path.stat()
-    if status.st_uid != os.getuid() or stat.S_IMODE(status.st_mode) != 0o700:
+    raw_path = tempfile.mkdtemp(prefix=".las-sam31-runtime-")
+    path: Path | None = None
+    try:
+        path = Path(raw_path)
+        path.chmod(0o700)
+        status = path.stat()
+        if status.st_uid != os.getuid() or stat.S_IMODE(status.st_mode) != 0o700:
+            raise ValueError
+        return path
+    except BaseException:
+        if path is not None:
+            try:
+                _remove_tree(path)
+            except BaseException:
+                pass
         try:
-            _remove_tree(path)
+            shutil.rmtree(raw_path)
         except BaseException:
             pass
-        raise ValueError
-    return path
+        raise
 
 
 def _snapshot_local_asset(
@@ -1537,7 +1551,7 @@ def _predictor_session(
             )
         except BaseException:
             if not body_failed:
-                raise
+                raise _CleanupFailure from None
 
 
 def _parse_frame_response(

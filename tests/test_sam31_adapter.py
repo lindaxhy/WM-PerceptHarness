@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from contextlib import closing
 import hashlib
 import importlib
 import json
@@ -1257,6 +1258,187 @@ def test_stream_cleanup_failure_does_not_mask_primary_cuda_oom(
     assert fake_torch.cuda.empty_cache_calls == 1
 
 
+@pytest.mark.parametrize(
+    "failure_factory",
+    [
+        pytest.param(
+            lambda: OSError("private stream close path"), id="oserror"
+        ),
+        pytest.param(
+            lambda: KeyboardInterrupt("private stream close interrupt"),
+            id="keyboard",
+        ),
+        pytest.param(
+            lambda: SystemExit("private stream close exit"), id="system-exit"
+        ),
+    ],
+)
+def test_successful_stream_cleanup_failure_is_sanitized_and_cleans_outputs(
+    tmp_path: Path,
+    fake_torch: SimpleNamespace,
+    failure_factory: Callable[[], BaseException],
+) -> None:
+    request = make_request(tmp_path)
+    stream_closed = False
+
+    class CompleteStream:
+        def __init__(self, frame_count: int) -> None:
+            self._outputs = iter(frame_output(index) for index in range(frame_count))
+
+        def __iter__(self) -> CompleteStream:
+            return self
+
+        def __next__(self) -> dict[str, Any]:
+            return next(self._outputs)
+
+        def close(self) -> None:
+            nonlocal stream_closed
+            stream_closed = True
+            raise failure_factory()
+
+    class PredictorWithFailingStreamClose(PredictorDouble):
+        def handle_stream_request(self, request: dict[str, Any]) -> CompleteStream:
+            self.stream_requests.append(dict(request))
+            return CompleteStream(request["max_frame_num_to_track"] + 1)
+
+    predictor = PredictorWithFailingStreamClose()
+    provider = make_provider(predictor, fake_torch, MaterializerDouble())
+    staging = tmp_path / "staging"
+    raised: BaseException | None = None
+
+    try:
+        provider.analyze(request, staging)
+    except BaseException as error:
+        raised = error
+
+    assert type(raised) is CvProviderError
+    assert str(raised) == "SAM3.1 CV evidence inference failed"
+    assert stream_closed is True
+    assert predictor.requests[-1]["type"] == "close_session"
+    assert list(staging.glob(".sam31-frames-*")) == []
+    assert not (staging / "masks").exists()
+    assert "private" not in str(raised)
+
+
+@pytest.mark.parametrize(
+    "failure_factory",
+    [
+        pytest.param(
+            lambda: OSError("private session close path"), id="oserror"
+        ),
+        pytest.param(
+            lambda: KeyboardInterrupt("private session close interrupt"),
+            id="keyboard",
+        ),
+        pytest.param(
+            lambda: SystemExit("private session close exit"), id="system-exit"
+        ),
+    ],
+)
+def test_successful_session_cleanup_failure_is_sanitized_and_cleans_outputs(
+    tmp_path: Path,
+    fake_torch: SimpleNamespace,
+    failure_factory: Callable[[], BaseException],
+) -> None:
+    request = make_request(tmp_path)
+    close_attempts = 0
+
+    class PredictorWithFailingSessionClose(PredictorDouble):
+        def handle_request(self, request: dict[str, Any]) -> dict[str, Any]:
+            nonlocal close_attempts
+            response = super().handle_request(request)
+            if request["type"] == "close_session":
+                close_attempts += 1
+                raise failure_factory()
+            return response
+
+    predictor = PredictorWithFailingSessionClose()
+    provider = make_provider(predictor, fake_torch, MaterializerDouble())
+    staging = tmp_path / "staging"
+    raised: BaseException | None = None
+
+    try:
+        provider.analyze(request, staging)
+    except BaseException as error:
+        raised = error
+
+    assert type(raised) is CvProviderError
+    assert str(raised) == "SAM3.1 CV evidence inference failed"
+    assert close_attempts == 1
+    assert list(staging.glob(".sam31-frames-*")) == []
+    assert not (staging / "masks").exists()
+    assert "private" not in str(raised)
+
+
+@pytest.mark.parametrize(
+    "primary_kind", ["ordinary", "oom", "keyboard", "system-exit"]
+)
+def test_inference_primary_wins_over_stream_and_session_baseexception_cleanup(
+    tmp_path: Path,
+    fake_torch: SimpleNamespace,
+    primary_kind: str,
+) -> None:
+    request = make_request(tmp_path)
+    if primary_kind == "ordinary":
+        primary: BaseException = RuntimeError("private inference failure")
+    elif primary_kind == "oom":
+        primary = fake_torch.cuda.OutOfMemoryError("private allocator failure")
+    elif primary_kind == "keyboard":
+        primary = KeyboardInterrupt("primary inference interrupt")
+    else:
+        primary = SystemExit("primary inference exit")
+    stream_close_attempts = 0
+    session_close_attempts = 0
+
+    class FailingStream:
+        def __iter__(self) -> FailingStream:
+            return self
+
+        def __next__(self) -> dict[str, Any]:
+            raise primary
+
+        def close(self) -> None:
+            nonlocal stream_close_attempts
+            stream_close_attempts += 1
+            raise KeyboardInterrupt("secondary stream cleanup")
+
+    class PredictorWithFailingCleanup(PredictorDouble):
+        def handle_stream_request(self, request: dict[str, Any]) -> FailingStream:
+            self.stream_requests.append(dict(request))
+            return FailingStream()
+
+        def handle_request(self, request: dict[str, Any]) -> dict[str, Any]:
+            nonlocal session_close_attempts
+            if request["type"] == "close_session":
+                session_close_attempts += 1
+                raise SystemExit("secondary session cleanup")
+            return super().handle_request(request)
+
+    provider = make_provider(
+        PredictorWithFailingCleanup(), fake_torch, MaterializerDouble()
+    )
+    staging = tmp_path / "staging"
+    raised: BaseException | None = None
+
+    try:
+        provider.analyze(request, staging)
+    except BaseException as error:
+        raised = error
+
+    if primary_kind == "ordinary":
+        assert type(raised) is CvProviderError
+        assert str(raised) == "SAM3.1 CV evidence inference failed"
+    elif primary_kind == "oom":
+        assert type(raised) is CvOutOfMemoryError
+        assert str(raised) == "SAM3.1 CV evidence inference ran out of memory"
+    else:
+        assert raised is primary
+    assert stream_close_attempts == 1
+    assert session_close_attempts == 1
+    assert list(staging.glob(".sam31-frames-*")) == []
+    assert not (staging / "masks").exists()
+
+
 def test_baseexception_cleanup_cannot_mask_primary_stream_interrupt(
     tmp_path: Path, fake_torch: SimpleNamespace
 ) -> None:
@@ -1491,6 +1673,130 @@ def test_provider_close_surfaces_real_runtime_cleanup_oserror(
         provider.close()
 
     assert runtime_directory.exists()
+
+
+@pytest.mark.parametrize("failure_stage", ["shutdown", "restore", "remove"])
+@pytest.mark.parametrize(
+    "failure_factory",
+    [
+        pytest.param(
+            lambda: OSError("private close filesystem path"), id="oserror"
+        ),
+        pytest.param(
+            lambda: KeyboardInterrupt("private close interrupt"), id="keyboard"
+        ),
+        pytest.param(
+            lambda: SystemExit("private close exit"), id="system-exit"
+        ),
+    ],
+)
+def test_direct_provider_close_sanitizes_cleanup_failure_and_attempts_later_steps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_torch: SimpleNamespace,
+    failure_stage: str,
+    failure_factory: Callable[[], BaseException],
+) -> None:
+    runtime_directory = tmp_path / "private-runtime"
+    runtime_directory.mkdir(mode=0o700)
+    failure = failure_factory()
+    cleanup_steps: list[str] = []
+
+    class PredictorWithRecordedShutdown(PredictorDouble):
+        def shutdown(self) -> None:
+            cleanup_steps.append("shutdown")
+            if failure_stage == "shutdown":
+                raise failure
+
+    def restore_imports(_snapshot: Any) -> None:
+        cleanup_steps.append("restore")
+        if failure_stage == "restore":
+            raise failure
+
+    real_remove_tree = SAM31_MODULE._remove_tree
+
+    def remove_runtime(path: Path) -> None:
+        cleanup_steps.append("remove")
+        real_remove_tree(path)
+        if failure_stage == "remove":
+            raise failure
+
+    monkeypatch.setattr(SAM31_MODULE, "_restore_sam_modules", restore_imports)
+    monkeypatch.setattr(SAM31_MODULE, "_remove_tree", remove_runtime)
+    provider = make_provider(
+        PredictorWithRecordedShutdown(),
+        fake_torch,
+        MaterializerDouble(),
+        runtime_directory=runtime_directory,
+        import_snapshot=object(),
+    )
+    raised: BaseException | None = None
+
+    try:
+        provider.close()
+    except BaseException as error:
+        raised = error
+
+    assert type(raised) is CvProviderError
+    assert str(raised) == "Unable to close SAM3.1 runtime"
+    assert "private" not in str(raised)
+    assert cleanup_steps == ["shutdown", "restore", "remove"]
+    assert not runtime_directory.exists()
+
+
+@pytest.mark.parametrize("primary_kind", ["ordinary", "keyboard", "system-exit"])
+def test_context_close_preserves_caller_primary_and_attempts_every_cleanup_step(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_torch: SimpleNamespace,
+    primary_kind: str,
+) -> None:
+    runtime_directory = tmp_path / "private-runtime"
+    runtime_directory.mkdir(mode=0o700)
+    if primary_kind == "ordinary":
+        primary: BaseException = RuntimeError("caller primary failure")
+    elif primary_kind == "keyboard":
+        primary = KeyboardInterrupt("caller primary interrupt")
+    else:
+        primary = SystemExit("caller primary exit")
+    cleanup_steps: list[str] = []
+
+    class PredictorWithInterruptedShutdown(PredictorDouble):
+        def shutdown(self) -> None:
+            cleanup_steps.append("shutdown")
+            raise KeyboardInterrupt("private shutdown interrupt")
+
+    def interrupted_restore(_snapshot: Any) -> None:
+        cleanup_steps.append("restore")
+        raise OSError("private restore path")
+
+    real_remove_tree = SAM31_MODULE._remove_tree
+
+    def interrupted_remove(path: Path) -> None:
+        cleanup_steps.append("remove")
+        real_remove_tree(path)
+        raise SystemExit("private remove exit")
+
+    monkeypatch.setattr(SAM31_MODULE, "_restore_sam_modules", interrupted_restore)
+    monkeypatch.setattr(SAM31_MODULE, "_remove_tree", interrupted_remove)
+    provider = make_provider(
+        PredictorWithInterruptedShutdown(),
+        fake_torch,
+        MaterializerDouble(),
+        runtime_directory=runtime_directory,
+        import_snapshot=object(),
+    )
+    raised: BaseException | None = None
+
+    try:
+        with closing(provider):
+            raise primary
+    except BaseException as error:
+        raised = error
+
+    assert raised is primary
+    assert cleanup_steps == ["shutdown", "restore", "remove"]
+    assert not runtime_directory.exists()
 
 
 def test_non_oom_failure_is_sanitized_closed_and_not_retried(
@@ -2030,6 +2336,120 @@ def test_source_snapshot_rejects_incomplete_or_changed_destination(
         SAM31_MODULE._snapshot_repository_source(tmp_path, destination)
 
     assert not destination.exists()
+
+
+@pytest.mark.parametrize("validation_step", ["chmod", "stat"])
+@pytest.mark.parametrize(
+    "failure_kind",
+    ["oserror", "keyboard", "system-exit"],
+)
+def test_load_cleans_owned_runtime_directory_when_validation_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    validation_step: str,
+    failure_kind: str,
+) -> None:
+    repository, checkpoint, digest = local_runtime_assets(tmp_path)
+    monkeypatch.setattr(SAM31_MODULE.subprocess, "run", successful_git_run([]))
+    real_mkdtemp = SAM31_MODULE.tempfile.mkdtemp
+    created_paths: list[Path] = []
+
+    def create_real_runtime_directory(*, prefix: str) -> str:
+        created = Path(real_mkdtemp(prefix=prefix, dir=tmp_path))
+        created_paths.append(created)
+        return str(created)
+
+    monkeypatch.setattr(
+        SAM31_MODULE.tempfile, "mkdtemp", create_real_runtime_directory
+    )
+    if failure_kind == "oserror":
+        primary: BaseException = OSError("private validation path")
+    elif failure_kind == "keyboard":
+        primary = KeyboardInterrupt("private validation interrupt")
+    else:
+        primary = SystemExit("private validation exit")
+    original_validation = getattr(Path, validation_step)
+    validation_failures = 0
+
+    def fail_runtime_path_operation(
+        path: Path, *args: Any, **kwargs: Any
+    ) -> Any:
+        nonlocal validation_failures
+        if (
+            path.parent == tmp_path
+            and path.name.startswith(".las-sam31-runtime-")
+        ):
+            validation_failures += 1
+            if validation_failures == 1:
+                raise primary
+            raise KeyboardInterrupt("secondary path cleanup failure")
+        return original_validation(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, validation_step, fail_runtime_path_operation)
+    real_remove_tree = SAM31_MODULE._remove_tree
+    cleanup_attempts: list[Path] = []
+
+    def remove_then_interrupt(path: Path) -> None:
+        cleanup_attempts.append(path)
+        real_remove_tree(path)
+        raise KeyboardInterrupt("secondary cleanup failure")
+
+    monkeypatch.setattr(SAM31_MODULE, "_remove_tree", remove_then_interrupt)
+
+    raised: BaseException | None = None
+    try:
+        Sam31EvidenceProvider.load(
+            repository,
+            checkpoint,
+            digest,
+            predictor_factory=lambda **_: PredictorDouble(),
+        )
+    except BaseException as error:
+        raised = error
+
+    if failure_kind == "oserror":
+        assert type(raised) is CvProviderError
+        assert str(raised) == "Unable to load local SAM3.1 runtime"
+    else:
+        assert raised is primary
+    assert validation_failures >= 1
+    assert cleanup_attempts == created_paths
+    assert list(tmp_path.glob(".las-sam31-runtime-*")) == []
+
+
+def test_load_cleans_owned_runtime_directory_when_path_conversion_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, checkpoint, digest = local_runtime_assets(tmp_path)
+    monkeypatch.setattr(SAM31_MODULE.subprocess, "run", successful_git_run([]))
+    real_mkdtemp = SAM31_MODULE.tempfile.mkdtemp
+    created_paths: list[Path] = []
+
+    def create_bytes_runtime_directory(*, prefix: str) -> bytes:
+        del prefix
+        created = real_mkdtemp(
+            prefix=b".las-sam31-runtime-", dir=os.fsencode(tmp_path)
+        )
+        created_paths.append(Path(os.fsdecode(created)))
+        return created
+
+    monkeypatch.setattr(
+        SAM31_MODULE.tempfile, "mkdtemp", create_bytes_runtime_directory
+    )
+
+    with pytest.raises(
+        CvProviderError, match="^Unable to load local SAM3.1 runtime$"
+    ):
+        Sam31EvidenceProvider.load(
+            repository,
+            checkpoint,
+            digest,
+            predictor_factory=lambda **_: PredictorDouble(),
+        )
+
+    assert len(created_paths) == 1
+    assert list(tmp_path.glob(".las-sam31-runtime-*")) == []
 
 
 def test_load_verifies_local_revision_and_hash_then_calls_official_builder(
