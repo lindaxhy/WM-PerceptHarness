@@ -18,12 +18,20 @@ from las_repro.cv.contracts import (
     EvidenceThresholds,
     FrameTimeline,
     FrameTimestamp,
+    OverlayRecord,
     SamplingPolicy,
     TrackObservation,
 )
 
 
 SHA256 = "a" * 64
+
+
+class BombList(list):
+    """A sized hostile container that must be rejected before iteration."""
+
+    def __iter__(self):
+        raise RuntimeError("hostile list was iterated")
 
 
 def valid_timeline() -> FrameTimeline:
@@ -124,6 +132,44 @@ def test_contract_models_reject_extra_fields_and_are_frozen():
         CvEvidenceRequest.model_validate({**request.model_dump(), "typo": True})
     with pytest.raises(ValidationError):
         request.model_identity = "another-model"  # type: ignore[misc]
+
+
+def test_contract_models_preserve_strict_json_dict_and_text_roundtrips():
+    """Shallow tuple freezing must retain both supported JSON entry paths."""
+    request = valid_request()
+    artifact = valid_artifact()
+
+    assert type(request).model_validate(
+        request.model_dump(mode="json"), strict=True
+    ) == request
+    assert type(request).model_validate_json(
+        request.model_dump_json(), strict=True
+    ) == request
+    assert type(artifact).model_validate(
+        artifact.model_dump(mode="json"), strict=True
+    ) == artifact
+    assert type(artifact).model_validate_json(
+        artifact.model_dump_json(), strict=True
+    ) == artifact
+
+
+def test_contract_rejects_hostile_extra_container_before_iteration():
+    """Forbidden values must not be recursively inspected before extra checking."""
+    payload = valid_request().model_dump(mode="json")
+    payload["forbidden"] = BombList(["do-not-touch"])
+
+    with pytest.raises(ValidationError):
+        CvEvidenceRequest.model_validate(payload)
+
+
+@pytest.mark.parametrize("field", ["entities", "tracks"])
+def test_artifact_rejects_hostile_top_level_sequence_before_iteration(field):
+    """Artifact-specific preflight must not outrun the shallow base validator."""
+    payload = valid_artifact().model_dump(mode="json")
+    payload[field] = BombList(payload[field])
+
+    with pytest.raises(ValidationError):
+        CvEvidenceArtifact.model_validate(payload)
 
 
 @pytest.mark.parametrize("entity_id", ["Right_Hand", "right-hand", "right hand", "2hand"])
@@ -297,6 +343,83 @@ def test_overlay_record_requires_real_file_track_and_visible_observation():
         ]
         with pytest.raises(ValidationError):
             CvEvidenceArtifact.model_validate(forged)
+
+
+def test_mask_and_overlay_namespaces_are_disjoint_and_overlay_is_one_file_deep():
+    """Rendered prompt PNGs cannot also be interpreted as raw mask payloads."""
+    with pytest.raises(ValidationError, match="mask_ref"):
+        TrackObservation(
+            frame_index=0,
+            timestamp_seconds=0.0,
+            bbox_xyxy=(0.1, 0.1, 0.2, 0.2),
+            mask_ref="overlays/opaque.png",
+            visible=True,
+            confidence=0.9,
+            area_fraction=0.01,
+            center_xy=(0.15, 0.15),
+        )
+
+    with pytest.raises(ValidationError, match=r"overlays/\*\.png"):
+        OverlayRecord(
+            path="overlays/nested/opaque.png",
+            track_id="cup_1",
+            frame_index=0,
+        )
+
+
+@pytest.mark.parametrize("status", [EvidenceStatus.DISABLED, EvidenceStatus.UNAVAILABLE])
+def test_nonavailable_artifacts_reject_all_processed_payload(status):
+    """Both degradation states must carry no visual evidence or artifact files."""
+    payload = valid_artifact().model_dump(mode="json")
+    payload["status"] = status.value
+
+    with pytest.raises(ValidationError, match="cannot contain processed evidence"):
+        CvEvidenceArtifact.model_validate(payload)
+
+    payload.update(
+        processed_timeline=None,
+        tracks=[],
+        files=[],
+        overlay_records=[],
+    )
+    assert CvEvidenceArtifact.model_validate(payload).status is status
+
+
+def test_track_status_and_observation_coverage_are_consistent():
+    """Available means observed, while degraded tracks cannot retain observations."""
+    observation = valid_artifact().tracks[0].observations[0]
+    with pytest.raises(ValidationError, match="available track"):
+        CvTrack(
+            track_id="cup_1",
+            entity_id="cup",
+            observations=(),
+            status=EvidenceStatus.AVAILABLE,
+        )
+    with pytest.raises(ValidationError, match="nonavailable track"):
+        CvTrack(
+            track_id="cup_1",
+            entity_id="cup",
+            observations=(observation,),
+            status=EvidenceStatus.UNAVAILABLE,
+        )
+
+
+def test_threshold_contract_rejects_integer_json_scalars():
+    """Threshold types must not vary with Pydantic's integer-to-float coercion."""
+    with pytest.raises(ValidationError):
+        EvidenceThresholds.model_validate(
+            {
+                "min_confidence": 0,
+                "min_area_fraction": 0.01,
+                "occlusion_visibility_drop": 0.5,
+            }
+        )
+
+
+def test_integer_contracts_reject_values_outside_the_canonical_bound():
+    """Finite integer widths bound canonical serialization and comparisons."""
+    with pytest.raises(ValidationError):
+        FrameTimestamp(frame_index=2**63, timestamp_seconds=0.0)
 
 
 def test_overlay_record_is_exported_as_a_public_cv_contract() -> None:

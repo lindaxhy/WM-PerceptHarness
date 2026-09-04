@@ -44,6 +44,7 @@ from .contracts import (
 CandidateId = Annotated[
     StrictStr, Field(pattern=r"^occ_[0-9a-f]{12}_[0-9]{4}$")
 ]
+SummaryId = Annotated[StrictStr, Field(pattern=r"^cvs_[0-9a-f]{64}$")]
 
 _DEFAULT_MAX_TRACKS = 64
 _DEFAULT_MAX_OBSERVATIONS_PER_TRACK = 64
@@ -61,6 +62,11 @@ _MAX_ALIAS_CHARS = 128
 _MAX_ALIASES_PER_ENTITY = 16
 _MAX_CANDIDATE_PROMPT_CHARS = _MAX_PROMPT_CHARS
 _MAX_BUNDLE_CANDIDATES = 256
+_MAX_CANDIDATE_OCCLUDERS = 16
+_MAX_CANDIDATE_SUPPORTING_FRAMES = 64
+_MAX_TOTAL_CANDIDATE_COMPONENTS = 32_768
+_MAX_CANONICAL_INT = 2**63 - 1
+_MIN_BUNDLE_ENVELOPE_CHARS = 512
 _ABS_MAX_ARTIFACT_ENTITIES = 64
 _ABS_MAX_ARTIFACT_TRACKS = 256
 _ABS_MAX_ALIASES_PER_INPUT_ENTITY = 256
@@ -383,6 +389,7 @@ class CvEvidenceSummary(StrictModel):
     """Frozen evidence summary whose prompt projection has a hard char cap."""
 
     schema_version: Literal["cv_summary_v1"]
+    summary_id: SummaryId
     status: EvidenceStatus
     candidate_search_complete: StrictBool
     observed_clock: Annotated[
@@ -678,6 +685,8 @@ class CvEvidenceSummary(StrictModel):
             for overlay in self.overlays
         ):
             raise ValueError("overlay provenance must close to retained visibility")
+        if self.summary_id != _summary_identity(self):
+            raise ValueError("summary identity does not match canonical content")
         return self
 
     def prompt_record(self) -> dict[str, Any]:
@@ -685,7 +694,10 @@ class CvEvidenceSummary(StrictModel):
         _preflight_summary(self)
         validated = _revalidate_summary(self)
         record = _summary_prompt_record(validated)
-        if _canonical_char_count(record) > validated.prompt_char_limit:
+        if (
+            _canonical_char_count(record, maximum=validated.prompt_char_limit)
+            > validated.prompt_char_limit
+        ):
             raise ValueError("CV summary prompt record exceeds its character cap")
         return record
 
@@ -696,7 +708,8 @@ class OccluderProvenance(StrictModel):
     entity_id: ObjectId
     track_id: TrackId
     supporting_frames: Annotated[
-        tuple[NonnegativeInt, ...], Field(max_length=_MAX_OBSERVATION_LIMIT)
+        tuple[NonnegativeInt, ...],
+        Field(max_length=_MAX_CANDIDATE_SUPPORTING_FRAMES),
     ]
 
     @field_validator("supporting_frames")
@@ -716,10 +729,10 @@ class OcclusionCandidate(StrictModel):
     target_entity_id: ObjectId
     target_track_id: TrackId
     possible_occluders: Annotated[
-        tuple[OccluderProvenance, ...], Field(max_length=_MAX_TRACK_LIMIT)
+        tuple[OccluderProvenance, ...], Field(max_length=_MAX_CANDIDATE_OCCLUDERS)
     ]
     possible_occluder_entity_ids: Annotated[
-        tuple[ObjectId, ...], Field(max_length=_MAX_ENTITY_SUMMARIES)
+        tuple[ObjectId, ...], Field(max_length=_MAX_CANDIDATE_OCCLUDERS)
     ]
     allowed_start_times: Annotated[
         tuple[Timestamp, ...], Field(min_length=1, max_length=8)
@@ -795,6 +808,9 @@ class OcclusionCandidate(StrictModel):
             and self.overlay_support_complete
         ):
             raise ValueError("candidate support completeness fields disagree")
+        ordinal = int(self.candidate_id.rsplit("_", 1)[1])
+        if ordinal <= 0 or self.candidate_id != _candidate_identity(self, ordinal):
+            raise ValueError("candidate identity does not match canonical content")
         return self
 
     def prompt_record(self) -> dict[str, Any]:
@@ -802,7 +818,12 @@ class OcclusionCandidate(StrictModel):
         _preflight_candidate(self)
         validated = _revalidate_candidate(self)
         record = _candidate_prompt_record(validated)
-        if _canonical_char_count(record) > _MAX_CANDIDATE_PROMPT_CHARS:
+        if (
+            _canonical_char_count(
+                record, maximum=_MAX_CANDIDATE_PROMPT_CHARS
+            )
+            > _MAX_CANDIDATE_PROMPT_CHARS
+        ):
             raise ValueError("occlusion candidate prompt record exceeds its cap")
         return record
 
@@ -838,6 +859,13 @@ def _candidate_prompt_record(candidate: OcclusionCandidate) -> dict[str, Any]:
     }
 
 
+def _candidate_identity(candidate: OcclusionCandidate, ordinal: int) -> str:
+    payload = _candidate_prompt_record(candidate)
+    del payload["candidate_id"]
+    payload["ordinal"] = ordinal
+    return f"occ_{_candidate_hash_prefix(payload)}_{ordinal:04d}"
+
+
 class CvPromptBundle(StrictModel):
     """The only aggregate prompt record for one summary and its candidates."""
 
@@ -867,6 +895,31 @@ class CvPromptBundle(StrictModel):
     candidate_limit: Annotated[
         int, Field(gt=0, le=_MAX_BUNDLE_CANDIDATES, strict=True)
     ] = _MAX_BUNDLE_CANDIDATES
+
+    @model_validator(mode="before")
+    @classmethod
+    def enforce_raw_candidate_aggregate(cls, value: Any) -> Any:
+        """Reject multiplicative candidate shapes before nested validation."""
+        if isinstance(value, cls) or type(value) is not dict:
+            return value
+        if any(
+            type(name) is not str or name not in cls.model_fields
+            for name in value
+        ):
+            raise ValueError("bundle contains forbidden extra fields")
+        candidates = value.get("candidates")
+        if type(candidates) not in {list, tuple}:
+            if isinstance(candidates, (list, tuple)):
+                raise ValueError("bundle candidates use a custom sequence")
+            return value
+        if len(candidates) > _MAX_BUNDLE_CANDIDATES:
+            raise ValueError("bundle candidates exceed their structural bound")
+        aggregate_components = 0
+        for candidate in candidates:
+            aggregate_components += _candidate_component_count(candidate)
+            if aggregate_components > _MAX_TOTAL_CANDIDATE_COMPONENTS:
+                raise ValueError("aggregate candidate components exceed their bound")
+        return value
 
     @model_validator(mode="after")
     def validate_bundle(self) -> CvPromptBundle:
@@ -957,9 +1010,9 @@ class CvPromptBundle(StrictModel):
                 raise ValueError("candidate observation completeness disagrees with summary")
             if (
                 candidate.relation_support_complete
-                != self.summary.relations_complete
+                and not self.summary.relations_complete
             ):
-                raise ValueError("candidate relation completeness disagrees with summary")
+                raise ValueError("candidate relation completeness exceeds summary")
             if (
                 candidate.source_search_complete
                 != self.summary.candidate_search_complete
@@ -979,7 +1032,9 @@ class CvPromptBundle(StrictModel):
         ):
             raise ValueError("bundle must contain the canonical candidate set")
         if (
-            _canonical_char_count(_bundle_prompt_record(self))
+            _canonical_char_count(
+                _bundle_prompt_record(self), maximum=self.prompt_char_limit
+            )
             > self.prompt_char_limit
         ):
             raise ValueError("aggregate CV prompt record exceeds its character cap")
@@ -990,7 +1045,10 @@ class CvPromptBundle(StrictModel):
         _preflight_bundle(self)
         validated = _revalidate_bundle(self)
         record = _bundle_prompt_record(validated)
-        if _canonical_char_count(record) > validated.prompt_char_limit:
+        if (
+            _canonical_char_count(record, maximum=validated.prompt_char_limit)
+            > validated.prompt_char_limit
+        ):
             raise ValueError("aggregate CV prompt record exceeds its character cap")
         return record
 
@@ -1218,7 +1276,7 @@ def _canonical_candidates(
     track_entities = {item.track_id: item.entity_id for item in tracks}
     candidates: list[OcclusionCandidate] = []
     for ordinal, draft in enumerate(ordered_drafts, start=1):
-        possible_occluders = _possible_occluders(
+        possible_occluders, occluder_support_complete = _possible_occluders(
             draft,
             summary.relations,
             entities,
@@ -1227,10 +1285,6 @@ def _canonical_candidates(
         possible_occluder_entity_ids = tuple(
             sorted({item.entity_id for item in possible_occluders})
         )
-        payload = _draft_hash_payload(draft, possible_occluders)
-        prefix = _candidate_hash_prefix(payload)
-        if re.fullmatch(r"[0-9a-f]{12}", prefix) is None:
-            raise ValueError("candidate hash prefix is invalid")
         overlay_fields = _candidate_overlay_fields(
             summary.overlays,
             draft.target_track_id,
@@ -1243,13 +1297,15 @@ def _canonical_candidates(
             for track in tracks
             if track.track_id == draft.target_track_id
         )
+        relation_support_complete = (
+            summary.relations_complete and occluder_support_complete
+        )
         support_complete = (
             observation_support_complete
-            and summary.relations_complete
+            and relation_support_complete
             and bool(overlay_fields["overlay_support_complete"])
         )
-        candidate = OcclusionCandidate(
-            candidate_id=f"occ_{prefix}_{ordinal:04d}",
+        values: dict[str, Any] = dict(
             target_entity_id=draft.target_entity_id,
             target_track_id=draft.target_track_id,
             possible_occluders=possible_occluders,
@@ -1261,10 +1317,18 @@ def _canonical_candidates(
             edge_departure=draft.edge_departure,
             low_confidence=draft.low_confidence,
             observation_support_complete=observation_support_complete,
-            relation_support_complete=summary.relations_complete,
+            relation_support_complete=relation_support_complete,
             support_complete=support_complete,
             source_search_complete=summary.candidate_search_complete,
             **overlay_fields,
+        )
+        provisional = OcclusionCandidate.model_construct(
+            candidate_id=f"occ_{'0' * 12}_{ordinal:04d}",
+            **values,
+        )
+        candidate = OcclusionCandidate(
+            candidate_id=_candidate_identity(provisional, ordinal),
+            **values,
         )
         candidates.append(candidate)
     return tuple(candidates), set_truncated
@@ -1386,7 +1450,10 @@ def _expected_bundle_components(
         candidates_complete=initial_complete,
         truncation_codes=initial_codes,
     )
-    if _canonical_char_count(initial_record) <= prompt_char_limit:
+    if (
+        _canonical_char_count(initial_record, maximum=prompt_char_limit)
+        <= prompt_char_limit
+    ):
         return _ExpectedBundleComponents(
             candidates=initially_kept,
             source_search_complete=source_search_complete,
@@ -1408,7 +1475,10 @@ def _expected_bundle_components(
             candidates_complete=False,
             truncation_codes=prompt_codes,
         )
-        if _canonical_char_count(record) <= prompt_char_limit:
+        if (
+            _canonical_char_count(record, maximum=prompt_char_limit)
+            <= prompt_char_limit
+        ):
             best = middle
             low = middle + 1
         else:
@@ -1428,7 +1498,7 @@ def _structural_error(name: str) -> ValueError:
 
 
 def _preflight_tuple(value: object, name: str, maximum: int) -> tuple[Any, ...]:
-    if not isinstance(value, tuple) or len(value) > maximum:
+    if type(value) is not tuple or len(value) > maximum:
         raise _structural_error(name)
     return value
 
@@ -1439,8 +1509,19 @@ def _preflight_text(value: object, name: str) -> str:
     return value
 
 
-def _preflight_int(value: object, name: str, *, minimum: int = 0) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+def _preflight_int(
+    value: object,
+    name: str,
+    *,
+    minimum: int = 0,
+    maximum: int = _MAX_CANONICAL_INT,
+) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < minimum
+        or value > maximum
+    ):
         raise _structural_error(name)
     return value
 
@@ -1620,6 +1701,7 @@ def _preflight_summary(summary: object) -> None:
     _preflight_text(
         getattr(summary, "schema_version", None), "summary.schema_version"
     )
+    _preflight_text(getattr(summary, "summary_id", None), "summary.summary_id")
     observed_clock = _preflight_tuple(
         getattr(summary, "observed_clock", None),
         "summary.observed_clock",
@@ -1852,7 +1934,7 @@ def _preflight_candidate(candidate: object) -> None:
     possible_occluders = _preflight_tuple(
         candidate.possible_occluders,
         "candidate possible_occluders",
-        _MAX_TRACK_LIMIT,
+        _MAX_CANDIDATE_OCCLUDERS,
     )
     for provenance in possible_occluders:
         if not isinstance(provenance, OccluderProvenance):
@@ -1862,14 +1944,14 @@ def _preflight_candidate(candidate: object) -> None:
         supporting_frames = _preflight_tuple(
             provenance.supporting_frames,
             "candidate occluder supporting_frames",
-            _MAX_OBSERVATION_LIMIT,
+            _MAX_CANDIDATE_SUPPORTING_FRAMES,
         )
         for frame_index in supporting_frames:
             _preflight_int(frame_index, "candidate occluder supporting frame")
     possible_entity_ids = _preflight_tuple(
         candidate.possible_occluder_entity_ids,
         "candidate possible_occluder_entity_ids",
-        _MAX_ENTITY_SUMMARIES,
+        _MAX_CANDIDATE_OCCLUDERS,
     )
     for entity_id in possible_entity_ids:
         _preflight_text(entity_id, "candidate possible occluder entity_id")
@@ -1926,6 +2008,11 @@ def _preflight_bundle(bundle: object) -> None:
     candidates = _preflight_tuple(
         bundle.candidates, "bundle.candidates", _MAX_BUNDLE_CANDIDATES
     )
+    aggregate_components = 0
+    for candidate in candidates:
+        aggregate_components += _candidate_component_count(candidate)
+        if aggregate_components > _MAX_TOTAL_CANDIDATE_COMPONENTS:
+            raise _structural_error("aggregate candidate components")
     for candidate in candidates:
         _preflight_candidate(candidate)
     codes = _preflight_tuple(bundle.truncation_codes, "bundle.truncation_codes", 4)
@@ -1937,58 +2024,187 @@ def _preflight_bundle(bundle: object) -> None:
     _preflight_int(bundle.candidate_limit, "bundle.candidate_limit", minimum=1)
 
 
-def _revalidate_artifact(artifact: CvEvidenceArtifact) -> CvEvidenceArtifact:
-    payload = (
-        artifact.model_dump(mode="python", warnings=False)
-        if isinstance(artifact, CvEvidenceArtifact)
-        else artifact
+def _candidate_component_count(candidate: object) -> int:
+    """Count bounded nested shapes without traversing supporting frame values."""
+    if isinstance(candidate, OcclusionCandidate):
+        get_candidate = lambda name: getattr(candidate, name)
+    elif type(candidate) is dict:
+        if any(
+            type(name) is not str or name not in OcclusionCandidate.model_fields
+            for name in candidate
+        ):
+            raise _structural_error("candidate extra fields")
+        get_candidate = lambda name: candidate.get(name)
+    else:
+        raise _structural_error("candidate item type")
+    possible_occluders = _shape_sequence(
+        get_candidate("possible_occluders"),
+        "candidate possible_occluders",
+        _MAX_CANDIDATE_OCCLUDERS,
     )
-    return CvEvidenceArtifact.model_validate(payload, strict=True)
+    count = len(possible_occluders)
+    for provenance in possible_occluders:
+        if isinstance(provenance, OccluderProvenance):
+            supporting_frames = provenance.supporting_frames
+        elif type(provenance) is dict:
+            if any(
+                type(name) is not str
+                or name not in OccluderProvenance.model_fields
+                for name in provenance
+            ):
+                raise _structural_error("candidate provenance extra fields")
+            supporting_frames = provenance.get("supporting_frames")
+        else:
+            raise _structural_error("candidate possible_occluders item type")
+        count += len(
+            _shape_sequence(
+                supporting_frames,
+                "candidate occluder supporting_frames",
+                _MAX_CANDIDATE_SUPPORTING_FRAMES,
+            )
+        )
+    for name, values, maximum in (
+        (
+            "candidate possible_occluder_entity_ids",
+            get_candidate("possible_occluder_entity_ids"),
+            _MAX_CANDIDATE_OCCLUDERS,
+        ),
+        ("candidate start times", get_candidate("allowed_start_times"), 8),
+        ("candidate end times", get_candidate("allowed_end_times"), 8),
+        (
+            "candidate overlay_refs",
+            get_candidate("overlay_refs"),
+            _MAX_OVERLAY_LIMIT,
+        ),
+    ):
+        count += len(_shape_sequence(values, name, maximum))
+    return count
+
+
+def _shape_sequence(
+    value: object, name: str, maximum: int
+) -> tuple[Any, ...] | list[Any]:
+    if type(value) not in {tuple, list} or len(value) > maximum:
+        raise _structural_error(name)
+    return value
+
+
+def _revalidate_artifact(artifact: CvEvidenceArtifact) -> CvEvidenceArtifact:
+    return CvEvidenceArtifact.model_validate(
+        {
+            "schema_version": artifact.schema_version,
+            "status": artifact.status.value,
+            "provider": artifact.provider,
+            "model_identity": artifact.model_identity,
+            "video_sha256": artifact.video_sha256,
+            "checkpoint_sha256": artifact.checkpoint_sha256,
+            "processed_timeline": (
+                _timeline_validation_record(artifact.processed_timeline)
+                if artifact.processed_timeline is not None
+                else None
+            ),
+            "entities": tuple(
+                {
+                    "entity_id": entity.entity_id,
+                    "canonical_label": entity.canonical_label,
+                    "aliases": entity.aliases,
+                    "role": entity.role.value,
+                }
+                for entity in artifact.entities
+            ),
+            "tracks": tuple(
+                {
+                    "track_id": track.track_id,
+                    "entity_id": track.entity_id,
+                    "status": track.status.value,
+                    "observations": tuple(
+                        {
+                            "frame_index": item.frame_index,
+                            "timestamp_seconds": item.timestamp_seconds,
+                            "bbox_xyxy": item.bbox_xyxy,
+                            "mask_ref": item.mask_ref,
+                            "visible": item.visible,
+                            "confidence": item.confidence,
+                            "area_fraction": item.area_fraction,
+                            "center_xy": item.center_xy,
+                        }
+                        for item in track.observations
+                    ),
+                }
+                for track in artifact.tracks
+            ),
+            "files": tuple(
+                {
+                    "path": item.path,
+                    "sha256": item.sha256,
+                    "size_bytes": item.size_bytes,
+                }
+                for item in artifact.files
+            ),
+            "overlay_records": tuple(
+                {
+                    "path": item.path,
+                    "track_id": item.track_id,
+                    "frame_index": item.frame_index,
+                }
+                for item in artifact.overlay_records
+            ),
+            "warnings": artifact.warnings,
+        },
+        strict=True,
+    )
 
 
 def _revalidate_timeline(timeline: FrameTimeline) -> FrameTimeline:
-    payload = (
-        timeline.model_dump(mode="python", warnings=False)
-        if isinstance(timeline, FrameTimeline)
-        else timeline
+    return FrameTimeline.model_validate(
+        _timeline_validation_record(timeline), strict=True
     )
-    return FrameTimeline.model_validate(payload, strict=True)
+
+
+def _timeline_validation_record(timeline: FrameTimeline) -> dict[str, Any]:
+    return {
+        "frames": tuple(
+            {
+                "frame_index": item.frame_index,
+                "timestamp_seconds": item.timestamp_seconds,
+            }
+            for item in timeline.frames
+        )
+    }
 
 
 def _revalidate_summary(summary: CvEvidenceSummary) -> CvEvidenceSummary:
-    payload = (
-        summary.model_dump(mode="python", warnings=False)
-        if isinstance(summary, CvEvidenceSummary)
-        else summary
+    return CvEvidenceSummary.model_validate(
+        _summary_validation_record(summary), strict=True
     )
-    return CvEvidenceSummary.model_validate(payload, strict=True)
 
 
 def _revalidate_candidate(candidate: OcclusionCandidate) -> OcclusionCandidate:
-    payload = (
-        candidate.model_dump(mode="python", warnings=False)
-        if isinstance(candidate, OcclusionCandidate)
-        else candidate
+    return OcclusionCandidate.model_validate(
+        _candidate_prompt_record(candidate), strict=True
     )
-    return OcclusionCandidate.model_validate(payload, strict=True)
 
 
 def _revalidate_bundle(bundle: CvPromptBundle) -> CvPromptBundle:
-    payload = (
-        bundle.model_dump(mode="python", warnings=False)
-        if isinstance(bundle, CvPromptBundle)
-        else bundle
+    return CvPromptBundle.model_validate(
+        {
+            **_bundle_prompt_record(bundle),
+            "prompt_char_limit": bundle.prompt_char_limit,
+            "candidate_limit": bundle.candidate_limit,
+        },
+        strict=True,
     )
-    return CvPromptBundle.model_validate(payload, strict=True)
 
 
 def _revalidate_thresholds(thresholds: EvidenceThresholds) -> EvidenceThresholds:
-    payload = (
-        thresholds.model_dump(mode="python", warnings=False)
-        if isinstance(thresholds, EvidenceThresholds)
-        else thresholds
+    return EvidenceThresholds.model_validate(
+        {
+            "min_confidence": thresholds.min_confidence,
+            "min_area_fraction": thresholds.min_area_fraction,
+            "occlusion_visibility_drop": thresholds.occlusion_visibility_drop,
+        },
+        strict=True,
     )
-    return EvidenceThresholds.model_validate(payload, strict=True)
 
 
 def _validate_limit(name: str, value: int, *, maximum: int) -> None:
@@ -2207,15 +2423,17 @@ def _assemble_summary(
         artifact_warning_count=len(artifact.warnings),
         uncovered_entity_count=uncovered_entity_count,
         unavailable_evidence_count=(
-            len(all_tracks)
-            if artifact.status is not EvidenceStatus.AVAILABLE
+            1
+            if artifact.status is EvidenceStatus.UNAVAILABLE
+            else 0
+            if artifact.status is EvidenceStatus.DISABLED
             else sum(
                 track.status is not EvidenceStatus.AVAILABLE
                 for track in selected_tracks
             )
         ),
     )
-    return CvEvidenceSummary(
+    values: dict[str, Any] = dict(
         schema_version="cv_summary_v1",
         status=artifact.status,
         candidate_search_complete=(
@@ -2237,6 +2455,14 @@ def _assemble_summary(
         overlays_complete=len(all_overlays) == len(overlays),
         warnings=_summary_warnings(metadata, prompt_truncated=prompt_truncated),
         prompt_char_limit=prompt_char_limit,
+    )
+    provisional = CvEvidenceSummary.model_construct(
+        summary_id=f"cvs_{'0' * 64}",
+        **values,
+    )
+    return CvEvidenceSummary(
+        summary_id=_summary_identity(provisional),
+        **values,
     )
 
 
@@ -2715,7 +2941,7 @@ def _validate_overlay_ref(value: str) -> str:
         raise ValueError("overlay reference must be bounded relative POSIX")
     parts = value.split("/")
     if (
-        len(parts) < 2
+        len(parts) != 2
         or parts[0] != "overlays"
         or any(
             part in {"", ".", ".."}
@@ -2842,6 +3068,7 @@ def _summary_warnings(
 def _summary_prompt_record(summary: CvEvidenceSummary) -> dict[str, Any]:
     return {
         "schema_version": summary.schema_version,
+        "summary_id": summary.summary_id,
         "status": summary.status.value,
         "candidate_search_complete": summary.candidate_search_complete,
         "observed_clock": [
@@ -2948,6 +3175,31 @@ def _summary_prompt_record(summary: CvEvidenceSummary) -> dict[str, Any]:
     }
 
 
+def _summary_validation_record(summary: CvEvidenceSummary) -> dict[str, Any]:
+    record = _summary_prompt_record(summary)
+    record["prompt_char_limit"] = summary.prompt_char_limit
+    return record
+
+
+def _summary_identity(summary: CvEvidenceSummary) -> str:
+    payload = _summary_validation_record(summary)
+    del payload["summary_id"]
+    return f"cvs_{_canonical_sha256(payload)}"
+
+
+def _canonical_sha256(record: Mapping[str, Any]) -> str:
+    digest = hashlib.sha256()
+    encoder = json.JSONEncoder(
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    for chunk in encoder.iterencode(record):
+        digest.update(chunk.encode("utf-8"))
+    return digest.hexdigest()
+
+
 def _warning_prompt_record(warning: SummaryWarning) -> dict[str, Any]:
     record: dict[str, Any] = {"code": warning.code}
     for field_name in (
@@ -2999,21 +3251,34 @@ def _bundle_prompt_record(bundle: CvPromptBundle) -> dict[str, Any]:
     )
 
 
-def _canonical_char_count(record: Mapping[str, Any]) -> int:
-    return len(
-        json.dumps(
-            record,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
+def _canonical_char_count(
+    record: Mapping[str, Any], *, maximum: int | None = None
+) -> int:
+    total = 0
+    encoder = json.JSONEncoder(
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
     )
+    for chunk in encoder.iterencode(record):
+        total += len(chunk)
+        if maximum is not None and total > maximum:
+            return total
+    return total
 
 
 def _summary_fits(summary: CvEvidenceSummary, cap: int) -> bool:
+    reserved_cap = max(1, cap - min(_MIN_BUNDLE_ENVELOPE_CHARS, cap // 4))
     return (
-        len(summary.model_dump_json()) <= cap
-        and _canonical_char_count(_summary_prompt_record(summary)) <= cap
+        _canonical_char_count(
+            _summary_validation_record(summary), maximum=reserved_cap
+        )
+        <= reserved_cap
+        and _canonical_char_count(
+            _summary_prompt_record(summary), maximum=reserved_cap
+        )
+        <= reserved_cap
     )
 
 
@@ -3102,7 +3367,7 @@ def _possible_occluders(
     relations: tuple[SpatialRelation, ...],
     entities: Mapping[str, SummaryEntity],
     track_entities: Mapping[str, str],
-) -> tuple[OccluderProvenance, ...]:
+) -> tuple[tuple[OccluderProvenance, ...], bool]:
     frames = set(draft.evidence_frames)
     possible: dict[tuple[str, str], set[int]] = {}
     for relation in relations:
@@ -3129,14 +3394,22 @@ def _possible_occluders(
             possible.setdefault(
                 (entity.entity_id, other_track_id), set()
             ).add(relation.frame_index)
+    ordered = tuple(sorted(possible.items()))
+    complete = len(ordered) <= _MAX_CANDIDATE_OCCLUDERS and all(
+        len(supporting_frames) <= _MAX_CANDIDATE_SUPPORTING_FRAMES
+        for _, supporting_frames in ordered
+    )
+    selected = ordered[:_MAX_CANDIDATE_OCCLUDERS]
     return tuple(
         OccluderProvenance(
             entity_id=entity_id,
             track_id=track_id,
-            supporting_frames=tuple(sorted(supporting_frames)),
+            supporting_frames=tuple(sorted(supporting_frames))[
+                :_MAX_CANDIDATE_SUPPORTING_FRAMES
+            ],
         )
-        for (entity_id, track_id), supporting_frames in sorted(possible.items())
-    )
+        for (entity_id, track_id), supporting_frames in selected
+    ), complete
 
 
 def _draft_sort_key(draft: _CandidateDraft) -> tuple[Any, ...]:
@@ -3154,38 +3427,8 @@ def _draft_sort_key(draft: _CandidateDraft) -> tuple[Any, ...]:
     )
 
 
-def _draft_hash_payload(
-    draft: _CandidateDraft,
-    possible_occluders: tuple[OccluderProvenance, ...],
-) -> dict[str, Any]:
-    return {
-        "target_track_id": draft.target_track_id,
-        "target_entity_id": draft.target_entity_id,
-        "possible_occluders": [
-            {
-                "entity_id": item.entity_id,
-                "track_id": item.track_id,
-                "supporting_frames": list(item.supporting_frames),
-            }
-            for item in possible_occluders
-        ],
-        "allowed_start_times": list(draft.allowed_start_times),
-        "allowed_end_times": list(draft.allowed_end_times),
-        "last_visible_frame": draft.last_visible_frame,
-        "first_revisible_frame": draft.first_revisible_frame,
-        "edge_departure": draft.edge_departure,
-        "low_confidence": draft.low_confidence,
-    }
-
-
 def _candidate_hash_prefix(payload: Mapping[str, Any]) -> str:
-    canonical = json.dumps(
-        payload,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-    return hashlib.sha256(canonical).hexdigest()[:12]
+    return _canonical_sha256(payload)[:12]
 
 
 def _candidate_overlay_fields(
@@ -3237,6 +3480,7 @@ __all__ = [
     "OccluderProvenance",
     "OcclusionCandidate",
     "SpatialRelation",
+    "SummaryId",
     "SummaryEntity",
     "SummaryObservation",
     "SummaryOverlay",

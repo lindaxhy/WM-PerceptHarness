@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+import re
 import subprocess
 import sys
 import warnings
@@ -32,6 +33,13 @@ from las_repro.cv.summary import (
 
 
 SHA256 = "a" * 64
+
+
+class BombList(list):
+    """A hostile sized JSON array that must fail before iteration."""
+
+    def __iter__(self):
+        raise RuntimeError("hostile list was iterated")
 
 
 def _entity(
@@ -178,6 +186,16 @@ def _thresholds(
     )
 
 
+def _reseal_candidate_payload(payload: dict[str, object]) -> None:
+    """Recompute a test candidate ID so bundle-only closure checks are reached."""
+    ordinal = int(str(payload["candidate_id"]).rsplit("_", 1)[1])
+    identity = {key: value for key, value in payload.items() if key != "candidate_id"}
+    identity["ordinal"] = ordinal
+    payload["candidate_id"] = (
+        f"occ_{summary_module._candidate_hash_prefix(identity)}_{ordinal:04d}"
+    )
+
+
 def test_summary_contains_no_masks_reads_no_artifacts_and_is_size_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -235,6 +253,7 @@ def test_summary_contains_no_masks_reads_no_artifacts_and_is_size_bounded(
     assert summary.overlay_refs == ("overlays/cup-1-00000000.png",)
     assert set(summary.prompt_record()) == {
         "schema_version",
+        "summary_id",
         "status",
         "candidate_search_complete",
         "observed_clock",
@@ -1060,13 +1079,13 @@ def test_candidate_ids_and_order_survive_hash_prefix_collisions(
     )
 
     first = build_occlusion_candidates(summary, _thresholds())
-    reconstructed = CvEvidenceSummary.model_validate(
-        {
-            **summary.model_dump(mode="python"),
-            "tracks": tuple(reversed(summary.tracks)),
-            "relations": tuple(reversed(summary.relations)),
-        },
-        strict=True,
+    reconstructed = summarize_cv_evidence(
+        _unsafe_artifact_copy(
+            artifact,
+            tracks=tuple(reversed(artifact.tracks)),
+            overlay_records=tuple(reversed(artifact.overlay_records)),
+        ),
+        timeline=timeline,
     )
     second = build_occlusion_candidates(reconstructed, _thresholds())
 
@@ -1108,6 +1127,116 @@ def test_candidate_prompt_record_is_fresh_and_model_is_frozen() -> None:
     assert "outside" not in candidate.model_dump_json()
     with pytest.raises(ValidationError):
         candidate.edge_departure = not candidate.edge_departure  # type: ignore[misc]
+
+
+def test_summary_bundle_preserves_strict_json_dict_and_text_roundtrips() -> None:
+    """Nested summary records remain valid through both supported JSON paths."""
+    artifact, timeline = _candidate_artifact()
+    bundle = summary_module.build_cv_prompt_bundle(
+        summarize_cv_evidence(artifact, timeline=timeline), _thresholds()
+    )
+
+    assert type(bundle).model_validate(
+        bundle.model_dump(mode="json"), strict=True
+    ) == bundle
+    assert type(bundle).model_validate_json(
+        bundle.model_dump_json(), strict=True
+    ) == bundle
+
+
+def test_candidate_identity_rejects_model_copy_semantic_and_ordinal_forgery() -> None:
+    """Every prompt-visible or derived candidate field must bind to its ID."""
+    artifact, timeline = _candidate_artifact()
+    candidate = build_occlusion_candidates(
+        summarize_cv_evidence(artifact, timeline=timeline), _thresholds()
+    )[0]
+    coordinated_complete = not candidate.observation_support_complete
+    mutations = (
+        {"candidate_id": "occ_000000000000_0001"},
+        {"candidate_id": candidate.candidate_id[:-4] + "9999"},
+        {"edge_departure": not candidate.edge_departure},
+        {"overlay_refs": ()},
+        {
+            "possible_occluders": (),
+            "possible_occluder_entity_ids": (),
+        },
+        {"allowed_start_times": (candidate.allowed_start_times[0] / 2.0,)},
+        {"last_visible_frame": max(0, candidate.last_visible_frame - 1)},
+        {
+            "observation_support_complete": coordinated_complete,
+            "support_complete": (
+                coordinated_complete
+                and candidate.relation_support_complete
+                and candidate.overlay_support_complete
+            ),
+        },
+    )
+
+    for update in mutations:
+        with pytest.raises((ValidationError, ValueError), match="candidate identity"):
+            candidate.model_copy(update=update).prompt_record()
+
+
+def test_candidate_id_changes_with_overlay_and_source_completeness() -> None:
+    """Overlay and source-coverage semantics cannot share one candidate identity."""
+    target = _track("item_1", "item", (_observation(0), _observation(2)))
+    baseline = summarize_cv_evidence(
+        _artifact((target,), processed_timeline=_timeline(0, 1, 2))
+    )
+    overlay = ArtifactFile(
+        path="overlays/opaque.png", sha256="c" * 64, size_bytes=8
+    )
+    with_overlay = summarize_cv_evidence(
+        _artifact(
+            (target,),
+            files=(overlay,),
+            overlay_records=(
+                OverlayRecord(
+                    path=overlay.path,
+                    track_id="item_1",
+                    frame_index=0,
+                ),
+            ),
+            processed_timeline=_timeline(0, 1, 2),
+        )
+    )
+    incomplete = summarize_cv_evidence(
+        _artifact(
+            (target,),
+            warnings=("provider degraded",),
+            processed_timeline=_timeline(0, 1, 2),
+        )
+    )
+
+    ids = {
+        build_occlusion_candidates(summary, _thresholds())[0].candidate_id
+        for summary in (baseline, with_overlay, incomplete)
+    }
+    assert len(ids) == 3
+
+
+def test_summary_content_identity_rejects_model_copy_warning_and_coverage_forgery() -> None:
+    """Fresh prompt validation must bind typed warnings and completeness to content."""
+    complete = summarize_cv_evidence(
+        _artifact((_track("item_1", "item", (_observation(0),)),))
+    )
+    warned = summarize_cv_evidence(
+        _artifact(
+            (_track("item_1", "item", (_observation(0),)),),
+            warnings=("provider degraded",),
+        )
+    )
+
+    assert re.fullmatch(r"cvs_[0-9a-f]{64}", complete.summary_id)
+    assert complete.summary_id != warned.summary_id
+    for forged in (
+        complete.model_copy(update={"candidate_search_complete": False}),
+        warned.model_copy(update={"warnings": ()}),
+    ):
+        with pytest.raises((ValidationError, ValueError), match="summary identity"):
+            forged.prompt_record()
+        with pytest.raises((ValidationError, ValueError), match="summary identity"):
+            build_occlusion_candidates(forged, _thresholds())
 
 
 def test_candidate_builder_revalidates_unsafe_thresholds() -> None:
@@ -1624,6 +1753,7 @@ def test_prompt_bundle_closes_candidate_times_to_summary_observed_clock() -> Non
     bundle = summary_module.build_cv_prompt_bundle(summary, _thresholds())
     payload = bundle.model_dump(mode="json")
     payload["candidates"][0]["allowed_start_times"] = [0.05]
+    _reseal_candidate_payload(payload["candidates"][0])
 
     with pytest.raises(ValidationError, match="observed clock"):
         type(bundle).model_validate(payload)
@@ -1640,6 +1770,7 @@ def test_prompt_bundle_closes_candidate_overlays_to_summary_manifest() -> None:
     payload["candidates"][0]["overlay_refs"] = [
         "overlays/item-1-00000000.png"
     ]
+    _reseal_candidate_payload(payload["candidates"][0])
 
     with pytest.raises(ValidationError, match="closed to summary"):
         type(bundle).model_validate(payload)
@@ -1809,11 +1940,10 @@ def test_nonavailable_artifact_residual_tracks_never_create_evidence(
     )
     payload = available.model_dump(mode="json")
     payload["status"] = status.value
-    if status is EvidenceStatus.DISABLED:
-        payload["processed_timeline"] = None
-        payload["tracks"] = []
-        payload["files"] = []
-        payload["overlay_records"] = []
+    payload["processed_timeline"] = None
+    payload["tracks"] = []
+    payload["files"] = []
+    payload["overlay_records"] = []
     degraded = CvEvidenceArtifact.model_validate(payload)
 
     summary = summarize_cv_evidence(degraded, timeline=_timeline(0, 1, 2))
@@ -1828,16 +1958,13 @@ def test_nonavailable_artifact_residual_tracks_never_create_evidence(
     )
 
 
-def test_nonavailable_track_is_retained_but_cannot_support_relations_or_candidates() -> None:
-    """A stale disabled track may aid audit, but never visual adjudication."""
+def test_empty_nonavailable_track_is_retained_but_cannot_support_candidates() -> None:
+    """A typed degraded track may aid audit, but cannot carry visual evidence."""
     target = _track("target_1", "target", (_observation(0), _observation(2)))
     stale = CvTrack(
         track_id="board_1",
         entity_id="board",
-        observations=tuple(
-            _observation(frame, bbox_xyxy=(0.25, 0.25, 0.45, 0.45))
-            for frame in range(3)
-        ),
+        observations=(),
         status=EvidenceStatus.UNAVAILABLE,
     )
     summary = summarize_cv_evidence(
@@ -1846,7 +1973,7 @@ def test_nonavailable_track_is_retained_but_cannot_support_relations_or_candidat
 
     retained = next(track for track in summary.tracks if track.track_id == "board_1")
     assert retained.status is EvidenceStatus.UNAVAILABLE
-    assert retained.source_observation_count == 3
+    assert retained.source_observation_count == 0
     assert retained.observations == ()
     assert retained.missing_intervals == ()
     target_candidate = next(
@@ -1857,13 +1984,13 @@ def test_nonavailable_track_is_retained_but_cannot_support_relations_or_candidat
     assert target_candidate.possible_occluders == ()
 
 
-def test_available_tracks_outrank_stale_tracks_and_ignore_stale_clock_conflicts() -> None:
-    """Unavailable residuals must neither consume the cap nor poison trusted PTS."""
+def test_available_tracks_outrank_empty_degraded_tracks() -> None:
+    """Unavailable audit records must not consume the visual summary cap."""
     target = _track("zzz_target_1", "zzz_target", (_observation(0),))
     stale = CvTrack(
         track_id="aaa_stale_1",
         entity_id="aaa_stale",
-        observations=(_observation(0, timestamp_seconds=0.0),),
+        observations=(),
         status=EvidenceStatus.UNAVAILABLE,
     )
 
@@ -2143,9 +2270,7 @@ def test_bundle_rejects_reordered_candidates_and_duplicate_ids() -> None:
         type(bundle).model_validate(reordered)
 
     duplicate = bundle.model_dump(mode="json")
-    duplicate["candidates"][1]["candidate_id"] = duplicate["candidates"][0][
-        "candidate_id"
-    ]
+    duplicate["candidates"][1] = dict(duplicate["candidates"][0])
     with pytest.raises(ValidationError, match="unique"):
         type(bundle).model_validate(duplicate)
 
@@ -2222,6 +2347,180 @@ def test_direct_summary_models_enforce_container_caps() -> None:
 
     with pytest.raises(ValidationError, match="at most 256"):
         summary_module.SummaryTrack.model_validate(payload)
+
+
+def test_summary_model_rejects_257_observation_bomb_before_iteration() -> None:
+    """A Field max_length violation must not traverse hostile array elements."""
+    track = summarize_cv_evidence(
+        _artifact((_track("item_1", "item", (_observation(0),)),))
+    ).tracks[0]
+    payload = track.model_dump(mode="json")
+    payload["source_observation_count"] = 257
+    payload["observations"] = BombList(
+        [track.observations[0].model_dump(mode="json")] * 257
+    )
+
+    with pytest.raises(ValidationError):
+        summary_module.SummaryTrack.model_validate(payload)
+
+
+def test_bundle_rejects_aggregate_candidate_support_before_frame_traversal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Per-field limits cannot permit a multiplicative nested traversal bomb."""
+    summary = summarize_cv_evidence(
+        _artifact(
+            (_track("item_1", "item", (_observation(0), _observation(2))),),
+            processed_timeline=_timeline(0, 1, 2),
+        )
+    )
+    [candidate] = build_occlusion_candidates(summary, _thresholds())
+    provenances = tuple(
+        summary_module.OccluderProvenance.model_construct(
+            entity_id=f"entity_{ordinal}",
+            track_id=f"entity_{ordinal}_1",
+            supporting_frames=tuple(range(64)),
+        )
+        for ordinal in range(16)
+    )
+    forged_candidate = type(candidate).model_construct(
+        **{
+            **{
+                name: getattr(candidate, name)
+                for name in type(candidate).model_fields
+            },
+            "possible_occluders": provenances,
+            "possible_occluder_entity_ids": tuple(
+                provenance.entity_id for provenance in provenances
+            ),
+        }
+    )
+    bundle = summary_module.build_cv_prompt_bundle(summary, _thresholds())
+    forged_bundle = type(bundle).model_construct(
+        **{
+            **{name: getattr(bundle, name) for name in type(bundle).model_fields},
+            "candidates": (forged_candidate,) * 256,
+        }
+    )
+
+    def forbid_deep_candidate_preflight(*_: object) -> None:
+        raise AssertionError("deep candidate traversal ran before aggregate rejection")
+
+    monkeypatch.setattr(
+        summary_module,
+        "_preflight_candidate",
+        forbid_deep_candidate_preflight,
+    )
+
+    with pytest.raises(ValueError, match="aggregate candidate"):
+        forged_bundle.prompt_record()
+
+
+def test_bundle_json_rejects_aggregate_candidate_product_before_nested_models() -> None:
+    """Direct JSON validation must apply the aggregate cap before nested parsing."""
+    summary = summarize_cv_evidence(
+        _artifact(
+            (_track("item_1", "item", (_observation(0), _observation(2))),),
+            processed_timeline=_timeline(0, 1, 2),
+        )
+    )
+    bundle = summary_module.build_cv_prompt_bundle(summary, _thresholds())
+    payload = bundle.model_dump(mode="json")
+    candidate = payload["candidates"][0]
+    candidate["possible_occluders"] = [
+        {
+            "entity_id": f"entity_{ordinal:02d}",
+            "track_id": f"entity_{ordinal:02d}_1",
+            "supporting_frames": list(range(64)),
+        }
+        for ordinal in range(16)
+    ]
+    candidate["possible_occluder_entity_ids"] = [
+        f"entity_{ordinal:02d}" for ordinal in range(16)
+    ]
+    payload["candidates"] = [candidate] * 256
+
+    with pytest.raises(ValidationError, match="aggregate candidate"):
+        type(bundle).model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "length"),
+    [("possible_occluders", 17), ("supporting_frames", 65)],
+)
+def test_candidate_schema_enforces_actual_nested_generation_caps(
+    field: str, length: int
+) -> None:
+    """Candidate inputs share the 16-entity and 64-observation generation caps."""
+    summary = summarize_cv_evidence(
+        _artifact(
+            (_track("item_1", "item", (_observation(0), _observation(2))),),
+            processed_timeline=_timeline(0, 1, 2),
+        )
+    )
+    [candidate] = build_occlusion_candidates(summary, _thresholds())
+    payload = candidate.model_dump(mode="json")
+    if field == "possible_occluders":
+        payload["possible_occluders"] = [
+            {
+                "entity_id": f"entity_{ordinal:02d}",
+                "track_id": f"entity_{ordinal:02d}_1",
+                "supporting_frames": [0],
+            }
+            for ordinal in range(length)
+        ]
+        payload["possible_occluder_entity_ids"] = [
+            f"entity_{ordinal:02d}" for ordinal in range(length)
+        ]
+    else:
+        payload["possible_occluders"] = [
+            {
+                "entity_id": "board",
+                "track_id": "board_1",
+                "supporting_frames": list(range(length)),
+            }
+        ]
+        payload["possible_occluder_entity_ids"] = ["board"]
+
+    with pytest.raises(ValidationError):
+        type(candidate).model_validate(payload)
+
+
+def test_candidate_builder_caps_occluders_and_marks_relation_support_incomplete() -> None:
+    """More than 16 supported entities must degrade completeness, not crash."""
+    target = _track("target_1", "target", (_observation(0), _observation(2)))
+    occluders = tuple(
+        _track(
+            f"other_{ordinal:02d}_1",
+            f"other_{ordinal:02d}",
+            tuple(
+                _observation(
+                    frame,
+                    bbox_xyxy=(0.25, 0.25, 0.45, 0.45),
+                )
+                for frame in range(3)
+            ),
+        )
+        for ordinal in range(17)
+    )
+    summary = summarize_cv_evidence(
+        _artifact(
+            (target, *occluders),
+            processed_timeline=_timeline(0, 1, 2),
+        ),
+        max_tracks=64,
+        max_observations_per_track=64,
+        max_relations=1_024,
+    )
+
+    candidate = next(
+        item
+        for item in build_occlusion_candidates(summary, _thresholds())
+        if item.target_track_id == "target_1"
+    )
+    assert len(candidate.possible_occluders) == 16
+    assert candidate.relation_support_complete is False
+    assert candidate.support_complete is False
 
 
 def test_prompt_budget_reduction_uses_bounded_number_of_rebuilds(

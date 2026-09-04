@@ -40,6 +40,7 @@ _DEFAULT_MAX_FILES = 10_000
 _DEFAULT_MAX_BYTES = 8 * 1024 * 1024 * 1024
 _DEFAULT_MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 _KEY_LENGTH = 64
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _CACHE_IDENTITY_FIELDS = frozenset(
     {
         "schema_version",
@@ -1056,14 +1057,20 @@ class CvArtifactStore:
                 os.lseek(descriptor, 0, os.SEEK_SET)
                 digest = hashlib.sha256()
                 size = 0
+                signature = bytearray()
                 while chunk := os.read(descriptor, _STREAM_BYTES):
                     size += len(chunk)
                     total += len(chunk)
                     if total > self._max_bytes:
                         raise ValueError
+                    if len(signature) < len(_PNG_SIGNATURE):
+                        signature.extend(
+                            chunk[: len(_PNG_SIGNATURE) - len(signature)]
+                        )
                     digest.update(chunk)
                 if size != file.size_bytes or digest.hexdigest() != file.sha256:
                     raise ValueError
+                self._validate_descriptor_content(file.path, bytes(signature))
             after = self._capture_tree_metadata(directory)
             if before != after:
                 raise ValueError
@@ -1076,6 +1083,11 @@ class CvArtifactStore:
                     or self._stat_signature(opened) != after[relative]
                 ):
                     raise ValueError
+
+    @staticmethod
+    def _validate_descriptor_content(relative: str, signature: bytes) -> None:
+        if relative.startswith("overlays/") and signature != _PNG_SIGNATURE:
+            raise ValueError
 
     def _capture_tree_metadata(
         self, root: Path | int

@@ -15,7 +15,12 @@ import weakref
 
 import pytest
 
-from las_repro.cv.artifacts import CvArtifactError, CvArtifactStore, cv_cache_key
+from las_repro.cv.artifacts import (
+    CvArtifactError,
+    CvArtifactHandle,
+    CvArtifactStore,
+    cv_cache_key,
+)
 from las_repro.cv.contracts import (
     ArtifactFile,
     CvEvidenceArtifact,
@@ -27,9 +32,13 @@ from las_repro.cv.contracts import (
     EvidenceThresholds,
     FrameTimeline,
     FrameTimestamp,
+    OverlayRecord,
     SamplingPolicy,
     TrackObservation,
 )
+
+
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 @pytest.fixture
@@ -120,6 +129,44 @@ def write_artifact_file(staging: Path, payload: bytes) -> None:
     masks = staging / "masks"
     masks.mkdir(mode=0o700)
     (masks / "0.npz").write_bytes(payload)
+
+
+def overlay_artifact_for(
+    request: CvEvidenceRequest, payload: bytes
+) -> CvEvidenceArtifact:
+    """Build one descriptor-validated overlay artifact without a raw mask file."""
+    base = artifact_for(request, b"unused")
+    observation = base.tracks[0].observations[0].model_copy(
+        update={"mask_ref": None}
+    )
+    path = "overlays/opaque.png"
+    return CvEvidenceArtifact(
+        schema_version=base.schema_version,
+        status=base.status,
+        provider=base.provider,
+        model_identity=base.model_identity,
+        video_sha256=base.video_sha256,
+        checkpoint_sha256=base.checkpoint_sha256,
+        processed_timeline=base.processed_timeline,
+        entities=base.entities,
+        tracks=(base.tracks[0].model_copy(update={"observations": (observation,)}),),
+        files=(
+            ArtifactFile(
+                path=path,
+                sha256=hashlib.sha256(payload).hexdigest(),
+                size_bytes=len(payload),
+            ),
+        ),
+        overlay_records=(
+            OverlayRecord(path=path, track_id="right_hand_1", frame_index=0),
+        ),
+    )
+
+
+def write_overlay_file(staging: Path, payload: bytes) -> None:
+    overlays = staging / "overlays"
+    overlays.mkdir(mode=0o700)
+    (overlays / "opaque.png").write_bytes(payload)
 
 
 def published_artifact(store, request, payload=b"mask", **artifact_updates):
@@ -256,6 +303,120 @@ def test_store_publishes_canonical_manifest_and_loads_validated_artifact(
     assert store.load(handle) == artifact
     with pytest.raises(FrozenInstanceError):
         handle.key = "0" * 64  # type: ignore[misc]
+
+
+def test_publish_rejects_digest_correct_non_png_overlay(tmp_path, cv_request):
+    """A .png manifest label cannot substitute for descriptor-verified PNG bytes."""
+    payload = b"not-png-despite-correct-digest"
+    artifact = overlay_artifact_for(cv_request, payload)
+    root = tmp_path / "cv-cache"
+    store = CvArtifactStore(root)
+    key = cv_cache_key(cv_request)
+
+    with store.staging(key) as staging:
+        write_overlay_file(staging, payload)
+        with pytest.raises(CvArtifactError, match="unable to publish CV artifact") as caught:
+            store.publish(cv_request, staging, artifact)
+
+    assert artifact.files[0].path not in str(caught.value)
+    assert store.lookup(key) is None
+
+
+def test_lookup_quarantines_digest_correct_non_png_overlay(tmp_path, cv_request):
+    """Lookup must revalidate overlay magic through its pinned file descriptor."""
+    payload = b"not-png-despite-correct-digest"
+    artifact = overlay_artifact_for(cv_request, payload)
+    manifest = canonical_manifest_for(cv_request, artifact)
+    root = tmp_path / "cv-cache"
+    store = CvArtifactStore(root)
+    key = cv_cache_key(cv_request)
+    entry = write_raw_entry(root, key, manifest)
+    (entry / "overlays").mkdir(mode=0o700)
+    (entry / "overlays" / "opaque.png").write_bytes(payload)
+
+    assert store.lookup(key) is None
+    assert not entry.exists()
+    assert len(tuple((root / "quarantine").iterdir())) == 1
+
+
+def test_load_quarantines_digest_correct_non_png_overlay(tmp_path, cv_request):
+    """A caller-supplied handle cannot bypass descriptor-level PNG validation."""
+    payload = b"not-png-despite-correct-digest"
+    artifact = overlay_artifact_for(cv_request, payload)
+    manifest = canonical_manifest_for(cv_request, artifact)
+    root = tmp_path / "cv-cache"
+    store = CvArtifactStore(root)
+    key = cv_cache_key(cv_request)
+    entry = write_raw_entry(root, key, manifest)
+    (entry / "overlays").mkdir(mode=0o700)
+    (entry / "overlays" / "opaque.png").write_bytes(payload)
+    handle = CvArtifactHandle(
+        key=key,
+        manifest_sha256=hashlib.sha256(manifest).hexdigest(),
+    )
+
+    with pytest.raises(CvArtifactError, match="unable to load CV artifact") as caught:
+        store.load(handle)
+
+    assert artifact.files[0].path not in str(caught.value)
+    assert not entry.exists()
+    assert len(tuple((root / "quarantine").iterdir())) == 1
+
+
+def test_postrename_validation_rejects_digest_correct_non_png_overlay(
+    tmp_path, cv_request, monkeypatch
+):
+    """The final installed entry must use the same descriptor content validator."""
+    payload = b"not-png-despite-correct-digest"
+    artifact = overlay_artifact_for(cv_request, payload)
+    root = tmp_path / "cv-cache"
+    store = CvArtifactStore(root)
+    key = cv_cache_key(cv_request)
+    real_validate = store._validate_artifact_files
+    calls = 0
+
+    def defer_signature_check(
+        directory,
+        candidate,
+        *,
+        include_manifest,
+        pinned_files=(),
+    ):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            return None
+        return real_validate(
+            directory,
+            candidate,
+            include_manifest=include_manifest,
+            pinned_files=pinned_files,
+        )
+
+    monkeypatch.setattr(store, "_validate_artifact_files", defer_signature_check)
+    with store.staging(key) as staging:
+        write_overlay_file(staging, payload)
+        with pytest.raises(CvArtifactError, match="unable to publish CV artifact"):
+            store.publish(cv_request, staging, artifact)
+
+    assert calls == 3
+    assert store.lookup(key) is None
+    assert len(tuple((root / "quarantine").iterdir())) == 1
+
+
+def test_valid_png_signature_roundtrips_without_image_decoder(tmp_path, cv_request):
+    """The descriptor check is a narrow magic-byte guard, not image decoding."""
+    payload = PNG_SIGNATURE + b"bounded-overlay-payload"
+    artifact = overlay_artifact_for(cv_request, payload)
+    store = CvArtifactStore(tmp_path / "cv-cache")
+    key = cv_cache_key(cv_request)
+
+    with store.staging(key) as staging:
+        write_overlay_file(staging, payload)
+        handle = store.publish(cv_request, staging, artifact)
+
+    assert store.lookup(key) == handle
+    assert store.load(handle) == artifact
 
 
 def test_publish_commit_guard_failure_prevents_atomic_installation(
