@@ -421,6 +421,113 @@ def test_direction_words_do_not_hide_concrete_red_container_targets(
     ]
 
 
+@pytest.mark.parametrize(
+    "description",
+    [
+        "right hand moves it slowly",
+        "right hand moves it gently",
+        "right hand moves it quickly",
+        "right hand moves it carefully",
+        "right hand moves it steadily",
+        "right hand moves it smoothly",
+        "right hand moves it gradually",
+        "right hand moves it briefly",
+        "right hand moves it continuously",
+        "right hand moves it repeatedly",
+        "right hand moves it firmly",
+        "right hand moves it softly",
+        "right hand moves it loosely",
+        "right hand moves it very slightly",
+        "right hand moves it back and forth",
+        "right hand moves it side-to-side",
+        "right hand moves it back-and-forth",
+        "right hand moves it front-to-back",
+        "right hand moves it left-to-right",
+        "right hand moves it right-to-left",
+        "right hand moves it up-and-down",
+        "right hand moves it down-and-up",
+        "right hand moves it in-and-out",
+        "right hand gently moves it",
+    ],
+)
+def test_empty_entities_allow_only_literal_manner_and_hyphenated_direction_words(
+    description: str,
+) -> None:
+    payload = {
+        "task_description": "move without a named target",
+        "entity_candidates": [],
+        "actions": [
+            {
+                "action_index": 0,
+                "start": 0.0,
+                "end": 1.0,
+                "description": description,
+                "event_type": "transport",
+            }
+        ],
+    }
+
+    validate_coarse_plan(CoarsePlan.model_validate(payload), duration=1.0)
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        "right hand moves red container slowly",
+        "right hand moves red container gently",
+        "right hand moves red container back and forth",
+        "right hand moves red container side-to-side",
+        "right hand gently moves red container",
+    ],
+)
+def test_manner_words_do_not_hide_concrete_red_container_targets(
+    description: str,
+) -> None:
+    payload = {
+        "task_description": "move the red container",
+        "entity_candidates": [],
+        "actions": [
+            {
+                "action_index": 0,
+                "start": 0.0,
+                "end": 1.0,
+                "description": description,
+                "event_type": "transport",
+            }
+        ],
+    }
+
+    with pytest.raises(TemporalValidationError) as error:
+        validate_coarse_plan(CoarsePlan.model_validate(payload), duration=1.0)
+
+    assert [issue.code for issue in error.value.issues] == [
+        "EMPTY_ENTITY_CANDIDATES"
+    ]
+
+
+def test_unlisted_ly_token_is_not_ignored_as_a_generic_manner_word() -> None:
+    payload = {
+        "task_description": "move without a named target",
+        "entity_candidates": [],
+        "actions": [
+            {
+                "action_index": 0,
+                "start": 0.0,
+                "end": 1.0,
+                "description": "right hand moves it privately",
+                "event_type": "transport",
+            }
+        ],
+    }
+
+    with pytest.raises(TemporalValidationError) as error:
+        validate_coarse_plan(CoarsePlan.model_validate(payload), duration=1.0)
+
+    assert [issue.code for issue in error.value.issues] == [
+        "EMPTY_ENTITY_CANDIDATES"
+    ]
+
+
 def test_empty_entity_issue_contains_only_a_fixed_code_path_and_message() -> None:
     """The model's target text must not enter durable repair diagnostics."""
     private_target = "private-target-token"

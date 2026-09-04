@@ -353,6 +353,7 @@ _TARGET_PARTICLE_DIRECTION_AND_MODIFIER_WORDS = frozenset(
         "aside",
         "away",
         "back",
+        "back-and-forth",
         "backward",
         "backwards",
         "behind",
@@ -362,16 +363,21 @@ _TARGET_PARTICLE_DIRECTION_AND_MODIFIER_WORDS = frozenset(
         "counterclockwise",
         "diagonally",
         "down",
+        "down-and-up",
         "downward",
         "downwards",
         "farther",
+        "forth",
         "forward",
         "forwards",
+        "front-to-back",
         "horizontally",
         "in",
+        "in-and-out",
         "inward",
         "inwards",
         "left",
+        "left-to-right",
         "leftward",
         "leftwards",
         "laterally",
@@ -381,9 +387,11 @@ _TARGET_PARTICLE_DIRECTION_AND_MODIFIER_WORDS = frozenset(
         "outwards",
         "over",
         "right",
+        "right-to-left",
         "rightward",
         "rightwards",
         "side",
+        "side-to-side",
         "sideways",
         "slightly",
         "straight",
@@ -391,9 +399,28 @@ _TARGET_PARTICLE_DIRECTION_AND_MODIFIER_WORDS = frozenset(
         "together",
         "under",
         "up",
+        "up-and-down",
         "upward",
         "upwards",
         "vertically",
+    }
+)
+_TARGET_MANNER_WORDS = frozenset(
+    {
+        "briefly",
+        "carefully",
+        "continuously",
+        "firmly",
+        "gently",
+        "gradually",
+        "loosely",
+        "quickly",
+        "repeatedly",
+        "slowly",
+        "smoothly",
+        "softly",
+        "steadily",
+        "very",
     }
 )
 _TARGET_EVENT_ACTION_WORDS = {
@@ -520,12 +547,19 @@ def _action_mentions_concrete_target(action: CoarseAction) -> bool:
             description = description[len(prefix) :]
             break
     words = [word.strip(".,:;!?()[]{}") for word in description.split()]
+    if (
+        len(words) > 1
+        and words[0] in _TARGET_MANNER_WORDS
+        and words[1] in action_words
+    ):
+        words = words[1:]
     target_position_words = words[1:] if words else []
     allowed_words = (
         action_words
         | _TARGET_PLACEHOLDER_WORDS
         | _TARGET_FUNCTION_WORDS
         | _TARGET_PARTICLE_DIRECTION_AND_MODIFIER_WORDS
+        | _TARGET_MANNER_WORDS
     )
     return any(
         word and word not in allowed_words for word in target_position_words
