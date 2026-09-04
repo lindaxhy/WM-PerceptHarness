@@ -43,6 +43,7 @@ __all__ = [
     "FakeCvEvidenceProvider",
     "NormalizedEntities",
     "SamplingPolicy",
+    "Sam31EvidenceProvider",
     "TrackObservation",
     "cv_request_from_job",
     "normalize_entities",
@@ -51,6 +52,10 @@ __all__ = [
 
 def __getattr__(name: str) -> Any:
     """Load worker exports lazily so schema-only imports stay cycle-free."""
+    if name == "Sam31EvidenceProvider":
+        from .sam31 import Sam31EvidenceProvider
+
+        return Sam31EvidenceProvider
     if name in {"CVEvidenceWorker", "cv_request_from_job"}:
         from .worker import CVEvidenceWorker, cv_request_from_job
 
