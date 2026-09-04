@@ -429,6 +429,7 @@ class Sam31EvidenceProvider:
         work_directory: Path | None = None
         output_directories: list[Path] = []
         completed = False
+        primary_error: BaseException | None = None
         try:
             if self._closed:
                 raise RuntimeError
@@ -551,13 +552,16 @@ class Sam31EvidenceProvider:
             completed = True
             return artifact
         except Exception as error:
+            primary_error = error
             if _is_cuda_oom(self._torch, error):
                 _empty_cuda_cache(self._torch)
                 raise CvOutOfMemoryError(_OOM_FAILURE) from None
             self._clear_retry_plan()
             raise CvProviderError(_INFERENCE_FAILURE) from None
+        except BaseException as error:
+            primary_error = error
+            raise
         finally:
-            primary_error = sys.exception()
             cleanup_error: BaseException | None = None
             if work_directory is not None:
                 try:
@@ -586,7 +590,6 @@ class Sam31EvidenceProvider:
         """Release predictor-owned process state once."""
         if self._closed:
             return
-        caller_error = sys.exception()
         self._closed = True
         predictor = self._predictor
         self._predictor = None
@@ -614,7 +617,7 @@ class Sam31EvidenceProvider:
         finally:
             self._runtime_directory = None
             self._sam_source_root = None
-        if cleanup_error is not None and caller_error is None:
+        if cleanup_error is not None:
             raise CvProviderError(_CLOSE_FAILURE) from None
 
     def _materialize(

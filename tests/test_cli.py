@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 from argparse import Namespace
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -1555,6 +1556,88 @@ def test_cv_worker_fake_provider_without_close_has_a_clean_once_lifecycle(
         cli.main(["cv-worker", "--provider", "fake", "--device", "3", "--once"])
         == 0
     )
+
+
+@pytest.mark.parametrize(
+    "primary_factory",
+    [
+        pytest.param(lambda: RuntimeError("caller failure"), id="ordinary-primary"),
+        pytest.param(
+            lambda: KeyboardInterrupt("caller interrupt"), id="keyboard-primary"
+        ),
+        pytest.param(lambda: SystemExit("caller exit"), id="system-exit-primary"),
+    ],
+)
+@pytest.mark.parametrize(
+    "close_failure_factory",
+    [
+        pytest.param(lambda: OSError("provider close path"), id="close-oserror"),
+        pytest.param(
+            lambda: KeyboardInterrupt("provider close interrupt"),
+            id="close-keyboard",
+        ),
+        pytest.param(
+            lambda: SystemExit("provider close exit"), id="close-system-exit"
+        ),
+    ],
+)
+def test_cv_runtime_preserves_body_primary_and_attempts_all_cleanup_explicitly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    primary_factory: Callable[[], BaseException],
+    close_failure_factory: Callable[[], BaseException],
+) -> None:
+    from las_repro.cv import artifacts as cv_artifacts
+    from las_repro.cv import base as cv_base
+    from las_repro.cv import worker as cv_worker_module
+
+    cleanup_steps: list[str] = []
+
+    class ClosingProvider:
+        def __init__(self, *, execution_chunk_frames: int) -> None:
+            assert execution_chunk_frames == 8
+
+        def close(self) -> None:
+            cleanup_steps.append("provider")
+            raise close_failure_factory()
+
+    class ClosingArtifactStore:
+        def __init__(self, *_: Any, **__: Any) -> None:
+            pass
+
+        def close(self) -> None:
+            cleanup_steps.append("artifact-store")
+            raise SystemExit("artifact close exit")
+
+    class RecordingWorker:
+        def __init__(self, *_: Any, **__: Any) -> None:
+            pass
+
+    monkeypatch.setattr(cv_base, "FakeCvEvidenceProvider", ClosingProvider)
+    monkeypatch.setattr(cv_artifacts, "CvArtifactStore", ClosingArtifactStore)
+    monkeypatch.setattr(cv_worker_module, "CVEvidenceWorker", RecordingWorker)
+    settings = Settings(
+        database_path=tmp_path / "tasks.sqlite3",
+        cv_provider="fake",
+        cv_cache_root=tmp_path / "cv-cache",
+    )
+    primary = primary_factory()
+    raised: BaseException | None = None
+
+    try:
+        with cli._cv_worker_runtime(
+            object(),
+            settings,
+            provider_name="fake",
+            physical_device=3,
+            worker_id="fake-cv",
+        ):
+            raise primary
+    except BaseException as error:
+        raised = error
+
+    assert raised is primary
+    assert cleanup_steps == ["provider", "artifact-store"]
 
 
 def test_run_fake_shutdown_keeps_inference_alive_until_current_coordinator_finishes(

@@ -261,6 +261,7 @@ def _cv_worker_runtime(
         max_bytes=settings.cv_cache_max_bytes,
     )
     provider: Any | None = None
+    primary_error: BaseException | None = None
     try:
         if provider_name == "fake":
             from .cv.base import FakeCvEvidenceProvider
@@ -295,12 +296,23 @@ def _cv_worker_runtime(
             worker_id,
             lease_seconds=settings.lease_seconds,
         )
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
+        cleanup_error: BaseException | None = None
         try:
             if provider is not None:
                 _close_provider_state(provider)
-        finally:
+        except BaseException as error:
+            cleanup_error = error
+        try:
             artifact_store.close()
+        except BaseException as error:
+            if cleanup_error is None:
+                cleanup_error = error
+        if cleanup_error is not None and primary_error is None:
+            raise cleanup_error
 
 
 def _configure_execution_chunk_frames(provider: Any, value: int) -> None:

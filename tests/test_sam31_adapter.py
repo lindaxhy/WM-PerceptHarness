@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-from contextlib import closing
 import hashlib
 import importlib
 import json
@@ -1498,11 +1497,22 @@ def test_session_cleanup_interrupt_cannot_mask_primary_system_exit(
 
 
 @pytest.mark.parametrize("primary_kind", ["keyboard", "system-exit", "ordinary"])
+@pytest.mark.parametrize(
+    "cleanup_factory",
+    [
+        pytest.param(lambda: OSError("cleanup path"), id="cleanup-oserror"),
+        pytest.param(
+            lambda: KeyboardInterrupt("cleanup interrupt"), id="cleanup-keyboard"
+        ),
+        pytest.param(lambda: SystemExit("cleanup exit"), id="cleanup-system-exit"),
+    ],
+)
 def test_analysis_cleanup_baseexception_preserves_primary_and_attempts_all_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     fake_torch: SimpleNamespace,
     primary_kind: str,
+    cleanup_factory: Callable[[], BaseException],
 ) -> None:
     request = make_request(tmp_path)
     primary: BaseException
@@ -1520,7 +1530,7 @@ def test_analysis_cleanup_baseexception_preserves_primary_and_attempts_all_paths
 
     def exploding_cleanup(path: Path) -> None:
         cleanup_paths.append(path)
-        raise KeyboardInterrupt("cleanup interrupt")
+        raise cleanup_factory()
 
     monkeypatch.setattr(SAM31_MODULE, "_remove_tree", exploding_cleanup)
     provider = make_provider(PredictorDouble(fail), fake_torch, MaterializerDouble())
@@ -1567,6 +1577,55 @@ def test_successful_analysis_with_cleanup_baseexception_fails_sanitized_and_clea
     assert len(cleanup_paths) == 2
     assert cleanup_paths[0].name.startswith(".sam31-frames-")
     assert cleanup_paths[1] == tmp_path / "staging" / "masks"
+
+
+@pytest.mark.parametrize(
+    "cleanup_factory",
+    [
+        pytest.param(lambda: OSError("private cleanup path"), id="oserror"),
+        pytest.param(
+            lambda: KeyboardInterrupt("private cleanup interrupt"), id="keyboard"
+        ),
+        pytest.param(
+            lambda: SystemExit("private cleanup exit"), id="system-exit"
+        ),
+    ],
+)
+def test_handled_outer_exception_cannot_hide_successful_analysis_cleanup_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_torch: SimpleNamespace,
+    cleanup_factory: Callable[[], BaseException],
+) -> None:
+    request = make_request(tmp_path)
+    staging = tmp_path / "staging"
+    cleanup_paths: list[Path] = []
+    real_remove_tree = SAM31_MODULE._remove_tree
+
+    def remove_then_fail(path: Path) -> None:
+        cleanup_paths.append(path)
+        real_remove_tree(path)
+        raise cleanup_factory()
+
+    monkeypatch.setattr(SAM31_MODULE, "_remove_tree", remove_then_fail)
+    provider = make_provider(PredictorDouble(), fake_torch, MaterializerDouble())
+    raised: BaseException | None = None
+
+    try:
+        raise RuntimeError("already handled by caller")
+    except RuntimeError:
+        try:
+            provider.analyze(request, staging)
+        except BaseException as error:
+            raised = error
+
+    assert type(raised) is CvProviderError
+    assert str(raised) == "SAM3.1 CV evidence inference failed"
+    assert "private" not in str(raised)
+    assert len(cleanup_paths) == 2
+    assert cleanup_paths[0].name.startswith(".sam31-frames-")
+    assert cleanup_paths[1] == staging / "masks"
+    assert list(staging.iterdir()) == []
 
 
 def test_successful_analysis_surfaces_real_rmtree_oserror_as_sanitized_failure(
@@ -1690,7 +1749,7 @@ def test_provider_close_surfaces_real_runtime_cleanup_oserror(
         ),
     ],
 )
-def test_direct_provider_close_sanitizes_cleanup_failure_and_attempts_later_steps(
+def test_handled_outer_exception_cannot_hide_direct_provider_close_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     fake_torch: SimpleNamespace,
@@ -1733,68 +1792,16 @@ def test_direct_provider_close_sanitizes_cleanup_failure_and_attempts_later_step
     raised: BaseException | None = None
 
     try:
-        provider.close()
-    except BaseException as error:
-        raised = error
+        raise RuntimeError("already handled by caller")
+    except RuntimeError:
+        try:
+            provider.close()
+        except BaseException as error:
+            raised = error
 
     assert type(raised) is CvProviderError
     assert str(raised) == "Unable to close SAM3.1 runtime"
     assert "private" not in str(raised)
-    assert cleanup_steps == ["shutdown", "restore", "remove"]
-    assert not runtime_directory.exists()
-
-
-@pytest.mark.parametrize("primary_kind", ["ordinary", "keyboard", "system-exit"])
-def test_context_close_preserves_caller_primary_and_attempts_every_cleanup_step(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    fake_torch: SimpleNamespace,
-    primary_kind: str,
-) -> None:
-    runtime_directory = tmp_path / "private-runtime"
-    runtime_directory.mkdir(mode=0o700)
-    if primary_kind == "ordinary":
-        primary: BaseException = RuntimeError("caller primary failure")
-    elif primary_kind == "keyboard":
-        primary = KeyboardInterrupt("caller primary interrupt")
-    else:
-        primary = SystemExit("caller primary exit")
-    cleanup_steps: list[str] = []
-
-    class PredictorWithInterruptedShutdown(PredictorDouble):
-        def shutdown(self) -> None:
-            cleanup_steps.append("shutdown")
-            raise KeyboardInterrupt("private shutdown interrupt")
-
-    def interrupted_restore(_snapshot: Any) -> None:
-        cleanup_steps.append("restore")
-        raise OSError("private restore path")
-
-    real_remove_tree = SAM31_MODULE._remove_tree
-
-    def interrupted_remove(path: Path) -> None:
-        cleanup_steps.append("remove")
-        real_remove_tree(path)
-        raise SystemExit("private remove exit")
-
-    monkeypatch.setattr(SAM31_MODULE, "_restore_sam_modules", interrupted_restore)
-    monkeypatch.setattr(SAM31_MODULE, "_remove_tree", interrupted_remove)
-    provider = make_provider(
-        PredictorWithInterruptedShutdown(),
-        fake_torch,
-        MaterializerDouble(),
-        runtime_directory=runtime_directory,
-        import_snapshot=object(),
-    )
-    raised: BaseException | None = None
-
-    try:
-        with closing(provider):
-            raise primary
-    except BaseException as error:
-        raised = error
-
-    assert raised is primary
     assert cleanup_steps == ["shutdown", "restore", "remove"]
     assert not runtime_directory.exists()
 
