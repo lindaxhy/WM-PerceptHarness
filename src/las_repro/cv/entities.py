@@ -4,17 +4,33 @@ from __future__ import annotations
 
 import unicodedata
 from collections.abc import Sequence
+from typing import Annotated
 
 from pydantic import Field, StrictStr, field_validator
 
 from .contracts import EntityPrompt, EntityRole, StrictModel
 
 
+_MAX_RAW_ENTITY_CANDIDATES = 64
+_MAX_NORMALIZED_ENTITIES = 16
+_MAX_ENTITY_NAME_CHARS = 256
+_MAX_ENTITY_ALIASES = 256
+_MAX_ENTITY_ALIAS_CHARS = 128
+_MAX_NORMALIZATION_WARNINGS = 1
+_MAX_WARNING_CHARS = 256
+_MAX_CANONICAL_INT = 2**63 - 1
+
+
 class EntityCandidate(StrictModel):
     """A candidate named upstream without adding any NLP inference here."""
 
-    name: StrictStr
-    aliases: tuple[StrictStr, ...]
+    name: Annotated[StrictStr, Field(max_length=_MAX_ENTITY_NAME_CHARS)]
+    aliases: Annotated[
+        tuple[
+            Annotated[StrictStr, Field(max_length=_MAX_ENTITY_ALIAS_CHARS)], ...
+        ],
+        Field(max_length=_MAX_ENTITY_ALIASES),
+    ]
     role: EntityRole
 
     @field_validator("role", mode="before")
@@ -24,9 +40,14 @@ class EntityCandidate(StrictModel):
 
 
 class NormalizedEntities(StrictModel):
-    entities: tuple[EntityPrompt, ...]
-    omitted_count: int = Field(ge=0, strict=True)
-    warnings: tuple[StrictStr, ...] = ()
+    entities: Annotated[
+        tuple[EntityPrompt, ...], Field(max_length=_MAX_NORMALIZED_ENTITIES)
+    ]
+    omitted_count: int = Field(ge=0, le=_MAX_CANONICAL_INT, strict=True)
+    warnings: Annotated[
+        tuple[Annotated[StrictStr, Field(max_length=_MAX_WARNING_CHARS)], ...],
+        Field(max_length=_MAX_NORMALIZATION_WARNINGS),
+    ] = ()
 
 
 _ROLE_PRIORITY = {
@@ -66,8 +87,35 @@ def normalize_entities(
     candidates: Sequence[EntityCandidate], *, limit: int = 16
 ) -> NormalizedEntities:
     """Deduplicate and order explicit candidates without deriving new entities."""
-    if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
-        raise ValueError("limit must be a positive integer")
+    if type(candidates) not in {list, tuple}:
+        raise ValueError("entity candidate container must be a plain list or tuple")
+    if len(candidates) > _MAX_RAW_ENTITY_CANDIDATES:
+        raise ValueError("entity candidate container exceeds the raw Pass-A cap")
+    if type(limit) is not int or not 0 < limit <= _MAX_NORMALIZED_ENTITIES:
+        raise ValueError(
+            f"limit must be a positive integer no greater than {_MAX_NORMALIZED_ENTITIES}"
+        )
+
+    for candidate in candidates:
+        if type(candidate) is not EntityCandidate:
+            raise ValueError("entity candidate must be a validated EntityCandidate")
+        if (
+            type(candidate.name) is not str
+            or len(candidate.name) > _MAX_ENTITY_NAME_CHARS
+        ):
+            raise ValueError("entity candidate name exceeds its resource bound")
+        if (
+            type(candidate.aliases) is not tuple
+            or len(candidate.aliases) > _MAX_ENTITY_ALIASES
+        ):
+            raise ValueError("entity candidate aliases exceed their resource bound")
+        if any(
+            type(alias) is not str or len(alias) > _MAX_ENTITY_ALIAS_CHARS
+            for alias in candidate.aliases
+        ):
+            raise ValueError("entity candidate alias exceeds its resource bound")
+        if type(candidate.role) is not EntityRole:
+            raise ValueError("entity candidate role must be canonical")
 
     merged: dict[str, dict[str, object]] = {}
     for position, candidate in enumerate(candidates):

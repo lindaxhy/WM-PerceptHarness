@@ -74,22 +74,12 @@ class StrictModel(BaseModel):
                 raise ValueError("custom model containers are forbidden")
             return value
 
-        # Discover extras before inspecting declared fields.  Reject hostile
-        # extra containers without iteration, but leave ordinary extra-key
-        # errors to pydantic-core so callers retain precise field locations and
-        # can aggregate them with failures in known fields.
+        # Discover malformed keys before inspecting declared fields.  Never
+        # read an unknown value here: pydantic-core owns extra-field rejection,
+        # preserving its precise field location without traversing the value.
         for name in value:
             if type(name) is not str:
                 raise ValueError("model keys must be JSON strings")
-            if name in cls.model_fields:
-                continue
-            extra = value[name]
-            if isinstance(extra, (Mapping, list, tuple)) and type(extra) not in {
-                dict,
-                list,
-                tuple,
-            }:
-                raise ValueError("custom extra-field containers are forbidden")
 
         normalized = value.copy()
         for name, field in cls.model_fields.items():
@@ -394,12 +384,6 @@ class CvEvidenceArtifact(StrictModel):
             if isinstance(value, (Mapping, list, tuple)):
                 raise ValueError("artifact uses a custom model container")
             return value
-        if any(
-            type(name) is not str or name not in cls.model_fields
-            for name in value
-        ):
-            raise ValueError("artifact contains forbidden extra fields")
-
         def bounded_sequence(name: str, maximum: int) -> tuple[Any, ...] | list[Any]:
             sequence = value.get(name, ())
             if isinstance(sequence, (tuple, list)) and type(sequence) not in {

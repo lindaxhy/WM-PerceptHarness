@@ -42,6 +42,60 @@ class BombList(list):
         raise RuntimeError("hostile list was iterated")
 
 
+class BombStr(str):
+    """A string subclass whose inherited operations must never be reached."""
+
+    def __len__(self) -> int:
+        raise RuntimeError("hostile string length was read")
+
+    def __hash__(self) -> int:
+        raise RuntimeError("hostile string was hashed")
+
+    def __eq__(self, other: object) -> bool:
+        raise RuntimeError("hostile string was compared")
+
+    def split(self, *args: object, **kwargs: object) -> list[str]:
+        raise RuntimeError("hostile string was split")
+
+
+class BombInt(int):
+    """An integer subclass whose comparisons must never be reached."""
+
+    def __lt__(self, other: object) -> bool:
+        raise RuntimeError("hostile integer was compared")
+
+    def __le__(self, other: object) -> bool:
+        raise RuntimeError("hostile integer was compared")
+
+    def __gt__(self, other: object) -> bool:
+        raise RuntimeError("hostile integer was compared")
+
+    def __ge__(self, other: object) -> bool:
+        raise RuntimeError("hostile integer was compared")
+
+    def __hash__(self) -> int:
+        raise RuntimeError("hostile integer was hashed")
+
+
+class BombFloat(float):
+    """A float subclass whose comparisons must never be reached."""
+
+    def __lt__(self, other: object) -> bool:
+        raise RuntimeError("hostile float was compared")
+
+    def __le__(self, other: object) -> bool:
+        raise RuntimeError("hostile float was compared")
+
+    def __gt__(self, other: object) -> bool:
+        raise RuntimeError("hostile float was compared")
+
+    def __ge__(self, other: object) -> bool:
+        raise RuntimeError("hostile float was compared")
+
+    def __hash__(self) -> int:
+        raise RuntimeError("hostile float was hashed")
+
+
 def _entity(
     entity_id: str,
     *,
@@ -2674,3 +2728,184 @@ def test_candidate_and_bundle_completeness_names_have_one_meaning() -> None:
     assert "candidate_set_complete" not in type(candidate).model_fields
     assert bundle.source_search_complete is summary.candidate_search_complete
     assert bundle.candidates_complete is True
+
+
+def test_nondefault_summary_budget_survives_bundle_prompt_and_roundtrips() -> None:
+    """Fresh bundle validation must retain the summary's private 10k cap."""
+    artifact, timeline = _candidate_artifact()
+    summary = summarize_cv_evidence(
+        artifact,
+        timeline=timeline,
+        max_prompt_chars=10_000,
+    )
+
+    bundle = summary_module.build_cv_prompt_bundle(summary, _thresholds())
+    record = bundle.prompt_record()
+    encoded = json.dumps(
+        record,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+    assert len(encoded) <= 10_000
+    assert "prompt_char_limit" not in record["summary"]
+    assert bundle.prompt_char_limit == 10_000
+    assert bundle.summary.prompt_char_limit == 10_000
+    for roundtripped in (
+        type(bundle).model_validate(bundle.model_dump(mode="json"), strict=True),
+        type(bundle).model_validate_json(bundle.model_dump_json(), strict=True),
+    ):
+        assert roundtripped.summary.prompt_char_limit == 10_000
+        assert roundtripped.summary.summary_id == summary.summary_id
+        assert roundtripped.prompt_record() == record
+
+
+def test_aggregate_budget_streams_before_materializing_oversized_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 322651-char candidate projection must be clipped while still lazy."""
+    tracks = tuple(
+        _track(
+            f"item_{track_ordinal}_1",
+            f"item_{track_ordinal}",
+            tuple(
+                _observation(
+                    frame,
+                    bbox_xyxy=(
+                        0.05 + track_ordinal * 0.3,
+                        0.1,
+                        0.2 + track_ordinal * 0.3,
+                        0.25,
+                    ),
+                )
+                for frame in range(0, 200, 2)
+            ),
+        )
+        for track_ordinal in range(3)
+    )
+    summary = summarize_cv_evidence(
+        _artifact(tracks),
+        timeline=_timeline(*range(200)),
+        max_observations_per_track=256,
+        max_relations=1,
+    )
+
+    def forbid_full_projection(*_: object, **__: object) -> object:
+        raise AssertionError("oversized bundle projection was materialized")
+
+    original_materialize = summary_module._materialize_record
+    materialized_sizes: list[int] = []
+
+    def guard_all_materialization(projection: object) -> dict[str, object]:
+        size = summary_module._canonical_char_count(projection, maximum=200_000)
+        if size > 200_000:
+            raise AssertionError("over-limit canonical projection was materialized")
+        materialized_sizes.append(size)
+        return original_materialize(projection)
+
+    monkeypatch.setattr(
+        summary_module,
+        "_bundle_prompt_record_values",
+        forbid_full_projection,
+    )
+    monkeypatch.setattr(
+        summary_module,
+        "_materialize_record",
+        guard_all_materialization,
+    )
+    bundle = summary_module.build_cv_prompt_bundle(summary, _thresholds())
+    record = bundle.prompt_record()
+    encoded = json.dumps(
+        record,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+    assert len(bundle.candidates) == 3
+    assert len(encoded) == 199_944
+    assert materialized_sizes == [199_944]
+    assert "CANDIDATE_PROMPT_TRUNCATED" in bundle.truncation_codes
+
+
+def test_public_preflight_rejects_hostile_scalar_subclasses_without_execution() -> None:
+    """Unsafe model copies must fail before inherited scalar operations run."""
+    artifact, timeline = _candidate_artifact()
+    summary = summarize_cv_evidence(artifact, timeline=timeline)
+    [candidate, *_] = build_occlusion_candidates(summary, _thresholds())
+    bundle = summary_module.build_cv_prompt_bundle(summary, _thresholds())
+
+    hostile_summary = summary.model_copy(
+        update={"summary_id": BombStr(summary.summary_id)}
+    )
+    hostile_candidate = candidate.model_copy(
+        update={"last_visible_frame": BombInt(candidate.last_visible_frame)}
+    )
+    hostile_thresholds = EvidenceThresholds.model_construct(
+        min_confidence=BombFloat(0.5),
+        min_area_fraction=0.01,
+        occlusion_visibility_drop=0.5,
+    )
+    hostile_bundle = bundle.model_copy(update={"source_search_complete": 1})
+
+    for operation in (
+        hostile_summary.prompt_record,
+        hostile_candidate.prompt_record,
+        lambda: summary_module.build_cv_prompt_bundle(summary, hostile_thresholds),
+        hostile_bundle.prompt_record,
+    ):
+        with pytest.raises(ValueError, match="structural input bound"):
+            operation()
+
+
+def test_bundle_extra_key_uses_precise_pydantic_location() -> None:
+    """Ordinary extras remain field-local while aggregate preflight stays shallow."""
+    artifact, timeline = _candidate_artifact()
+    summary = summarize_cv_evidence(artifact, timeline=timeline)
+    bundle = summary_module.build_cv_prompt_bundle(summary, _thresholds())
+    for extra in ("ordinary", BombList(["do-not-touch"])):
+        payload = bundle.model_dump(mode="json")
+        payload["typo"] = extra
+
+        with pytest.raises(ValidationError) as caught:
+            type(bundle).model_validate(payload)
+
+        assert any(
+            error["loc"] == ("typo",) and error["type"] == "extra_forbidden"
+            for error in caught.value.errors()
+        )
+
+
+def test_canonical_stream_matches_standard_json_for_unicode_records() -> None:
+    """Streaming preserves canonical sorting and Python-character Unicode counts."""
+    entity = EntityPrompt(
+        entity_id="cafe",
+        canonical_label="café ☕",
+        aliases=("茶",),
+        role=EntityRole.MANIPULATED_OBJECT,
+    )
+    summary = summarize_cv_evidence(
+        _artifact(
+            (_track("cafe_1", "cafe", (_observation(0), _observation(2))),),
+            entities=(entity,),
+            processed_timeline=_timeline(0, 1, 2),
+        )
+    )
+    candidate = build_occlusion_candidates(summary, _thresholds())[0]
+    bundle = summary_module.build_cv_prompt_bundle(summary, _thresholds())
+
+    for projection, record in (
+        (summary_module._summary_projection(summary), summary.prompt_record()),
+        (summary_module._candidate_projection(candidate), candidate.prompt_record()),
+        (summary_module._bundle_projection(bundle), bundle.prompt_record()),
+    ):
+        streamed = "".join(summary_module._iter_canonical_json(projection))
+        standard = json.dumps(
+            record,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        assert streamed == standard
+        assert summary_module._canonical_char_count(projection) == len(standard)

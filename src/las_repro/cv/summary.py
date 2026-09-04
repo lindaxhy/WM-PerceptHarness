@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import hashlib
 import heapq
+from io import StringIO
 import json
 import math
 import re
@@ -67,6 +68,7 @@ _MAX_CANDIDATE_SUPPORTING_FRAMES = 64
 _MAX_TOTAL_CANDIDATE_COMPONENTS = 32_768
 _MAX_CANONICAL_INT = 2**63 - 1
 _MIN_BUNDLE_ENVELOPE_CHARS = 512
+_MAX_VALIDATION_METADATA_CHARS = 256
 _ABS_MAX_ARTIFACT_ENTITIES = 64
 _ABS_MAX_ARTIFACT_TRACKS = 256
 _ABS_MAX_ALIASES_PER_INPUT_ENTITY = 256
@@ -693,13 +695,11 @@ class CvEvidenceSummary(StrictModel):
         """Return a fresh allowlisted JSON record, rejecting an oversized model."""
         _preflight_summary(self)
         validated = _revalidate_summary(self)
-        record = _summary_prompt_record(validated)
-        if (
-            _canonical_char_count(record, maximum=validated.prompt_char_limit)
-            > validated.prompt_char_limit
-        ):
-            raise ValueError("CV summary prompt record exceeds its character cap")
-        return record
+        return _materialize_bounded_record(
+            _summary_projection(validated),
+            maximum=validated.prompt_char_limit,
+            message="CV summary prompt record exceeds its character cap",
+        )
 
 
 class OccluderProvenance(StrictModel):
@@ -817,53 +817,25 @@ class OcclusionCandidate(StrictModel):
         """Return fresh allowlisted values without exposing model internals."""
         _preflight_candidate(self)
         validated = _revalidate_candidate(self)
-        record = _candidate_prompt_record(validated)
-        if (
-            _canonical_char_count(
-                record, maximum=_MAX_CANDIDATE_PROMPT_CHARS
-            )
-            > _MAX_CANDIDATE_PROMPT_CHARS
-        ):
-            raise ValueError("occlusion candidate prompt record exceeds its cap")
-        return record
+        return _materialize_bounded_record(
+            _candidate_projection(validated),
+            maximum=_MAX_CANDIDATE_PROMPT_CHARS,
+            message="occlusion candidate prompt record exceeds its cap",
+        )
 
 
 def _candidate_prompt_record(candidate: OcclusionCandidate) -> dict[str, Any]:
-    return {
-        "candidate_id": candidate.candidate_id,
-        "target_entity_id": candidate.target_entity_id,
-        "target_track_id": candidate.target_track_id,
-        "possible_occluders": [
-            {
-                "entity_id": item.entity_id,
-                "track_id": item.track_id,
-                "supporting_frames": list(item.supporting_frames),
-            }
-            for item in candidate.possible_occluders
-        ],
-        "possible_occluder_entity_ids": list(
-            candidate.possible_occluder_entity_ids
-        ),
-        "allowed_start_times": list(candidate.allowed_start_times),
-        "allowed_end_times": list(candidate.allowed_end_times),
-        "last_visible_frame": candidate.last_visible_frame,
-        "first_revisible_frame": candidate.first_revisible_frame,
-        "edge_departure": candidate.edge_departure,
-        "low_confidence": candidate.low_confidence,
-        "overlay_refs": list(candidate.overlay_refs),
-        "observation_support_complete": candidate.observation_support_complete,
-        "relation_support_complete": candidate.relation_support_complete,
-        "overlay_support_complete": candidate.overlay_support_complete,
-        "support_complete": candidate.support_complete,
-        "source_search_complete": candidate.source_search_complete,
-    }
+    """Materialize one already-bounded private compatibility projection."""
+    return _materialize_record(_candidate_projection(candidate))
 
 
 def _candidate_identity(candidate: OcclusionCandidate, ordinal: int) -> str:
-    payload = _candidate_prompt_record(candidate)
-    del payload["candidate_id"]
-    payload["ordinal"] = ordinal
-    return f"occ_{_candidate_hash_prefix(payload)}_{ordinal:04d}"
+    projection = _candidate_projection(
+        candidate,
+        include_candidate_id=False,
+        ordinal=ordinal,
+    )
+    return f"occ_{_candidate_hash_prefix(projection)}_{ordinal:04d}"
 
 
 class CvPromptBundle(StrictModel):
@@ -902,11 +874,6 @@ class CvPromptBundle(StrictModel):
         """Reject multiplicative candidate shapes before nested validation."""
         if isinstance(value, cls) or type(value) is not dict:
             return value
-        if any(
-            type(name) is not str or name not in cls.model_fields
-            for name in value
-        ):
-            raise ValueError("bundle contains forbidden extra fields")
         candidates = value.get("candidates")
         if type(candidates) not in {list, tuple}:
             if isinstance(candidates, (list, tuple)):
@@ -1033,7 +1000,7 @@ class CvPromptBundle(StrictModel):
             raise ValueError("bundle must contain the canonical candidate set")
         if (
             _canonical_char_count(
-                _bundle_prompt_record(self), maximum=self.prompt_char_limit
+                _bundle_projection(self), maximum=self.prompt_char_limit
             )
             > self.prompt_char_limit
         ):
@@ -1044,13 +1011,11 @@ class CvPromptBundle(StrictModel):
         """Return one fresh, allowlisted, aggregate record for a model job."""
         _preflight_bundle(self)
         validated = _revalidate_bundle(self)
-        record = _bundle_prompt_record(validated)
-        if (
-            _canonical_char_count(record, maximum=validated.prompt_char_limit)
-            > validated.prompt_char_limit
-        ):
-            raise ValueError("aggregate CV prompt record exceeds its character cap")
-        return record
+        return _materialize_bounded_record(
+            _bundle_projection(validated),
+            maximum=validated.prompt_char_limit,
+            message="aggregate CV prompt record exceeds its character cap",
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1096,6 +1061,21 @@ class _ExpectedBundleComponents:
     source_search_complete: bool
     candidates_complete: bool
     truncation_codes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _CanonicalObject:
+    """A lazy JSON object whose values may reference bounded model tuples."""
+
+    fields: tuple[tuple[str, Any], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _CanonicalArray:
+    """A replayable lazy JSON array with an optional per-item projection."""
+
+    values: tuple[Any, ...]
+    projector: Any = None
 
 
 def summarize_cv_evidence(
@@ -1442,18 +1422,20 @@ def _expected_bundle_components(
 
     initial_codes = codes(prompt_truncated=False)
     initial_complete = not (generation_truncated or count_truncated)
-    initial_record = _bundle_prompt_record_values(
+    candidate_char_counts = tuple(
+        _canonical_char_count(_candidate_projection(candidate))
+        for candidate in initially_kept
+    )
+    initial_total = _bundle_empty_candidates_char_count(
         summary,
         thresholds,
-        initially_kept,
         source_search_complete=source_search_complete,
         candidates_complete=initial_complete,
         truncation_codes=initial_codes,
     )
-    if (
-        _canonical_char_count(initial_record, maximum=prompt_char_limit)
-        <= prompt_char_limit
-    ):
+    initial_total += sum(candidate_char_counts)
+    initial_total += max(0, len(candidate_char_counts) - 1)
+    if initial_total <= prompt_char_limit:
         return _ExpectedBundleComponents(
             candidates=initially_kept,
             source_search_complete=source_search_complete,
@@ -1462,31 +1444,24 @@ def _expected_bundle_components(
         )
 
     prompt_codes = codes(prompt_truncated=True)
-    low = 0
-    high = len(initially_kept)
-    best = -1
-    while low <= high:
-        middle = (low + high) // 2
-        record = _bundle_prompt_record_values(
-            summary,
-            thresholds,
-            initially_kept[:middle],
-            source_search_complete=source_search_complete,
-            candidates_complete=False,
-            truncation_codes=prompt_codes,
-        )
-        if (
-            _canonical_char_count(record, maximum=prompt_char_limit)
-            <= prompt_char_limit
-        ):
-            best = middle
-            low = middle + 1
-        else:
-            high = middle - 1
-    if best < 0:
+    prompt_total = _bundle_empty_candidates_char_count(
+        summary,
+        thresholds,
+        source_search_complete=source_search_complete,
+        candidates_complete=False,
+        truncation_codes=prompt_codes,
+    )
+    if prompt_total > prompt_char_limit:
         raise ValueError("CV summary leaves no room for an aggregate prompt bundle")
+    kept_count = 0
+    for candidate_chars in candidate_char_counts:
+        added_chars = candidate_chars + (1 if kept_count else 0)
+        if prompt_total + added_chars > prompt_char_limit:
+            break
+        prompt_total += added_chars
+        kept_count += 1
     return _ExpectedBundleComponents(
-        candidates=initially_kept[:best],
+        candidates=initially_kept[:kept_count],
         source_search_complete=source_search_complete,
         candidates_complete=False,
         truncation_codes=prompt_codes,
@@ -1504,7 +1479,7 @@ def _preflight_tuple(value: object, name: str, maximum: int) -> tuple[Any, ...]:
 
 
 def _preflight_text(value: object, name: str) -> str:
-    if not isinstance(value, str) or len(value) > _ABS_MAX_INPUT_STRING_CHARS:
+    if type(value) is not str or len(value) > _ABS_MAX_INPUT_STRING_CHARS:
         raise _structural_error(name)
     return value
 
@@ -1517,8 +1492,7 @@ def _preflight_int(
     maximum: int = _MAX_CANONICAL_INT,
 ) -> int:
     if (
-        isinstance(value, bool)
-        or not isinstance(value, int)
+        type(value) is not int
         or value < minimum
         or value > maximum
     ):
@@ -1533,7 +1507,7 @@ def _preflight_float(
     minimum: float = 0.0,
     maximum: float | None = None,
 ) -> float:
-    if not isinstance(value, float) or not math.isfinite(value) or value < minimum:
+    if type(value) is not float or not math.isfinite(value) or value < minimum:
         raise _structural_error(name)
     if maximum is not None and value > maximum:
         raise _structural_error(name)
@@ -1541,7 +1515,7 @@ def _preflight_float(
 
 
 def _preflight_bool(value: object, name: str) -> bool:
-    if not isinstance(value, bool):
+    if type(value) is not bool:
         raise _structural_error(name)
     return value
 
@@ -2174,24 +2148,38 @@ def _timeline_validation_record(timeline: FrameTimeline) -> dict[str, Any]:
 
 
 def _revalidate_summary(summary: CvEvidenceSummary) -> CvEvidenceSummary:
-    return CvEvidenceSummary.model_validate(
-        _summary_validation_record(summary), strict=True
+    return CvEvidenceSummary.model_validate_json(
+        _bounded_validation_json(
+            public_projection=_summary_projection(summary),
+            validation_projection=_summary_projection(summary, validation=True),
+            maximum=summary.prompt_char_limit,
+            message="CV summary prompt record exceeds its character cap",
+        ),
+        strict=True,
     )
 
 
 def _revalidate_candidate(candidate: OcclusionCandidate) -> OcclusionCandidate:
-    return OcclusionCandidate.model_validate(
-        _candidate_prompt_record(candidate), strict=True
+    projection = _candidate_projection(candidate)
+    return OcclusionCandidate.model_validate_json(
+        _bounded_validation_json(
+            public_projection=projection,
+            validation_projection=projection,
+            maximum=_MAX_CANDIDATE_PROMPT_CHARS,
+            message="occlusion candidate prompt record exceeds its cap",
+        ),
+        strict=True,
     )
 
 
 def _revalidate_bundle(bundle: CvPromptBundle) -> CvPromptBundle:
-    return CvPromptBundle.model_validate(
-        {
-            **_bundle_prompt_record(bundle),
-            "prompt_char_limit": bundle.prompt_char_limit,
-            "candidate_limit": bundle.candidate_limit,
-        },
+    return CvPromptBundle.model_validate_json(
+        _bounded_validation_json(
+            public_projection=_bundle_projection(bundle),
+            validation_projection=_bundle_projection(bundle, validation=True),
+            maximum=bundle.prompt_char_limit,
+            message="aggregate CV prompt record exceeds its character cap",
+        ),
         strict=True,
     )
 
@@ -2208,11 +2196,7 @@ def _revalidate_thresholds(thresholds: EvidenceThresholds) -> EvidenceThresholds
 
 
 def _validate_limit(name: str, value: int, *, maximum: int) -> None:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int)
-        or not 0 < value <= maximum
-    ):
+    if type(value) is not int or not 0 < value <= maximum:
         raise ValueError(f"{name} must be a positive integer no greater than {maximum}")
 
 
@@ -2933,7 +2917,7 @@ def _unit_float(value: float) -> float:
 
 def _validate_overlay_ref(value: str) -> str:
     if (
-        not isinstance(value, str)
+        type(value) is not str
         or len(value) > 512
         or "\\" in value
         or value.startswith("/")
@@ -3065,143 +3049,145 @@ def _summary_warnings(
     return tuple(warnings)
 
 
-def _summary_prompt_record(summary: CvEvidenceSummary) -> dict[str, Any]:
-    return {
-        "schema_version": summary.schema_version,
-        "summary_id": summary.summary_id,
-        "status": summary.status.value,
-        "candidate_search_complete": summary.candidate_search_complete,
-        "observed_clock": [
-            {
-                "frame_index": item.frame_index,
-                "timestamp_seconds": item.timestamp_seconds,
-            }
-            for item in summary.observed_clock
-        ],
-        "entities": [
-            {
-                "entity_id": entity.entity_id,
-                "canonical_label": entity.canonical_label,
-                "aliases": list(entity.aliases),
-                "role": entity.role.value,
-            }
-            for entity in summary.entities
-        ],
-        "tracks": [
-            {
-                "track_id": track.track_id,
-                "entity_id": track.entity_id,
-                "status": track.status.value,
-                "source_observation_count": track.source_observation_count,
-                "candidate_search_complete": track.candidate_search_complete,
-                "visibility_lifecycle_complete": (
-                    track.visibility_lifecycle_complete
-                ),
-                "observations": [
-                    {
-                        "source_ordinal": observation.source_ordinal,
-                        "frame_index": observation.frame_index,
-                        "timestamp_seconds": observation.timestamp_seconds,
-                        "bbox_xyxy": list(observation.bbox_xyxy),
-                        "visible": observation.visible,
-                        "confidence": observation.confidence,
-                        "area_fraction": observation.area_fraction,
-                        "center_xy": list(observation.center_xy),
-                        "edge_proximity": observation.edge_proximity,
-                    }
-                    for observation in track.observations
-                ],
-                "visibility_runs": [
-                    {
-                        "state": run.state,
-                        "start_frame": run.start_frame,
-                        "start_time": run.start_time,
-                        "end_frame": run.end_frame,
-                        "end_time": run.end_time,
-                        "minimum_confidence": run.minimum_confidence,
-                    }
-                    for run in track.visibility_runs
-                ],
-                "missing_intervals": [
-                    {
-                        "last_visible_frame": gap.last_visible_frame,
-                        "last_visible_time": gap.last_visible_time,
-                        "first_missing_frame": gap.first_missing_frame,
-                        "first_missing_time": gap.first_missing_time,
-                        "last_missing_frame": gap.last_missing_frame,
-                        "last_missing_time": gap.last_missing_time,
-                        "first_revisible_frame": gap.first_revisible_frame,
-                        "first_revisible_time": gap.first_revisible_time,
-                        "minimum_confidence": gap.minimum_confidence,
-                        "edge_departure": gap.edge_departure,
-                    }
-                    for gap in track.missing_intervals
-                ],
-            }
-            for track in summary.tracks
-        ],
-        "relations": [
-            {
-                "frame_index": relation.frame_index,
-                "timestamp_seconds": relation.timestamp_seconds,
-                "subject_track_id": relation.subject_track_id,
-                "object_track_id": relation.object_track_id,
-                "bbox_iou": relation.bbox_iou,
-                "subject_bbox_covered_fraction": (
-                    relation.subject_bbox_covered_fraction
-                ),
-                "object_bbox_covered_fraction": (
-                    relation.object_bbox_covered_fraction
-                ),
-                "center_distance_fraction": relation.center_distance_fraction,
-                "area_similarity": relation.area_similarity,
-                "subject_inside_object": relation.subject_inside_object,
-                "object_inside_subject": relation.object_inside_subject,
-            }
-            for relation in summary.relations
-        ],
-        "relations_complete": summary.relations_complete,
-        "overlay_refs": list(summary.overlay_refs),
-        "overlays": [
-            {
-                "path": overlay.path,
-                "track_id": overlay.track_id,
-                "frame_index": overlay.frame_index,
-            }
-            for overlay in summary.overlays
-        ],
-        "overlays_complete": summary.overlays_complete,
-        "warnings": [_warning_prompt_record(item) for item in summary.warnings],
-    }
+def _canonical_array(
+    values: tuple[Any, ...], projector: Any = None
+) -> _CanonicalArray:
+    return _CanonicalArray(values=values, projector=projector)
 
 
-def _summary_validation_record(summary: CvEvidenceSummary) -> dict[str, Any]:
-    record = _summary_prompt_record(summary)
-    record["prompt_char_limit"] = summary.prompt_char_limit
-    return record
-
-
-def _summary_identity(summary: CvEvidenceSummary) -> str:
-    payload = _summary_validation_record(summary)
-    del payload["summary_id"]
-    return f"cvs_{_canonical_sha256(payload)}"
-
-
-def _canonical_sha256(record: Mapping[str, Any]) -> str:
-    digest = hashlib.sha256()
-    encoder = json.JSONEncoder(
-        allow_nan=False,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
+def _frame_projection(frame: FrameTimestamp) -> _CanonicalObject:
+    return _CanonicalObject(
+        (
+            ("frame_index", frame.frame_index),
+            ("timestamp_seconds", frame.timestamp_seconds),
+        )
     )
-    for chunk in encoder.iterencode(record):
-        digest.update(chunk.encode("utf-8"))
-    return digest.hexdigest()
 
 
-def _warning_prompt_record(warning: SummaryWarning) -> dict[str, Any]:
-    record: dict[str, Any] = {"code": warning.code}
+def _entity_projection(entity: SummaryEntity) -> _CanonicalObject:
+    return _CanonicalObject(
+        (
+            ("entity_id", entity.entity_id),
+            ("canonical_label", entity.canonical_label),
+            ("aliases", _canonical_array(entity.aliases)),
+            ("role", entity.role.value),
+        )
+    )
+
+
+def _observation_projection(observation: SummaryObservation) -> _CanonicalObject:
+    return _CanonicalObject(
+        (
+            ("source_ordinal", observation.source_ordinal),
+            ("frame_index", observation.frame_index),
+            ("timestamp_seconds", observation.timestamp_seconds),
+            ("bbox_xyxy", _canonical_array(observation.bbox_xyxy)),
+            ("visible", observation.visible),
+            ("confidence", observation.confidence),
+            ("area_fraction", observation.area_fraction),
+            ("center_xy", _canonical_array(observation.center_xy)),
+            ("edge_proximity", observation.edge_proximity),
+        )
+    )
+
+
+def _visibility_run_projection(run: VisibilityRun) -> _CanonicalObject:
+    return _CanonicalObject(
+        (
+            ("state", run.state),
+            ("start_frame", run.start_frame),
+            ("start_time", run.start_time),
+            ("end_frame", run.end_frame),
+            ("end_time", run.end_time),
+            ("minimum_confidence", run.minimum_confidence),
+        )
+    )
+
+
+def _visibility_gap_projection(gap: VisibilityGap) -> _CanonicalObject:
+    return _CanonicalObject(
+        (
+            ("last_visible_frame", gap.last_visible_frame),
+            ("last_visible_time", gap.last_visible_time),
+            ("first_missing_frame", gap.first_missing_frame),
+            ("first_missing_time", gap.first_missing_time),
+            ("last_missing_frame", gap.last_missing_frame),
+            ("last_missing_time", gap.last_missing_time),
+            ("first_revisible_frame", gap.first_revisible_frame),
+            ("first_revisible_time", gap.first_revisible_time),
+            ("minimum_confidence", gap.minimum_confidence),
+            ("edge_departure", gap.edge_departure),
+        )
+    )
+
+
+def _track_projection(track: SummaryTrack) -> _CanonicalObject:
+    return _CanonicalObject(
+        (
+            ("track_id", track.track_id),
+            ("entity_id", track.entity_id),
+            ("status", track.status.value),
+            ("source_observation_count", track.source_observation_count),
+            ("candidate_search_complete", track.candidate_search_complete),
+            (
+                "visibility_lifecycle_complete",
+                track.visibility_lifecycle_complete,
+            ),
+            (
+                "observations",
+                _canonical_array(track.observations, _observation_projection),
+            ),
+            (
+                "visibility_runs",
+                _canonical_array(track.visibility_runs, _visibility_run_projection),
+            ),
+            (
+                "missing_intervals",
+                _canonical_array(
+                    track.missing_intervals,
+                    _visibility_gap_projection,
+                ),
+            ),
+        )
+    )
+
+
+def _relation_projection(relation: SpatialRelation) -> _CanonicalObject:
+    return _CanonicalObject(
+        (
+            ("frame_index", relation.frame_index),
+            ("timestamp_seconds", relation.timestamp_seconds),
+            ("subject_track_id", relation.subject_track_id),
+            ("object_track_id", relation.object_track_id),
+            ("bbox_iou", relation.bbox_iou),
+            (
+                "subject_bbox_covered_fraction",
+                relation.subject_bbox_covered_fraction,
+            ),
+            (
+                "object_bbox_covered_fraction",
+                relation.object_bbox_covered_fraction,
+            ),
+            ("center_distance_fraction", relation.center_distance_fraction),
+            ("area_similarity", relation.area_similarity),
+            ("subject_inside_object", relation.subject_inside_object),
+            ("object_inside_subject", relation.object_inside_subject),
+        )
+    )
+
+
+def _overlay_projection(overlay: SummaryOverlay) -> _CanonicalObject:
+    return _CanonicalObject(
+        (
+            ("path", overlay.path),
+            ("track_id", overlay.track_id),
+            ("frame_index", overlay.frame_index),
+        )
+    )
+
+
+def _warning_projection(warning: SummaryWarning) -> _CanonicalObject:
+    fields: list[tuple[str, Any]] = [("code", warning.code)]
     for field_name in (
         "kept",
         "omitted",
@@ -3212,8 +3198,303 @@ def _warning_prompt_record(warning: SummaryWarning) -> dict[str, Any]:
     ):
         value = getattr(warning, field_name)
         if value is not None:
-            record[field_name] = value
+            fields.append((field_name, value))
+    return _CanonicalObject(tuple(fields))
+
+
+def _summary_projection(
+    summary: CvEvidenceSummary,
+    *,
+    validation: bool = False,
+    include_summary_id: bool = True,
+) -> _CanonicalObject:
+    """Build the shared lazy summary field spec for both trust projections."""
+    fields: list[tuple[str, Any]] = [
+        ("schema_version", summary.schema_version),
+        ("status", summary.status.value),
+        ("candidate_search_complete", summary.candidate_search_complete),
+        (
+            "observed_clock",
+            _canonical_array(summary.observed_clock, _frame_projection),
+        ),
+        ("entities", _canonical_array(summary.entities, _entity_projection)),
+        ("tracks", _canonical_array(summary.tracks, _track_projection)),
+        ("relations", _canonical_array(summary.relations, _relation_projection)),
+        ("relations_complete", summary.relations_complete),
+        ("overlay_refs", _canonical_array(summary.overlay_refs)),
+        ("overlays", _canonical_array(summary.overlays, _overlay_projection)),
+        ("overlays_complete", summary.overlays_complete),
+        ("warnings", _canonical_array(summary.warnings, _warning_projection)),
+    ]
+    if include_summary_id:
+        fields.append(("summary_id", summary.summary_id))
+    if validation:
+        fields.append(("prompt_char_limit", summary.prompt_char_limit))
+    return _CanonicalObject(tuple(fields))
+
+
+def _provenance_projection(provenance: OccluderProvenance) -> _CanonicalObject:
+    return _CanonicalObject(
+        (
+            ("entity_id", provenance.entity_id),
+            ("track_id", provenance.track_id),
+            (
+                "supporting_frames",
+                _canonical_array(provenance.supporting_frames),
+            ),
+        )
+    )
+
+
+def _candidate_projection(
+    candidate: OcclusionCandidate,
+    *,
+    include_candidate_id: bool = True,
+    ordinal: int | None = None,
+) -> _CanonicalObject:
+    fields: list[tuple[str, Any]] = [
+        ("target_entity_id", candidate.target_entity_id),
+        ("target_track_id", candidate.target_track_id),
+        (
+            "possible_occluders",
+            _canonical_array(
+                candidate.possible_occluders,
+                _provenance_projection,
+            ),
+        ),
+        (
+            "possible_occluder_entity_ids",
+            _canonical_array(candidate.possible_occluder_entity_ids),
+        ),
+        ("allowed_start_times", _canonical_array(candidate.allowed_start_times)),
+        ("allowed_end_times", _canonical_array(candidate.allowed_end_times)),
+        ("last_visible_frame", candidate.last_visible_frame),
+        ("first_revisible_frame", candidate.first_revisible_frame),
+        ("edge_departure", candidate.edge_departure),
+        ("low_confidence", candidate.low_confidence),
+        ("overlay_refs", _canonical_array(candidate.overlay_refs)),
+        (
+            "observation_support_complete",
+            candidate.observation_support_complete,
+        ),
+        ("relation_support_complete", candidate.relation_support_complete),
+        ("overlay_support_complete", candidate.overlay_support_complete),
+        ("support_complete", candidate.support_complete),
+        ("source_search_complete", candidate.source_search_complete),
+    ]
+    if include_candidate_id:
+        fields.append(("candidate_id", candidate.candidate_id))
+    if ordinal is not None:
+        fields.append(("ordinal", ordinal))
+    return _CanonicalObject(tuple(fields))
+
+
+def _threshold_projection(thresholds: EvidenceThresholds) -> _CanonicalObject:
+    return _CanonicalObject(
+        (
+            ("min_confidence", thresholds.min_confidence),
+            ("min_area_fraction", thresholds.min_area_fraction),
+            (
+                "occlusion_visibility_drop",
+                thresholds.occlusion_visibility_drop,
+            ),
+        )
+    )
+
+
+def _bundle_projection_values(
+    summary: CvEvidenceSummary,
+    thresholds: EvidenceThresholds,
+    candidates: tuple[OcclusionCandidate, ...],
+    *,
+    source_search_complete: bool,
+    candidates_complete: bool,
+    truncation_codes: tuple[str, ...],
+    validation: bool = False,
+    prompt_char_limit: int | None = None,
+    candidate_limit: int | None = None,
+) -> _CanonicalObject:
+    """Build one shared bundle spec, adding private validation fields on demand."""
+    fields: list[tuple[str, Any]] = [
+        ("schema_version", "cv_prompt_bundle_v1"),
+        ("summary", _summary_projection(summary, validation=validation)),
+        ("thresholds", _threshold_projection(thresholds)),
+        ("candidates", _canonical_array(candidates, _candidate_projection)),
+        ("source_search_complete", source_search_complete),
+        ("candidates_complete", candidates_complete),
+        ("truncation_codes", _canonical_array(truncation_codes)),
+    ]
+    if validation:
+        if prompt_char_limit is None or candidate_limit is None:
+            raise ValueError("bundle validation projection requires private limits")
+        fields.extend(
+            (
+                ("prompt_char_limit", prompt_char_limit),
+                ("candidate_limit", candidate_limit),
+            )
+        )
+    return _CanonicalObject(tuple(fields))
+
+
+def _bundle_projection(
+    bundle: CvPromptBundle, *, validation: bool = False
+) -> _CanonicalObject:
+    return _bundle_projection_values(
+        bundle.summary,
+        bundle.thresholds,
+        bundle.candidates,
+        source_search_complete=bundle.source_search_complete,
+        candidates_complete=bundle.candidates_complete,
+        truncation_codes=bundle.truncation_codes,
+        validation=validation,
+        prompt_char_limit=bundle.prompt_char_limit,
+        candidate_limit=bundle.candidate_limit,
+    )
+
+
+def _iter_canonical_json(value: Any) -> Iterator[str]:
+    """Yield canonical JSON directly from lazy specs without nested containers."""
+    if isinstance(value, _CanonicalObject):
+        yield "{"
+        for index, (name, field_value) in enumerate(
+            sorted(value.fields, key=lambda item: item[0])
+        ):
+            if index:
+                yield ","
+            yield json.dumps(name, ensure_ascii=False)
+            yield ":"
+            yield from _iter_canonical_json(field_value)
+        yield "}"
+        return
+    if isinstance(value, _CanonicalArray):
+        yield "["
+        for index, item in enumerate(value.values):
+            if index:
+                yield ","
+            projected = item if value.projector is None else value.projector(item)
+            yield from _iter_canonical_json(projected)
+        yield "]"
+        return
+    if type(value) is dict:
+        yield "{"
+        for index, name in enumerate(sorted(value)):
+            if type(name) is not str:
+                raise ValueError("canonical JSON object keys must be plain strings")
+            if index:
+                yield ","
+            yield json.dumps(name, ensure_ascii=False)
+            yield ":"
+            yield from _iter_canonical_json(value[name])
+        yield "}"
+        return
+    if type(value) in {list, tuple}:
+        yield "["
+        for index, item in enumerate(value):
+            if index:
+                yield ","
+            yield from _iter_canonical_json(item)
+        yield "]"
+        return
+    if value is None or type(value) in {str, int, float, bool}:
+        yield json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return
+    raise ValueError("canonical JSON contains a non-plain scalar")
+
+
+def _materialize_value(value: Any) -> Any:
+    if isinstance(value, _CanonicalObject):
+        return {
+            name: _materialize_value(field_value)
+            for name, field_value in sorted(value.fields, key=lambda item: item[0])
+        }
+    if isinstance(value, _CanonicalArray):
+        return [
+            _materialize_value(
+                item if value.projector is None else value.projector(item)
+            )
+            for item in value.values
+        ]
+    if type(value) is dict:
+        return {
+            name: _materialize_value(value[name])
+            for name in sorted(value)
+        }
+    if type(value) in {list, tuple}:
+        return [_materialize_value(item) for item in value]
+    if value is None or type(value) in {str, int, float, bool}:
+        return value
+    raise ValueError("canonical JSON contains a non-plain scalar")
+
+
+def _materialize_record(projection: Any) -> dict[str, Any]:
+    record = _materialize_value(projection)
+    if type(record) is not dict:
+        raise ValueError("canonical prompt projection must be an object")
     return record
+
+
+def _materialize_bounded_record(
+    projection: Any, *, maximum: int, message: str
+) -> dict[str, Any]:
+    if _canonical_char_count(projection, maximum=maximum) > maximum:
+        raise ValueError(message)
+    return _materialize_record(projection)
+
+
+def _bounded_validation_json(
+    *,
+    public_projection: Any,
+    validation_projection: Any,
+    maximum: int,
+    message: str,
+) -> str:
+    """Serialize validation JSON only after the public projection is in budget."""
+    if _canonical_char_count(public_projection, maximum=maximum) > maximum:
+        raise ValueError(message)
+    validation_maximum = maximum + _MAX_VALIDATION_METADATA_CHARS
+    total = 0
+    buffer = StringIO()
+    for chunk in _iter_canonical_json(validation_projection):
+        total += len(chunk)
+        if total > validation_maximum:
+            raise ValueError("private prompt validation metadata exceeds its bound")
+        buffer.write(chunk)
+    return buffer.getvalue()
+
+
+def _summary_prompt_record(summary: CvEvidenceSummary) -> dict[str, Any]:
+    """Materialize one already-bounded private compatibility projection."""
+    return _materialize_record(_summary_projection(summary))
+
+
+def _summary_validation_record(summary: CvEvidenceSummary) -> dict[str, Any]:
+    """Materialize the private projection only for compatibility diagnostics."""
+    return _materialize_record(_summary_projection(summary, validation=True))
+
+
+def _summary_identity(summary: CvEvidenceSummary) -> str:
+    projection = _summary_projection(
+        summary,
+        validation=True,
+        include_summary_id=False,
+    )
+    return f"cvs_{_canonical_sha256(projection)}"
+
+
+def _canonical_sha256(record: Any) -> str:
+    digest = hashlib.sha256()
+    for chunk in _iter_canonical_json(record):
+        digest.update(chunk.encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _warning_prompt_record(warning: SummaryWarning) -> dict[str, Any]:
+    return _materialize_record(_warning_projection(warning))
 
 
 def _bundle_prompt_record_values(
@@ -3225,43 +3506,47 @@ def _bundle_prompt_record_values(
     candidates_complete: bool,
     truncation_codes: tuple[str, ...],
 ) -> dict[str, Any]:
-    return {
-        "schema_version": "cv_prompt_bundle_v1",
-        "summary": _summary_prompt_record(summary),
-        "thresholds": {
-            "min_confidence": thresholds.min_confidence,
-            "min_area_fraction": thresholds.min_area_fraction,
-            "occlusion_visibility_drop": thresholds.occlusion_visibility_drop,
-        },
-        "candidates": [_candidate_prompt_record(candidate) for candidate in candidates],
-        "source_search_complete": source_search_complete,
-        "candidates_complete": candidates_complete,
-        "truncation_codes": list(truncation_codes),
-    }
+    """Materialize a bounded compatibility projection, never used for sizing."""
+    return _materialize_record(
+        _bundle_projection_values(
+            summary,
+            thresholds,
+            candidates,
+            source_search_complete=source_search_complete,
+            candidates_complete=candidates_complete,
+            truncation_codes=truncation_codes,
+        )
+    )
 
 
 def _bundle_prompt_record(bundle: CvPromptBundle) -> dict[str, Any]:
-    return _bundle_prompt_record_values(
-        bundle.summary,
-        bundle.thresholds,
-        bundle.candidates,
-        source_search_complete=bundle.source_search_complete,
-        candidates_complete=bundle.candidates_complete,
-        truncation_codes=bundle.truncation_codes,
-    )
+    """Materialize one already-bounded private compatibility projection."""
+    return _materialize_record(_bundle_projection(bundle))
 
 
-def _canonical_char_count(
-    record: Mapping[str, Any], *, maximum: int | None = None
+def _bundle_empty_candidates_char_count(
+    summary: CvEvidenceSummary,
+    thresholds: EvidenceThresholds,
+    *,
+    source_search_complete: bool,
+    candidates_complete: bool,
+    truncation_codes: tuple[str, ...],
 ) -> int:
-    total = 0
-    encoder = json.JSONEncoder(
-        allow_nan=False,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
+    return _canonical_char_count(
+        _bundle_projection_values(
+            summary,
+            thresholds,
+            (),
+            source_search_complete=source_search_complete,
+            candidates_complete=candidates_complete,
+            truncation_codes=truncation_codes,
+        )
     )
-    for chunk in encoder.iterencode(record):
+
+
+def _canonical_char_count(record: Any, *, maximum: int | None = None) -> int:
+    total = 0
+    for chunk in _iter_canonical_json(record):
         total += len(chunk)
         if maximum is not None and total > maximum:
             return total
@@ -3272,11 +3557,13 @@ def _summary_fits(summary: CvEvidenceSummary, cap: int) -> bool:
     reserved_cap = max(1, cap - min(_MIN_BUNDLE_ENVELOPE_CHARS, cap // 4))
     return (
         _canonical_char_count(
-            _summary_validation_record(summary), maximum=reserved_cap
+            _summary_projection(summary, validation=True),
+            maximum=reserved_cap,
         )
         <= reserved_cap
         and _canonical_char_count(
-            _summary_prompt_record(summary), maximum=reserved_cap
+            _summary_projection(summary),
+            maximum=reserved_cap,
         )
         <= reserved_cap
     )
@@ -3427,7 +3714,7 @@ def _draft_sort_key(draft: _CandidateDraft) -> tuple[Any, ...]:
     )
 
 
-def _candidate_hash_prefix(payload: Mapping[str, Any]) -> str:
+def _candidate_hash_prefix(payload: Any) -> str:
     return _canonical_sha256(payload)[:12]
 
 

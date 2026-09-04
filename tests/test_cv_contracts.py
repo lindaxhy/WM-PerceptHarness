@@ -134,6 +134,21 @@ def test_contract_models_reject_extra_fields_and_are_frozen():
         request.model_identity = "another-model"  # type: ignore[misc]
 
 
+def test_artifact_extra_key_uses_precise_pydantic_location() -> None:
+    """Artifact structural preflight must leave ordinary extras to core."""
+    for extra in ("ordinary", BombList(["do-not-touch"])):
+        payload = valid_artifact().model_dump(mode="json")
+        payload["typo"] = extra
+
+        with pytest.raises(ValidationError) as caught:
+            CvEvidenceArtifact.model_validate(payload)
+
+        assert any(
+            error["loc"] == ("typo",) and error["type"] == "extra_forbidden"
+            for error in caught.value.errors()
+        )
+
+
 def test_contract_models_preserve_strict_json_dict_and_text_roundtrips():
     """Shallow tuple freezing must retain both supported JSON entry paths."""
     request = valid_request()

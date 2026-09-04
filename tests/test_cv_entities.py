@@ -1,9 +1,24 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
-from las_repro.cv.contracts import EntityRole
-from las_repro.cv.entities import EntityCandidate, normalize_entities
+from las_repro.cv.contracts import EntityPrompt, EntityRole
+from las_repro.cv.entities import EntityCandidate, NormalizedEntities, normalize_entities
+
+
+class BombTuple(tuple):
+    """A hostile tuple subclass that must be rejected before traversal."""
+
+    def __iter__(self):
+        raise RuntimeError("hostile tuple was iterated")
+
+
+class BombList(list):
+    """A hostile oversized JSON array that must be rejected before traversal."""
+
+    def __iter__(self):
+        raise RuntimeError("hostile list was iterated")
 
 
 def test_normalize_entities_deduplicates_and_applies_role_priority():
@@ -101,3 +116,82 @@ def test_normalize_entities_keeps_sixteen_by_default_and_reports_omission_warnin
     assert len(normalized.entities) == 16
     assert normalized.omitted_count == 1
     assert normalized.warnings == ("1 entity candidate omitted by limit 16",)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"name": "x" * 1_000_000, "aliases": [], "role": "other"},
+        {"name": "item", "aliases": ["x" * 1_000_000], "role": "other"},
+        {"name": "item", "aliases": ["alias"] * 257, "role": "other"},
+    ],
+)
+def test_entity_candidate_enforces_text_and_alias_resource_caps(payload) -> None:
+    """Pass-A entity text cannot create unbounded downstream prompt state."""
+    with pytest.raises(ValidationError):
+        EntityCandidate.model_validate(payload)
+
+
+def test_normalized_entities_enforces_container_text_and_integer_caps() -> None:
+    """Direct normalized payloads share the finite canonical JSON envelope."""
+    entity = EntityPrompt(
+        entity_id="item",
+        canonical_label="item",
+        aliases=(),
+        role=EntityRole.OTHER,
+    )
+    payloads = (
+        {
+            "entities": BombList([entity] * 65),
+            "omitted_count": 0,
+            "warnings": [],
+        },
+        {
+            "entities": [],
+            "omitted_count": 0,
+            "warnings": BombList(["warning"] * 65),
+        },
+        {"entities": [], "omitted_count": 0, "warnings": ["x" * 1_000_000]},
+        {"entities": [], "omitted_count": 2**100, "warnings": []},
+    )
+
+    for payload in payloads:
+        with pytest.raises(ValidationError):
+            NormalizedEntities.model_validate(payload)
+
+
+def test_entity_json_length_cap_precedes_hostile_item_iteration() -> None:
+    """An oversized alias array is rejected using its size, not its elements."""
+    payload = {
+        "name": "item",
+        "aliases": BombList(["alias"] * 257),
+        "role": "other",
+    }
+
+    with pytest.raises(ValidationError):
+        EntityCandidate.model_validate(payload)
+
+
+def test_normalize_entities_rejects_custom_candidate_tuple_before_iteration() -> None:
+    """The public normalizer accepts only plain bounded JSON-style sequences."""
+    candidate = EntityCandidate(name="item", aliases=(), role=EntityRole.OTHER)
+
+    with pytest.raises(ValueError, match="candidate container"):
+        normalize_entities(BombTuple((candidate,)))
+
+
+def test_normalize_entities_preserves_the_pass_a_raw_cap_of_sixty_four() -> None:
+    """All 64 schema-valid raw candidates may reach deterministic normalization."""
+    candidates = [
+        EntityCandidate(
+            name=f"object {index}",
+            aliases=(),
+            role=EntityRole.OTHER,
+        )
+        for index in range(64)
+    ]
+
+    normalized = normalize_entities(candidates)
+
+    assert len(normalized.entities) == 16
+    assert normalized.omitted_count == 48
