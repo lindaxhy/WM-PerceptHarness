@@ -102,13 +102,18 @@ def normalize_entities(
         key=lambda record: (_ROLE_PRIORITY[record["role"]], record["position"]),  # type: ignore[index]
     )
     omitted_count = max(0, len(ordered) - limit)
-    used_ids: dict[str, int] = {}
+    used_ids: set[str] = set()
+    next_occurrence: dict[str, int] = {}
     prompts: list[EntityPrompt] = []
     for record in ordered[:limit]:
         base_id = _ascii_slug(record["canonical_label"])  # type: ignore[arg-type]
-        occurrence = used_ids.get(base_id, 0) + 1
-        used_ids[base_id] = occurrence
+        occurrence = next_occurrence.get(base_id, 1)
         entity_id = base_id if occurrence == 1 else f"{base_id}_{occurrence}"
+        while entity_id in used_ids:
+            occurrence += 1
+            entity_id = f"{base_id}_{occurrence}"
+        used_ids.add(entity_id)
+        next_occurrence[base_id] = occurrence + 1
         prompts.append(
             EntityPrompt(
                 entity_id=entity_id,

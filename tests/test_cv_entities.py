@@ -38,6 +38,20 @@ def test_normalize_entities_casefolds_unicode_and_uses_ascii_slug_collisions():
     ]
 
 
+def test_normalize_entities_allocates_ids_globally_across_slug_bases():
+    """Per-base suffix counters would emit duplicate prompt IDs across labels."""
+    normalized = normalize_entities(
+        [
+            EntityCandidate(name="foo", aliases=(), role=EntityRole.OTHER),
+            EntityCandidate(name="foo 2", aliases=(), role=EntityRole.OTHER),
+            EntityCandidate(name="f\u00f3o", aliases=(), role=EntityRole.OTHER),
+        ]
+    )
+
+    assert [item.entity_id for item in normalized.entities] == ["foo", "foo_2", "foo_3"]
+    assert len({item.entity_id for item in normalized.entities}) == 3
+
+
 def test_normalize_entities_discards_blank_or_unknown_candidates_without_mutating_input():
     """Treating unknown labels as prompts would fabricate unsupported entities."""
     aliases = ["vessel", "cup"]
