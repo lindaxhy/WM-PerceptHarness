@@ -285,15 +285,20 @@ def test_coarse_plan_requires_an_entity_for_each_concrete_target_event(
     assert [issue.code for issue in error.value.issues] == [
         "EMPTY_ENTITY_CANDIDATES"
     ]
+
+
 @pytest.mark.parametrize(
     ("event_type", "description"),
     [
         ("reach_and_grasp", "right hand picks it up"),
         ("reach_and_grasp", "right hand reaches and grasps it"),
         ("lift", "right hand picks it up"),
+        ("lift", "right hand lifts it upward"),
         ("transport", "right hand moves it forward"),
+        ("transport", "right hand moves it to the side"),
         ("transport", "right hand manipulates it"),
         ("lower_and_place", "right hand places it down"),
+        ("lower_and_place", "right hand lowers it downwards"),
         ("release", "right hand releases it"),
         ("search_or_adjust", "right hand searches around for it"),
         ("idle", "neither hand waits beside red container"),
@@ -326,6 +331,94 @@ def test_empty_entities_allow_targetless_events_and_closed_placeholders(
     }
 
     validate_coarse_plan(CoarsePlan.model_validate(payload), duration=1.0)
+
+
+@pytest.mark.parametrize(
+    "modifier",
+    [
+        "upward",
+        "upwards",
+        "downward",
+        "downwards",
+        "side",
+        "sideways",
+        "leftward",
+        "leftwards",
+        "rightward",
+        "rightwards",
+        "inward",
+        "inwards",
+        "outward",
+        "outwards",
+        "ahead",
+        "behind",
+        "above",
+        "below",
+        "closer",
+        "farther",
+        "clockwise",
+        "counterclockwise",
+        "horizontally",
+        "vertically",
+        "diagonally",
+        "laterally",
+        "straight",
+        "slightly",
+        "apart",
+        "together",
+    ],
+)
+def test_empty_entities_allow_only_explicit_direction_and_modifier_words(
+    modifier: str,
+) -> None:
+    payload = {
+        "task_description": "move without a named target",
+        "entity_candidates": [],
+        "actions": [
+            {
+                "action_index": 0,
+                "start": 0.0,
+                "end": 1.0,
+                "description": f"right hand moves it {modifier}",
+                "event_type": "transport",
+            }
+        ],
+    }
+
+    validate_coarse_plan(CoarsePlan.model_validate(payload), duration=1.0)
+
+
+@pytest.mark.parametrize(
+    ("event_type", "description"),
+    [
+        ("lift", "right hand lifts red container upward"),
+        ("lower_and_place", "right hand lowers red container downwards"),
+        ("transport", "right hand moves red container to the side"),
+    ],
+)
+def test_direction_words_do_not_hide_concrete_red_container_targets(
+    event_type: str, description: str
+) -> None:
+    payload = {
+        "task_description": "move the red container",
+        "entity_candidates": [],
+        "actions": [
+            {
+                "action_index": 0,
+                "start": 0.0,
+                "end": 1.0,
+                "description": description,
+                "event_type": event_type,
+            }
+        ],
+    }
+
+    with pytest.raises(TemporalValidationError) as error:
+        validate_coarse_plan(CoarsePlan.model_validate(payload), duration=1.0)
+
+    assert [issue.code for issue in error.value.issues] == [
+        "EMPTY_ENTITY_CANDIDATES"
+    ]
 
 
 def test_empty_entity_issue_contains_only_a_fixed_code_path_and_message() -> None:

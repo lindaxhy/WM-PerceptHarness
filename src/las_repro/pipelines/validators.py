@@ -343,27 +343,57 @@ _TARGET_FUNCTION_WORDS = frozenset(
         "with",
     }
 )
-_TARGET_PARTICLE_AND_DIRECTION_WORDS = frozenset(
+_TARGET_PARTICLE_DIRECTION_AND_MODIFIER_WORDS = frozenset(
     {
         "across",
+        "above",
+        "ahead",
+        "apart",
         "around",
         "aside",
         "away",
         "back",
         "backward",
         "backwards",
+        "behind",
+        "below",
+        "clockwise",
+        "closer",
+        "counterclockwise",
+        "diagonally",
         "down",
+        "downward",
+        "downwards",
+        "farther",
         "forward",
         "forwards",
+        "horizontally",
         "in",
+        "inward",
+        "inwards",
         "left",
+        "leftward",
+        "leftwards",
+        "laterally",
         "off",
         "out",
+        "outward",
+        "outwards",
         "over",
         "right",
+        "rightward",
+        "rightwards",
+        "side",
+        "sideways",
+        "slightly",
+        "straight",
         "through",
+        "together",
         "under",
         "up",
+        "upward",
+        "upwards",
+        "vertically",
     }
 )
 _TARGET_EVENT_ACTION_WORDS = {
@@ -495,7 +525,7 @@ def _action_mentions_concrete_target(action: CoarseAction) -> bool:
         action_words
         | _TARGET_PLACEHOLDER_WORDS
         | _TARGET_FUNCTION_WORDS
-        | _TARGET_PARTICLE_AND_DIRECTION_WORDS
+        | _TARGET_PARTICLE_DIRECTION_AND_MODIFIER_WORDS
     )
     return any(
         word and word not in allowed_words for word in target_position_words
