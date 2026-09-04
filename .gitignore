@@ -11,6 +11,8 @@ htmlcov/
 *.sqlite*
 /models/
 data/
+!evaluation/viewer/data/
+!evaluation/viewer/data/**
 work/
 outputs/
 /las_runs/

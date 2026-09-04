@@ -285,3 +285,40 @@ def test_export_validates_every_sample_before_publishing(tmp_path: Path) -> None
         )
 
     assert not output_dir.exists()
+
+
+def test_repository_viewer_data_is_complete() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    manifest_path = repository / "evaluation/viewer/data/demo-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    comparison = json.loads(
+        (
+            repository
+            / "evaluation/references/las_official_english_2026-09-04/comparison_with_postfix_local.json"
+        ).read_text(encoding="utf-8")
+    )
+    expected = {
+        "full_0001": 10.933333333333334,
+        "full_0002": 14.7,
+        "full_0024": 4.566666666666666,
+        "full_0021": 7.3,
+        "full_0004": 8.8,
+    }
+
+    assert manifest["schema_version"] == "comparison_viewer_manifest_v1"
+    assert manifest["reference_set_id"] == "las_official_english_2026-09-04"
+    assert [item["sample_id"] for item in manifest["samples"]] == list(expected)
+    assert {item["sample_id"]: item["duration_seconds"] for item in manifest["samples"]} == expected
+
+    result_hashes = comparison["local_artifact"]["result_sha256"]
+    for item in manifest["samples"]:
+        assert not Path(item["las_path"]).is_absolute()
+        assert not Path(item["local_path"]).is_absolute()
+        las_path = repository / item["las_path"]
+        local_path = repository / item["local_path"]
+        assert las_path.is_file()
+        local = json.loads(local_path.read_text(encoding="utf-8"))
+        assert local["schema_version"] == "comparison_viewer_local_v1"
+        assert local["sample_id"] == item["sample_id"]
+        assert local["duration_seconds"] == item["duration_seconds"]
+        assert local["source_result_sha256"] == result_hashes[item["sample_id"]]
