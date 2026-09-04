@@ -60,7 +60,7 @@ def _imported_cv_gpu_packages(source: str) -> set[str]:
                 )
 
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not node.args:
+        if not isinstance(node, ast.Call):
             continue
         function = node.func
         dynamic_import = (
@@ -80,7 +80,17 @@ def _imported_cv_gpu_packages(source: str) -> set[str]:
                 )
             )
         )
-        argument = node.args[0]
+        name_keywords = [
+            keyword.value for keyword in node.keywords if keyword.arg == "name"
+        ]
+        if node.args and name_keywords:
+            continue
+        if node.args:
+            argument = node.args[0]
+        elif len(name_keywords) == 1:
+            argument = name_keywords[0]
+        else:
+            continue
         if (
             dynamic_import
             and isinstance(argument, ast.Constant)
@@ -216,7 +226,25 @@ def test_access_token_detector_recognizes_common_formats_without_self_reporting(
         ),
         ("__import__('sam3')", {"sam3"}),
         ("import builtins as bi\nbi.__import__('cv2')", {"cv2"}),
+        (
+            "import importlib\nimportlib.import_module(name='torch')",
+            {"torch"},
+        ),
+        (
+            "from importlib import import_module as load\nload(name='numpy')",
+            {"numpy"},
+        ),
+        ("__import__(name='sam3')", {"sam3"}),
+        ("import builtins as bi\nbi.__import__(name='cv2')", {"cv2"}),
         ("import importlib\nimportlib.import_module(package_name)", set()),
+        (
+            "import importlib\nimportlib.import_module(name=package_name)",
+            set(),
+        ),
+        (
+            "import importlib\nimportlib.import_module('torch', name='sam3')",
+            set(),
+        ),
         ("import importlib\nimportlib.import_module('json')", set()),
     ],
 )

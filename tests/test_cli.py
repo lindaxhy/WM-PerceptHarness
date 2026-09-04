@@ -1294,6 +1294,81 @@ def test_hybrid_gpu_default_rejects_cv_device_from_qwen_worker(
     assert attempted_loads == 0
 
 
+def test_gpu_worker_normalizes_inherited_visibility_before_lazy_qwen_import(
+    tmp_path: Path,
+) -> None:
+    media_root = tmp_path / "media"
+    media_root.mkdir()
+    environment = _cli_environment(tmp_path, media_root)
+    environment["CUDA_VISIBLE_DEVICES"] = "3"
+    script = r"""
+import importlib.abc
+import importlib.util
+import json
+import os
+import sys
+
+observed = {"visibility": [], "device": None, "worker_closes": 0}
+
+class RecordingModel:
+    @classmethod
+    def load_alias(cls, *args, **kwargs):
+        observed["visibility"].append(os.environ.get("CUDA_VISIBLE_DEVICES"))
+        observed["device"] = args[2]
+        return object()
+
+class RecordingWorker:
+    def __init__(self, *args, **kwargs):
+        pass
+    def run_once(self):
+        return False
+    def close(self):
+        observed["worker_closes"] += 1
+
+class QwenLoader(importlib.abc.Loader):
+    def create_module(self, spec):
+        return None
+    def exec_module(self, module):
+        module.Qwen3VLModel = RecordingModel
+
+class QwenFinder(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname != "las_repro.models.qwen3_vl":
+            return None
+        observed["visibility"].append(os.environ.get("CUDA_VISIBLE_DEVICES"))
+        return importlib.util.spec_from_loader(fullname, QwenLoader())
+
+sys.meta_path.insert(0, QwenFinder())
+from las_repro import workers
+import las_repro.cli as cli
+
+workers.GPUWorker = RecordingWorker
+status = cli.main(["gpu-worker", "--device", "0", "--once"])
+observed["status"] = status
+print(json.dumps(observed, sort_keys=True))
+raise SystemExit(status)
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=REPOSITORY_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {
+        "device": "cuda:0",
+        "status": 0,
+        "visibility": ["0,1,2", "0,1,2"],
+        "worker_closes": 1,
+    }
+    _assert_secret_absent(completed)
+
+
 def test_non_cv_roles_and_fake_mode_never_import_sam_runtime(
     tmp_path: Path,
 ) -> None:

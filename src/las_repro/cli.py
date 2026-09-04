@@ -179,6 +179,10 @@ def _gpu_worker(
         raise ValueError("gpu-worker requires LAS_BACKEND=qwen3_vl")
     if arguments.device not in settings.qwen_gpu_devices:
         raise ValueError("gpu-worker device is absent from LAS_GPU_DEVICES")
+    # Preserve physical ordinal identity even if the worker inherits a CUDA
+    # visibility remap from its launcher.  The backend still receives the
+    # selected physical ordinal as cuda:N.
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2"
     # This is the only production CLI role that imports or loads the optional
     # GPU backend.  One invocation constructs exactly one model for one device.
     from .models.qwen3_vl import Qwen3VLModel
