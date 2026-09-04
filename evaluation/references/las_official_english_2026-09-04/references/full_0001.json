@@ -1,0 +1,287 @@
+{
+    "summary": "A person uses their right hand to position a light blue board in front of a wicker basket of apples, then uses their left hand to grasp the topmost red apple, lift it out of the basket and out of the top of the frame. The apple reappears rolling down a sloped silver ramp, travels into a clear plastic bowl at the ramp's base, and comes to rest inside. The person then moves the light blue board back to the right, revealing the remaining apples in the wicker basket.",
+    "objects": [
+        {
+            "id": "obj_001",
+            "name": "wicker fruit basket",
+            "role": "container holding apples on the table",
+            "visible_attributes": [
+                "yellow woven wicker construction",
+                "rectangular open-top shape",
+                "rests on wooden table surface"
+            ]
+        },
+        {
+            "id": "obj_002",
+            "name": "red apple",
+            "role": "fruit manipulated to roll down the ramp",
+            "visible_attributes": [
+                "round shape",
+                "bright pinkish-red smooth skin",
+                "whole uncut fruit"
+            ]
+        },
+        {
+            "id": "obj_003",
+            "name": "dark red apple",
+            "role": "fruit remaining in the wicker basket",
+            "visible_attributes": [
+                "deep dark red skin",
+                "oblong tapered shape",
+                "positioned behind other apples in the basket"
+            ]
+        },
+        {
+            "id": "obj_004",
+            "name": "light red apple",
+            "role": "fruit remaining in the wicker basket",
+            "visible_attributes": [
+                "lighter pink-red skin",
+                "small dark stem indent at top",
+                "positioned at front left of the basket"
+            ]
+        },
+        {
+            "id": "obj_005",
+            "name": "bright red apple",
+            "role": "fruit remaining in the wicker basket",
+            "visible_attributes": [
+                "bright uniform pink-red skin",
+                "round shape",
+                "positioned at front right of the basket"
+            ]
+        },
+        {
+            "id": "obj_006",
+            "name": "small red apple",
+            "role": "fruit remaining in the wicker basket",
+            "visible_attributes": [
+                "partially obscured by other apples",
+                "small dark stem visible at top",
+                "positioned at back right of the basket"
+            ]
+        },
+        {
+            "id": "obj_007",
+            "name": "inclined metal ramp",
+            "role": "sloped track for the apple to roll down",
+            "visible_attributes": [
+                "long thin silver metal construction",
+                "dual raised edge rails",
+                "slopes downward from top-right wooden support to lower-left bowl"
+            ]
+        },
+        {
+            "id": "obj_008",
+            "name": "clear plastic bowl",
+            "role": "catch container at the bottom of the ramp",
+            "visible_attributes": [
+                "transparent clear plastic material",
+                "shallow circular shape",
+                "empty at clip start, holds the apple at clip end"
+            ]
+        },
+        {
+            "id": "obj_009",
+            "name": "light blue flat board",
+            "role": "movable occluding panel held by the right hand",
+            "visible_attributes": [
+                "pale light blue smooth face",
+                "thin raised matching blue border",
+                "rigid rectangular flat shape"
+            ]
+        },
+        {
+            "id": "obj_010",
+            "name": "light wooden support block",
+            "role": "elevated support holding the top end of the ramp",
+            "visible_attributes": [
+                "light brown wood grain finish",
+                "rectangular block shape",
+                "positioned at right side of table"
+            ]
+        },
+        {
+            "id": "obj_011",
+            "name": "wooden table",
+            "role": "horizontal supporting surface for all scene objects",
+            "visible_attributes": [
+                "smooth medium-brown wood finish",
+                "flat horizontal surface"
+            ]
+        },
+        {
+            "id": "obj_012",
+            "name": "black fabric backdrop",
+            "role": "background behind the table setup",
+            "visible_attributes": [
+                "matte black fabric material",
+                "visible vertical creases"
+            ]
+        }
+    ],
+    "initial_state": "At the start of the clip, the yellow wicker basket holding multiple red apples sits on the wooden table. The long silver metal ramp slopes down from the light wooden block at top right to the empty clear plastic bowl at lower left. The light blue flat board is positioned at the lower right of the frame in front of the wooden block, with no hands visible.",
+    "final_state": "At the end of the clip, the bright red apple rests stationary inside the clear plastic bowl at the bottom of the ramp. The light blue board is positioned at the far right of the frame, fully revealing the wicker basket and its four remaining apples. No hands are visible in the frame.",
+    "occlusions": [
+        {
+            "start_s": 1.0,
+            "end_s": 9.0,
+            "occluded_object_ids": [
+                "obj_001",
+                "obj_003",
+                "obj_004",
+                "obj_005",
+                "obj_006"
+            ],
+            "occluder_id": "obj_009",
+            "visible_evidence": "The light blue board is moved leftward by the right hand, coming to rest in front of the wicker basket by 1.0s, blocking the basket and all apples except the topmost pink apple from view. The board remains in this position until it is moved rightward starting at 8.4s, fully revealing the basket and remaining apples by 9.0s."
+        }
+    ],
+    "semantic_events": [
+        {
+            "event_id": "evt_001",
+            "start_s": 0.0,
+            "end_s": 1.2,
+            "type": "move",
+            "actor": "right hand",
+            "object_ids": [
+                "obj_009"
+            ],
+            "description": "Right hand slides the light blue board leftward across the table to position it in front of the wicker basket.",
+            "visible_evidence": "The board enters from the lower right edge of the frame, moving steadily left while held by the right hand, until it sits directly in front of the basket.",
+            "confidence": 0.98
+        },
+        {
+            "event_id": "evt_002",
+            "start_s": 1.0,
+            "end_s": 1.2,
+            "type": "occlusion_enter",
+            "actor": "right hand",
+            "object_ids": [
+                "obj_001",
+                "obj_003",
+                "obj_004",
+                "obj_005",
+                "obj_006"
+            ],
+            "description": "The wicker basket and its lower apples become hidden behind the moving light blue board.",
+            "visible_evidence": "The board moves into position in front of the basket, covering all parts of the basket and apples except the very top of the tallest pink apple.",
+            "confidence": 0.97
+        },
+        {
+            "event_id": "evt_003",
+            "start_s": 1.2,
+            "end_s": 8.6,
+            "type": "occluded",
+            "actor": "neither hand",
+            "object_ids": [
+                "obj_001",
+                "obj_003",
+                "obj_004",
+                "obj_005",
+                "obj_006"
+            ],
+            "description": "The wicker basket and all apples except the top grasped apple remain hidden behind the stationary light blue board.",
+            "visible_evidence": "The board holds a fixed position in front of the basket, with only the top of the tallest apple visible above its upper edge until that apple is lifted away.",
+            "confidence": 0.98
+        },
+        {
+            "event_id": "evt_004",
+            "start_s": 1.6,
+            "end_s": 2.4,
+            "type": "reach",
+            "actor": "left hand",
+            "object_ids": [
+                "obj_002"
+            ],
+            "description": "Left hand reaches from the right edge of the frame toward the exposed top red apple in the basket.",
+            "visible_evidence": "Left hand and forearm enter from the upper right, extending downward with fingers spread to approach the apple.",
+            "confidence": 0.98
+        },
+        {
+            "event_id": "evt_005",
+            "start_s": 2.2,
+            "end_s": 2.8,
+            "type": "grasp",
+            "actor": "left hand",
+            "object_ids": [
+                "obj_002"
+            ],
+            "description": "Left hand closes around the top red apple, securing a firm grip.",
+            "visible_evidence": "Fingers of the left hand wrap around the curved sides of the apple, making full contact with its surface.",
+            "confidence": 0.99
+        },
+        {
+            "event_id": "evt_006",
+            "start_s": 2.6,
+            "end_s": 3.6,
+            "type": "transport",
+            "actor": "left hand",
+            "object_ids": [
+                "obj_002"
+            ],
+            "description": "Left hand lifts the grasped red apple upward and out of the wicker basket, moving it toward the top of the frame.",
+            "visible_evidence": "The apple rises vertically from its resting place on the other apples, moves up and to the right, until it exits the top edge of the visible frame.",
+            "confidence": 0.99
+        },
+        {
+            "event_id": "evt_007",
+            "start_s": 6.6,
+            "end_s": 8.2,
+            "type": "autonomous_motion",
+            "actor": "obj_002",
+            "object_ids": [
+                "obj_002",
+                "obj_007",
+                "obj_008"
+            ],
+            "description": "The red apple rolls independently down the sloped metal ramp and lands inside the clear plastic bowl.",
+            "visible_evidence": "The apple appears at the top of the ramp, moves at increasing speed down the sloped track, travels a short distance through the air after leaving the lower end of the ramp, and settles inside the clear bowl.",
+            "confidence": 0.99
+        },
+        {
+            "event_id": "evt_008",
+            "start_s": 8.4,
+            "end_s": 9.4,
+            "type": "move",
+            "actor": "right hand",
+            "object_ids": [
+                "obj_009"
+            ],
+            "description": "Right hand slides the light blue board rightward, away from the wicker basket.",
+            "visible_evidence": "The board moves horizontally to the right, gradually revealing the wicker basket and its remaining apples as it travels.",
+            "confidence": 0.98
+        },
+        {
+            "event_id": "evt_009",
+            "start_s": 8.6,
+            "end_s": 9.0,
+            "type": "occlusion_exit",
+            "actor": "neither hand",
+            "object_ids": [
+                "obj_001",
+                "obj_003",
+                "obj_004",
+                "obj_005",
+                "obj_006"
+            ],
+            "description": "The wicker basket and all remaining apples become fully visible as the board moves out of the way.",
+            "visible_evidence": "The board moves far enough right that no part of the basket or its remaining apples is covered by the board.",
+            "confidence": 0.98
+        }
+    ],
+    "outcome": {
+        "status": "success",
+        "reason": "The target red apple traveled down the sloped ramp unobstructed and came to rest inside the clear catch bowl.",
+        "visible_evidence": "The red apple is visibly stationary inside the clear plastic bowl at the end of the clip, and the remaining apples are undisturbed in the wicker basket."
+    },
+    "camera_motion": [],
+    "quality_flags": [],
+    "review": {
+        "status": "machine_only",
+        "notes": "The segment of the action where the left hand carries the apple to the top of the ramp and releases it occurs outside the top edge of the visible frame, so the exact release motion is not directly observed. All other actions and the final result are clearly visible.",
+        "required_checks": [
+            "Confirm that the left hand correctly released the apple at the top end of the ramp during the out-of-frame interval between 3.6s and 6.6s."
+        ]
+    }
+}

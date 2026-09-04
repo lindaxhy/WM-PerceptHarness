@@ -1,0 +1,213 @@
+{
+    "summary": "A right hand sequentially stacks three additional colored blocks onto a small existing block tower on a black fabric mat; the tower collapses immediately after the third block is placed, scattering upper blocks across the mat while the two base support blocks remain upright.",
+    "objects": [
+        {
+            "id": "obj_001",
+            "name": "black fabric mat",
+            "role": "flat work surface placed on the table for block stacking",
+            "visible_attributes": [
+                "matte black finish",
+                "folded zippered edge on the right side",
+                "wrinkled fabric texture",
+                "lies horizontally"
+            ]
+        },
+        {
+            "id": "obj_002",
+            "name": "left peach support block",
+            "role": "left vertical base of the initial block tower",
+            "visible_attributes": [
+                "small rectangular prism",
+                "peach orange color",
+                "stands upright on the mat"
+            ]
+        },
+        {
+            "id": "obj_003",
+            "name": "right peach support block",
+            "role": "right vertical base of the initial block tower",
+            "visible_attributes": [
+                "small rectangular prism",
+                "peach orange color",
+                "stands upright on the mat",
+                "spaced slightly apart from the left peach block"
+            ]
+        },
+        {
+            "id": "obj_004",
+            "name": "yellow cube block",
+            "role": "middle block of the initial tower spanning the two peach supports",
+            "visible_attributes": [
+                "cubic shape",
+                "pale yellow color",
+                "smooth solid surface"
+            ]
+        },
+        {
+            "id": "obj_005",
+            "name": "dark brown block",
+            "role": "first block stacked onto the initial tower",
+            "visible_attributes": [
+                "thin square prism",
+                "dark brown color",
+                "smooth solid surface"
+            ]
+        },
+        {
+            "id": "obj_006",
+            "name": "bright blue cube",
+            "role": "second block stacked onto the tower",
+            "visible_attributes": [
+                "cubic shape",
+                "bright royal blue color",
+                "smooth solid surface"
+            ]
+        },
+        {
+            "id": "obj_007",
+            "name": "light blue cube",
+            "role": "third block stacked onto the tower",
+            "visible_attributes": [
+                "cubic shape",
+                "pale sky blue color",
+                "smooth solid surface"
+            ]
+        },
+        {
+            "id": "obj_008",
+            "name": "right hand",
+            "role": "manipulator that moves and places blocks for stacking",
+            "visible_attributes": [
+                "light skin tone",
+                "attached to a forearm with a dark short sleeve visible at the frame edge"
+            ]
+        },
+        {
+            "id": "obj_009",
+            "name": "wooden table",
+            "role": "support surface for the fabric mat",
+            "visible_attributes": [
+                "light brown wood grain pattern",
+                "flat horizontal surface",
+                "smooth finish"
+            ]
+        },
+        {
+            "id": "obj_010",
+            "name": "black fabric backdrop",
+            "role": "background behind the table",
+            "visible_attributes": [
+                "wrinkled matte black fabric",
+                "hangs vertically",
+                "fills the entire background of the frame"
+            ]
+        }
+    ],
+    "initial_state": "Near the beginning, two peach rectangular blocks stand upright on the black mat, with a yellow cube balanced across their tops to form a small stable 3-piece tower. The right hand enters from the right frame edge holding a dark brown block, positioned to add it to the tower.",
+    "final_state": "Near the end, the two peach base blocks remain upright on the mat, while the yellow cube, dark brown block, bright blue cube, and light blue cube lie scattered on the mat around the base after the tower collapse. The right hand has fully exited the frame with no further motion visible.",
+    "occlusions": [
+        {
+            "start_s": 0.4,
+            "end_s": 0.9,
+            "occluded_object_ids": [
+                "obj_004",
+                "obj_005"
+            ],
+            "occluder_id": "obj_008",
+            "visible_evidence": "The right hand covers the top of the yellow block and held dark brown block during positioning; both blocks become fully visible after the hand releases the dark block and pulls away."
+        },
+        {
+            "start_s": 2.6,
+            "end_s": 3.2,
+            "occluded_object_ids": [
+                "obj_005",
+                "obj_006"
+            ],
+            "occluder_id": "obj_008",
+            "visible_evidence": "The right hand covers the top of the dark brown block and held bright blue block during positioning; both blocks become fully visible after the hand releases the bright blue block and pulls away."
+        },
+        {
+            "start_s": 5.0,
+            "end_s": 5.6,
+            "occluded_object_ids": [
+                "obj_006",
+                "obj_007"
+            ],
+            "occluder_id": "obj_008",
+            "visible_evidence": "The right hand covers the top of the bright blue block and held light blue block during positioning; the blocks are revealed as the hand releases the light blue block and begins to pull away, immediately before collapse."
+        }
+    ],
+    "semantic_events": [
+        {
+            "event_id": "evt_001",
+            "start_s": 0.0,
+            "end_s": 1.0,
+            "type": "place",
+            "actor": "right hand",
+            "object_ids": [
+                "obj_005"
+            ],
+            "description": "Right hand transports the dark brown block from the right frame edge and places it centered on top of the yellow cube.",
+            "visible_evidence": "At 0.0s the hand holds the dark brown block above the right mat edge, moves left to align with the tower top, releases the block by 1.0s, and the dark block rests stably on the yellow cube as the hand exits view.",
+            "confidence": 0.98
+        },
+        {
+            "event_id": "evt_002",
+            "start_s": 2.0,
+            "end_s": 3.4,
+            "type": "place",
+            "actor": "right hand",
+            "object_ids": [
+                "obj_006"
+            ],
+            "description": "Right hand re-enters holding the bright blue cube, transports it to the tower, and places it centered on top of the dark brown block.",
+            "visible_evidence": "At ~2.0s the hand appears from the right holding the bright blue block, moves left to align with the tower top, releases the block by 3.4s, and the bright blue block rests stably on the dark brown block as the hand exits view.",
+            "confidence": 0.98
+        },
+        {
+            "event_id": "evt_003",
+            "start_s": 4.5,
+            "end_s": 5.7,
+            "type": "place",
+            "actor": "right hand",
+            "object_ids": [
+                "obj_007"
+            ],
+            "description": "Right hand re-enters holding the light blue cube, transports it to the tower, and places it centered on top of the bright blue cube.",
+            "visible_evidence": "At ~4.5s the hand appears from the right holding the light blue block, moves left to align with the tower top, releases the block by 5.7s, and begins to pull away.",
+            "confidence": 0.97
+        },
+        {
+            "event_id": "evt_004",
+            "start_s": 5.7,
+            "end_s": 6.3,
+            "type": "state_change",
+            "actor": "neither hand",
+            "object_ids": [
+                "obj_004",
+                "obj_005",
+                "obj_006",
+                "obj_007"
+            ],
+            "description": "The stacked block tower collapses, with all blocks above the two peach support blocks falling onto the black mat surface.",
+            "visible_evidence": "Immediately after the light blue block is released, the upper tower tilts and topples; by 6.3s the yellow, dark brown, bright blue, and light blue blocks rest scattered on the mat around the still-upright peach support blocks.",
+            "confidence": 0.99
+        }
+    ],
+    "outcome": {
+        "status": "failure",
+        "reason": "The multi-block tower collapsed immediately after placement of the third additional block, failing to remain in a stable stacked configuration.",
+        "visible_evidence": "All blocks above the two peach base supports fell onto the black mat, lying scattered rather than remaining stacked vertically."
+    },
+    "camera_motion": [],
+    "quality_flags": [],
+    "review": {
+        "status": "machine_only",
+        "notes": "All analysis is based exclusively on visible visual content in this clip; audio, speech, external context, and off-frame actions are not considered. Grasp actions for each block occur off-screen before the hand enters the frame, so they are not documented.",
+        "required_checks": [
+            "Verify precise color identification of each small block",
+            "Confirm exact start and end timings of each placement and collapse event",
+            "Check for unrecorded partial occlusions between blocks after collapse"
+        ]
+    }
+}

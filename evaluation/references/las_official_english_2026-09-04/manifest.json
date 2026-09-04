@@ -1,0 +1,153 @@
+{
+  "schema_version": "las_official_reference_manifest_v1",
+  "reference_set_id": "las_official_english_2026-09-04",
+  "generated_on": "2026-09-04",
+  "language": "en",
+  "generator": {
+    "service": "official LAS",
+    "operator": "las_video_understanding",
+    "version": "v1",
+    "model": "doubao-seed-2-1-pro-260628",
+    "prompt_file": "prompt.txt",
+    "prompt_sha256": "e119be363c9641b8d06de3315e39ad3e85daa4b8861aeb1fa4cd56e4a9c045d4"
+  },
+  "validation": {
+    "status": "passed",
+    "checks": [
+      "valid_json",
+      "exact_top_level_keys",
+      "english_free_text_without_han_characters",
+      "unique_object_ids",
+      "closed_object_references",
+      "contiguous_event_ids",
+      "ordered_positive_event_intervals",
+      "positive_occlusion_intervals",
+      "allowed_event_types",
+      "finite_confidence_in_closed_unit_interval",
+      "allowed_outcome_status"
+    ]
+  },
+  "prompt_compliance_audit": {
+    "status": "issues_found",
+    "manual_corrections": 0,
+    "issues": [
+      {
+        "sample_id": "full_0004",
+        "code": "OCCLUSION_BOUNDARY_EVENTS_INCOMPLETE",
+        "detail": "Two occlusion records have occluded events but no occlusion_enter or occlusion_exit events."
+      },
+      {
+        "sample_id": "full_0021",
+        "code": "OCCLUSION_EVENTS_MISSING",
+        "detail": "Three occlusion records have no corresponding occlusion semantic events."
+      }
+    ]
+  },
+  "totals": {
+    "samples": 5,
+    "objects": 39,
+    "semantic_events": 31,
+    "occlusion_semantic_events": 13,
+    "occlusion_records": 9
+  },
+  "samples": [
+    {
+      "sample_id": "full_0001",
+      "source_video": {
+        "sha256": "c3243c46bad68d3b2772e82648e45b68e75a1893b0ce27edecd450226464c1e9",
+        "size_bytes": 645739,
+        "duration_seconds": 10.933333333333334
+      },
+      "submitted_media": {
+        "relationship_to_source": "byte_identical",
+        "sha256": "c3243c46bad68d3b2772e82648e45b68e75a1893b0ce27edecd450226464c1e9"
+      },
+      "reference_file": "references/full_0001.json",
+      "reference_file_sha256": "2f00d8c3c6fd8ff3328531660a4b378018124b08d8d086abd4eb2cdcd15a040c",
+      "objects": 12,
+      "semantic_events": 9,
+      "occlusion_semantic_events": 3,
+      "occlusion_records": 1
+    },
+    {
+      "sample_id": "full_0002",
+      "source_video": {
+        "sha256": "6741b6184b847b6096e4282b1e0f76142714870b258ca16a19606e0441f0973f",
+        "size_bytes": 35714259,
+        "duration_seconds": 14.7
+      },
+      "submitted_media": {
+        "relationship_to_source": "video_only_transcode",
+        "sha256": "efa111221955501ff12132cffcaffbda8a2ed7679322104a2aa0280c8c868d82",
+        "size_bytes": 6381665,
+        "codec": "h264",
+        "width": 1280,
+        "height": 720,
+        "frames": 441,
+        "fps": 30.0,
+        "duration_seconds": 14.7,
+        "audio_streams": 0
+      },
+      "reference_file": "references/full_0002.json",
+      "reference_file_sha256": "783a9b6338c5329a84293d33c3d5e60c3ef5e7ec81c9b740fee5fc28c5349bca",
+      "objects": 5,
+      "semantic_events": 8,
+      "occlusion_semantic_events": 6,
+      "occlusion_records": 2
+    },
+    {
+      "sample_id": "full_0024",
+      "source_video": {
+        "sha256": "a7a696bcdd835c083b27ca3705d13a2f22e069ebec9038581354fed39e6fbbe8",
+        "size_bytes": 349293,
+        "duration_seconds": 4.566666666666666
+      },
+      "submitted_media": {
+        "relationship_to_source": "byte_identical",
+        "sha256": "a7a696bcdd835c083b27ca3705d13a2f22e069ebec9038581354fed39e6fbbe8"
+      },
+      "reference_file": "references/full_0024.json",
+      "reference_file_sha256": "d5e5ef1718539c00c8a0846ea2b3fd082c873b1f25cef84e63c176956a6ecba1",
+      "objects": 4,
+      "semantic_events": 5,
+      "occlusion_semantic_events": 2,
+      "occlusion_records": 1
+    },
+    {
+      "sample_id": "full_0021",
+      "source_video": {
+        "sha256": "1cd6b0752bd3b7f1ca987d470d8e65d9247a4f0751c7f891c6824b63751eff05",
+        "size_bytes": 507542,
+        "duration_seconds": 7.3
+      },
+      "submitted_media": {
+        "relationship_to_source": "byte_identical",
+        "sha256": "1cd6b0752bd3b7f1ca987d470d8e65d9247a4f0751c7f891c6824b63751eff05"
+      },
+      "reference_file": "references/full_0021.json",
+      "reference_file_sha256": "cd950704134ef90051d7b78ca9e7f73bb6883c7c69670d3c065b92f0c2d2fb69",
+      "objects": 10,
+      "semantic_events": 4,
+      "occlusion_semantic_events": 0,
+      "occlusion_records": 3
+    },
+    {
+      "sample_id": "full_0004",
+      "source_video": {
+        "sha256": "34bc1833f713419c694c97af544f5c4148f0b03e02913415f4a3eb2be8660d09",
+        "size_bytes": 20805695,
+        "duration_seconds": 8.8
+      },
+      "submitted_media": {
+        "relationship_to_source": "byte_identical",
+        "sha256": "34bc1833f713419c694c97af544f5c4148f0b03e02913415f4a3eb2be8660d09"
+      },
+      "reference_file": "references/full_0004.json",
+      "reference_file_sha256": "6f3aea30354db726074f866fab0e7968b22e4929823c46207881aec6550639e6",
+      "objects": 8,
+      "semantic_events": 5,
+      "occlusion_semantic_events": 2,
+      "occlusion_records": 2
+    }
+  ]
+}

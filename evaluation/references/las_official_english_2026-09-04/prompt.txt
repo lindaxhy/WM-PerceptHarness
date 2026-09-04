@@ -1,0 +1,75 @@
+Analyze the complete video using visible evidence only. Ignore audio, speech,
+transcripts, filenames, and outside knowledge. Return exactly one valid JSON
+object and nothing else: no Markdown and no explanation. Every free-text value
+must be English and must contain no Chinese characters.
+
+Use this exact top-level schema:
+{
+  "summary": "concise visible summary",
+  "objects": [
+    {
+      "id": "obj_001",
+      "name": "stable lowercase English object name",
+      "role": "visible role",
+      "visible_attributes": ["directly visible attribute"]
+    }
+  ],
+  "initial_state": "directly visible state near the beginning",
+  "final_state": "directly visible state near the end",
+  "occlusions": [
+    {
+      "start_s": 0.0,
+      "end_s": 1.0,
+      "occluded_object_ids": ["obj_001"],
+      "occluder_id": "obj_002",
+      "visible_evidence": "visible evidence for entry and exit boundaries"
+    }
+  ],
+  "semantic_events": [
+    {
+      "event_id": "evt_001",
+      "start_s": 0.0,
+      "end_s": 1.0,
+      "type": "move",
+      "actor": "right hand",
+      "object_ids": ["obj_001"],
+      "description": "concise visible event",
+      "visible_evidence": "direct visual evidence",
+      "confidence": 0.9
+    }
+  ],
+  "outcome": {
+    "status": "success",
+    "reason": "reason supported by visible evidence",
+    "visible_evidence": "directly visible result"
+  },
+  "camera_motion": [],
+  "quality_flags": [],
+  "review": {
+    "status": "machine_only",
+    "notes": "limitations and uncertainty",
+    "required_checks": ["facts requiring human review"]
+  }
+}
+
+Rules:
+- Declare every referenced object exactly once in objects. Use stable obj_NNN
+  identifiers and reuse them consistently.
+- Describe all important visible manipulation, object motion, contact, grasp,
+  release, placement, state change, and occlusion events. Events may overlap.
+- Allowed semantic event types are: move, transport, grasp, reach, release,
+  lift, place, approach, contact, push, pull, rotate, stop,
+  autonomous_motion, state_change, occlusion_enter, occluded,
+  occlusion_exit, unknown.
+- When an object visibly becomes hidden, remains hidden, or becomes visible
+  again, emit the appropriate occlusion_enter, occluded, and occlusion_exit
+  semantic events and also add the corresponding interval to occlusions.
+- Use positive-duration intervals in seconds within the video. Order events by
+  start_s and assign contiguous event_id values from evt_001.
+- actor must be one of: left hand, right hand, both hands, neither hand, an
+  object id, or unknown.
+- confidence must be a finite number from 0.0 through 1.0.
+- outcome.status must be success, failure, partial, or unknown. Use unknown
+  instead of inferring intent or an invisible result.
+- Empty arrays are allowed only when the corresponding phenomenon is not
+  visibly present. Do not invent an occlusion to fill the schema.

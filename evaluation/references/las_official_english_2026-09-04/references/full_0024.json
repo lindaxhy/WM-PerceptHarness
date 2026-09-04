@@ -1,0 +1,142 @@
+{
+    "summary": "A right hand descends to contact a closed black hard case resting on a light wooden table, slides the case horizontally left past a stationary clear plastic ruler, then holds the case steady in its new leftward position at the end of the segment.",
+    "objects": [
+        {
+            "id": "obj_001",
+            "name": "black hard case",
+            "role": "closed rigid case being repositioned on the table",
+            "visible_attributes": [
+                "matte black finish",
+                "visible surface scuffs",
+                "elongated rectangular shape",
+                "closed clamshell design",
+                "rigid construction"
+            ]
+        },
+        {
+            "id": "obj_002",
+            "name": "clear plastic ruler",
+            "role": "stationary reference object resting on the table",
+            "visible_attributes": [
+                "transparent plastic material",
+                "printed linear measurement markings",
+                "long flat rectangular form",
+                "laid horizontally on the table surface"
+            ]
+        },
+        {
+            "id": "obj_003",
+            "name": "right hand",
+            "role": "manipulator moving the black case",
+            "visible_attributes": [
+                "light skin tone",
+                "index, middle, ring fingers resting on case top",
+                "thumb positioned along the right edge of the case during movement"
+            ]
+        },
+        {
+            "id": "obj_004",
+            "name": "wooden table",
+            "role": "flat supporting surface for all other objects",
+            "visible_attributes": [
+                "light brown wood color",
+                "distinct horizontal wood grain patterns",
+                "smooth flat horizontal surface"
+            ]
+        }
+    ],
+    "initial_state": "At the start of the segment, the closed black hard case sits on the wooden table directly behind the horizontally aligned clear ruler, and a right hand is suspended in mid-air above the case, moving downward toward it.",
+    "final_state": "At the end of the segment, the black hard case is positioned further left on the table, partially overlapping the left end of the clear ruler, with the right hand resting on top of the case holding it stationary in the new position.",
+    "occlusions": [
+        {
+            "start_s": 0.2,
+            "end_s": 4.4,
+            "occluded_object_ids": [
+                "obj_001"
+            ],
+            "occluder_id": "obj_003",
+            "visible_evidence": "At 0.2s the right hand lands on the top surface of the black case, covering a small section of the case; this section remains covered by the hand until the clip concludes at 4.4s, with no release of contact observed."
+        }
+    ],
+    "semantic_events": [
+        {
+            "event_id": "evt_001",
+            "start_s": 0.0,
+            "end_s": 0.2,
+            "type": "reach",
+            "actor": "right hand",
+            "object_ids": [
+                "obj_001"
+            ],
+            "description": "Right hand moves downward from above the frame toward the top surface of the black hard case",
+            "visible_evidence": "Hand is first visible above the case at 0.0s, descends vertically until fingers make contact with the case top at ~0.2s",
+            "confidence": 0.98
+        },
+        {
+            "event_id": "evt_002",
+            "start_s": 0.2,
+            "end_s": 2.4,
+            "type": "move",
+            "actor": "right hand",
+            "object_ids": [
+                "obj_001"
+            ],
+            "description": "Right hand slides the black hard case horizontally left across the table surface",
+            "visible_evidence": "The case shifts steadily left relative to the stationary ruler, moving from a position aligned with the ruler's midpoint to a position over the ruler's left end between 0.2s and 2.4s",
+            "confidence": 0.97
+        },
+        {
+            "event_id": "evt_003",
+            "start_s": 0.2,
+            "end_s": 0.3,
+            "type": "occlusion_enter",
+            "actor": "obj_003",
+            "object_ids": [
+                "obj_001"
+            ],
+            "description": "A small section of the black case's top surface becomes hidden under the fingers of the right hand",
+            "visible_evidence": "When the right hand makes contact with the case at 0.2s, the portion of the case directly beneath the fingers is no longer visible",
+            "confidence": 0.95
+        },
+        {
+            "event_id": "evt_004",
+            "start_s": 0.3,
+            "end_s": 4.4,
+            "type": "occluded",
+            "actor": "obj_003",
+            "object_ids": [
+                "obj_001"
+            ],
+            "description": "The small section of the case top remains obscured by the right hand",
+            "visible_evidence": "The right hand stays in contact with the case top for the remainder of the segment, keeping the underlying section of the case out of view",
+            "confidence": 0.94
+        },
+        {
+            "event_id": "evt_005",
+            "start_s": 2.4,
+            "end_s": 4.4,
+            "type": "stop",
+            "actor": "right hand",
+            "object_ids": [
+                "obj_001"
+            ],
+            "description": "Leftward movement of the black hard case ceases, and the case remains stationary",
+            "visible_evidence": "No horizontal displacement of the case relative to the fixed ruler is observed after 2.4s, as the hand holds the case in place",
+            "confidence": 0.96
+        }
+    ],
+    "outcome": {
+        "status": "success",
+        "reason": "The black hard case was successfully moved leftward across the table surface to a new stationary position by the right hand",
+        "visible_evidence": "The case is positioned measurably left of its initial starting location relative to the stationary clear ruler, with no further movement observed at the end of the segment"
+    },
+    "camera_motion": [],
+    "quality_flags": [],
+    "review": {
+        "status": "machine_only",
+        "notes": "All observations are derived solely from visible content in this video segment; audio, dialogue, text, and external knowledge are excluded. The segment ends before the hand releases the case, so post-segment actions are not observed.",
+        "required_checks": [
+            "Confirm whether the final resting position of the black case matches the intended goal, as no release action is visible before the clip ends"
+        ]
+    }
+}
