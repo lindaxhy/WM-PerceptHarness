@@ -12,7 +12,7 @@ import pytest
 from las_repro.config import Settings
 from las_repro.domain import InferenceJobSpec, InferenceStatus, TaskStatus
 from las_repro.media import MediaResolver
-from las_repro.models.base import ModelRequest
+from las_repro.models.base import ModelOutputError, ModelRequest
 from las_repro.models.fake import FakeVideoModel
 from las_repro.pipelines.base import PipelineContext, PipelineRegistry
 from las_repro.store import SQLiteTaskStore
@@ -123,6 +123,90 @@ def test_gpu_worker_completes_exactly_one_claimed_job(
         "warnings": [],
     }
     assert worker.run_once() is False
+
+
+def test_gpu_worker_persists_elapsed_and_model_metrics_outside_public_result(
+    store: SQLiteTaskStore, tmp_path: Path
+) -> None:
+    _, job_id = _create_job(store, tmp_path / "metrics.mp4")
+    monotonic_now = [10.0]
+
+    class MetricsModel(FakeVideoModel):
+        def generate(self, request: ModelRequest) -> dict[str, Any]:
+            monotonic_now[0] = 11.25
+            return super().generate(request)
+
+        def request_metrics(self) -> dict[str, Any]:
+            return {
+                "input_tokens": 512,
+                "processed_frames": 8,
+                "cache_hit": True,
+            }
+
+    worker = GPUWorker(
+        store,
+        MetricsModel(),
+        worker_id="gpu-0",
+        device="cuda:0",
+        lease_seconds=10.0,
+        monotonic=lambda: monotonic_now[0],
+    )
+
+    assert worker.run_once(now=100.0) is True
+    completed = store.get_inference_job(job_id)
+    assert completed is not None
+    assert completed.status is InferenceStatus.COMPLETED
+    assert completed.metrics == {
+        "inference_seconds": 1.25,
+        "input_tokens": 512,
+        "processed_frames": 8,
+        "cache_hit": True,
+    }
+    assert completed.result is not None
+    assert "inference_seconds" not in completed.result
+    assert "input_tokens" not in completed.result
+    assert "processed_frames" not in completed.result
+    assert "cache_hit" not in completed.result
+
+
+def test_gpu_worker_persists_metrics_when_model_output_becomes_safe_failure_result(
+    store: SQLiteTaskStore, tmp_path: Path
+) -> None:
+    _, job_id = _create_job(store, tmp_path / "invalid-output-metrics.mp4")
+    monotonic_now = [20.0]
+
+    class InvalidOutputModel:
+        def generate(self, request: ModelRequest) -> dict[str, Any]:
+            monotonic_now[0] = 20.5
+            raise ModelOutputError("raw output was malformed")
+
+        def request_metrics(self) -> dict[str, Any]:
+            return {"output_tokens": 7}
+
+    worker = GPUWorker(
+        store,
+        InvalidOutputModel(),
+        worker_id="gpu-0",
+        device="cuda:0",
+        lease_seconds=10.0,
+        monotonic=lambda: monotonic_now[0],
+    )
+
+    assert worker.run_once(now=100.0) is True
+    completed = store.get_inference_job(job_id)
+    assert completed is not None
+    assert completed.status is InferenceStatus.COMPLETED
+    assert completed.result == {
+        "_schema_validation": {
+            "schema_name": "general_segment",
+            "status": "invalid",
+            "issue_codes": ["GENERAL_SEGMENT_SCHEMA_INVALID"],
+        }
+    }
+    assert completed.metrics == {
+        "inference_seconds": 0.5,
+        "output_tokens": 7,
+    }
 
 
 def test_gpu_worker_interrupt_expires_current_generation_before_propagating(
@@ -472,6 +556,9 @@ def test_gpu_failure_is_redacted_and_request_resources_are_released(
     assert failed.task_id == task_id
     assert failed.status is InferenceStatus.FAILED
     assert failed.error == "model inference failed"
+    assert failed.started_at is not None
+    assert failed.finished_at is not None
+    assert failed.metrics is None
     assert "must-not-survive" not in (failed.error or "")
     assert len(model.released) == 1
 

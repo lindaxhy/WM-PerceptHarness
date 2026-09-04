@@ -30,6 +30,7 @@ class InferenceJobSpec:
     stage: str
     ordinal: int
     payload: Mapping[str, Any]
+    model_name: str | None = None
     affinity_worker_id: str | None = None
     affinity_fallback_at: float | None = None
     affinity_fallback_seconds: float | None = None
@@ -70,3 +71,6 @@ class InferenceJob:
     affinity_worker_id: str | None = None
     affinity_fallback_at: float | None = None
     completed_by: str | None = None
+    started_at: float | None = None
+    finished_at: float | None = None
+    metrics: dict[str, Any] | None = None

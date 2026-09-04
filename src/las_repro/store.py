@@ -48,6 +48,26 @@ _DATABASE_FILE_ERROR = "database file must be an owner-only regular file"
 _DATABASE_SIDECAR_ERROR = "database sidecar must be an owner-only regular file"
 _LEGACY_MODEL_MIGRATION_BATCH_SIZE = 16
 _MAX_LEGACY_TASK_PAYLOAD_BYTES = 1_048_576
+_MAX_JOB_METRICS_BYTES = 4096
+_JOB_METRIC_KEYS = frozenset(
+    {
+        "inference_seconds",
+        "input_tokens",
+        "output_tokens",
+        "peak_allocated_bytes",
+        "processed_frames",
+        "entity_prompts",
+        "track_count",
+        "cache_hit",
+        "oom_retry",
+    }
+)
+_JOB_INTEGER_METRIC_KEYS = _JOB_METRIC_KEYS - {
+    "inference_seconds",
+    "cache_hit",
+    "oom_retry",
+}
+_JOB_BOOLEAN_METRIC_KEYS = frozenset({"cache_hit", "oom_retry"})
 
 
 class SQLiteTaskStore:
@@ -170,6 +190,9 @@ class SQLiteTaskStore:
                     affinity_worker_id TEXT,
                     affinity_fallback_at REAL,
                     completed_by TEXT,
+                    started_at REAL,
+                    finished_at REAL,
+                    metrics TEXT,
                     UNIQUE(task_id, stage, ordinal)
                 );
 
@@ -195,6 +218,15 @@ class SQLiteTaskStore:
                         f"NOT NULL DEFAULT '{DEFAULT_MODEL_ALIAS}'"
                     )
                     _backfill_legacy_job_model_aliases(connection)
+                for column, declaration in (
+                    ("started_at", "REAL"),
+                    ("finished_at", "REAL"),
+                    ("metrics", "TEXT"),
+                ):
+                    if column not in columns:
+                        connection.execute(
+                            f"ALTER TABLE inference_jobs ADD COLUMN {column} {declaration}"
+                        )
                 connection.execute(
                     """
                     CREATE INDEX IF NOT EXISTS idx_jobs_model_claim
@@ -218,7 +250,19 @@ class SQLiteTaskStore:
                         attempt = attempt + 1,
                         result = NULL,
                         error = ?,
-                        completed_by = NULL
+                        completed_by = NULL,
+                        finished_at = COALESCE(
+                            finished_at,
+                            MAX(
+                                inference_jobs.updated_at,
+                                (
+                                    SELECT parent.updated_at
+                                    FROM tasks AS parent
+                                    WHERE parent.task_id = inference_jobs.task_id
+                                )
+                            )
+                        ),
+                        metrics = NULL
                     WHERE status IN (?, ?)
                       AND EXISTS (
                           SELECT 1
@@ -244,7 +288,9 @@ class SQLiteTaskStore:
                     UPDATE inference_jobs
                     SET status = ?, lease_until = NULL, worker_id = NULL,
                         attempt = attempt + 1, result = NULL, error = ?,
-                        completed_by = NULL
+                        completed_by = NULL,
+                        finished_at = COALESCE(finished_at, updated_at),
+                        metrics = NULL
                     WHERE status IN (?, ?)
                       AND NOT EXISTS (
                           SELECT 1
@@ -432,13 +478,18 @@ class SQLiteTaskStore:
             connection.execute("BEGIN IMMEDIATE")
             try:
                 parent = _required_row(connection, "tasks", "task_id", task_id)
-                model_name = _task_model_alias(parent["payload"])
+                task_model_name = _task_model_alias(parent["payload"])
                 if parent["status"] in {
                     TaskStatus.COMPLETED.value,
                     TaskStatus.FAILED.value,
                 }:
                     raise InvalidTransition("cannot create inference jobs for a terminal task")
                 for spec, absolute_fallback_at, fallback_seconds in definitions:
+                    model_name = (
+                        task_model_name
+                        if spec.model_name is None
+                        else validate_model_alias(spec.model_name)
+                    )
                     payload_json = _json_dump(spec.payload)
                     existing = connection.execute(
                         "SELECT * FROM inference_jobs WHERE task_id = ? AND stage = ? AND ordinal = ?",
@@ -530,6 +581,7 @@ class SQLiteTaskStore:
         worker_id: str,
         attempt: int,
         now: float | None = None,
+        metrics: Mapping[str, Any] | None = None,
     ) -> InferenceJob:
         row = self._finish(
             table="inference_jobs",
@@ -542,6 +594,7 @@ class SQLiteTaskStore:
             error=None,
             now=self._now(now),
             completed_by=worker_id,
+            metrics=metrics,
         )
         return _job_from_row(row)
 
@@ -666,6 +719,12 @@ class SQLiteTaskStore:
             if affinity
             else f"created_at, {identifier}"
         )
+        started_at_sql = (
+            ", started_at = COALESCE(started_at, ?)"
+            if table == "inference_jobs"
+            else ""
+        )
+        started_at_params = (now,) if table == "inference_jobs" else ()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
@@ -694,7 +753,8 @@ class SQLiteTaskStore:
                 changed = connection.execute(
                     f"""
                     UPDATE {table}
-                    SET status = ?, worker_id = ?, lease_until = ?, attempt = attempt + 1, updated_at = ?
+                    SET status = ?, worker_id = ?, lease_until = ?,
+                        attempt = attempt + 1, updated_at = ?{started_at_sql}
                     WHERE {identifier} = ?
                       AND (status = ? OR (status = ? AND lease_until <= ?))
                       {model_sql}
@@ -706,6 +766,7 @@ class SQLiteTaskStore:
                         worker_id,
                         lease_until,
                         now,
+                        *started_at_params,
                         row[identifier],
                         "PENDING",
                         "RUNNING",
@@ -780,12 +841,29 @@ class SQLiteTaskStore:
         error: str | None,
         now: float,
         completed_by: str | None = None,
+        metrics: Mapping[str, Any] | None = None,
     ) -> sqlite3.Row:
         result_json = _json_dump(result) if result is not None else None
         error_json = _json_dump(error) if error is not None else None
+        metrics_json = _validated_job_metrics_json(metrics)
         attempt = _lease_attempt(attempt)
-        completed_by_sql = ", completed_by = ?" if table == "inference_jobs" else ""
-        params: tuple[Any, ...] = (status, now, result_json, error_json, *(() if table == "tasks" else (completed_by,)), value)
+        job_finish_sql = (
+            ", completed_by = ?, finished_at = ?, metrics = ?"
+            if table == "inference_jobs"
+            else ""
+        )
+        params: tuple[Any, ...] = (
+            status,
+            now,
+            result_json,
+            error_json,
+            *(
+                ()
+                if table == "tasks"
+                else (completed_by, now, metrics_json)
+            ),
+            value,
+        )
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
@@ -794,7 +872,8 @@ class SQLiteTaskStore:
                 changed = connection.execute(
                     f"""
                     UPDATE {table}
-                    SET status = ?, updated_at = ?, lease_until = NULL, result = ?, error = ?{completed_by_sql}
+                    SET status = ?, updated_at = ?, lease_until = NULL,
+                        result = ?, error = ?{job_finish_sql}
                     WHERE {identifier} = ? AND status = 'RUNNING'
                       AND worker_id = ? AND attempt = ?
                     """,
@@ -808,13 +887,15 @@ class SQLiteTaskStore:
                         UPDATE inference_jobs
                         SET status = ?, updated_at = ?, lease_until = NULL,
                             worker_id = NULL, attempt = attempt + 1,
-                            result = NULL, error = ?, completed_by = NULL
+                            result = NULL, error = ?, completed_by = NULL,
+                            finished_at = ?, metrics = NULL
                         WHERE task_id = ? AND status IN (?, ?)
                         """,
                         (
                             InferenceStatus.FAILED.value,
                             now,
                             _json_dump("parent task is terminal"),
+                            now,
                             value,
                             InferenceStatus.PENDING.value,
                             InferenceStatus.RUNNING.value,
@@ -1335,6 +1416,32 @@ def _json_load(value: str | None) -> Any:
     return json.loads(value) if value is not None else None
 
 
+def _validated_job_metrics_json(metrics: Mapping[str, Any] | None) -> str | None:
+    if metrics is None:
+        return None
+    if not isinstance(metrics, Mapping):
+        raise TypeError("metrics must be a mapping or None")
+    values = dict(metrics)
+    unknown = values.keys() - _JOB_METRIC_KEYS
+    if unknown:
+        raise ValueError("metrics contain unknown keys")
+    if "inference_seconds" in values:
+        duration = values["inference_seconds"]
+        if type(duration) is not float or not math.isfinite(duration) or duration < 0:
+            raise ValueError("metrics inference_seconds must be a finite non-negative float")
+    for key in _JOB_INTEGER_METRIC_KEYS & values.keys():
+        value = values[key]
+        if type(value) is not int or value < 0:
+            raise ValueError(f"metrics {key} must be a non-negative integer")
+    for key in _JOB_BOOLEAN_METRIC_KEYS & values.keys():
+        if type(values[key]) is not bool:
+            raise ValueError(f"metrics {key} must be a boolean")
+    encoded = _json_dump(values)
+    if len(encoded.encode("utf-8")) > _MAX_JOB_METRICS_BYTES:
+        raise ValueError("metrics canonical JSON exceeds 4096 bytes")
+    return encoded
+
+
 def _task_model_alias(payload_json: str) -> str:
     try:
         payload = _json_load(payload_json)
@@ -1449,4 +1556,7 @@ def _job_from_row(row: sqlite3.Row) -> InferenceJob:
         affinity_worker_id=row["affinity_worker_id"],
         affinity_fallback_at=row["affinity_fallback_at"],
         completed_by=row["completed_by"],
+        started_at=row["started_at"],
+        finished_at=row["finished_at"],
+        metrics=_json_load(row["metrics"]),
     )

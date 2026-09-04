@@ -150,6 +150,7 @@ class GPUWorker:
         job: InferenceJob | None = None
         claim_returned = False
         request: ModelRequest | None = None
+        metrics: dict[str, Any] | None = None
 
         def register_claim(claimed: InferenceJob) -> None:
             nonlocal job
@@ -180,8 +181,18 @@ class GPUWorker:
             ):
                 request = self._attach_video_session(_model_request(job), job)
                 try:
+                    generation_started = _finite_clock(self._monotonic())
                     try:
-                        generated = self.model.generate(request)
+                        try:
+                            generated = self.model.generate(request)
+                        finally:
+                            inference_seconds = (
+                                _finite_clock(self._monotonic()) - generation_started
+                            )
+                        metrics = _model_request_metrics(
+                            self.model,
+                            inference_seconds=inference_seconds,
+                        )
                         if not isinstance(generated, Mapping):
                             raise ModelOutputError(
                                 "model output must be a structured object"
@@ -192,6 +203,11 @@ class GPUWorker:
                             _schema_validation_context(job.payload, request),
                         )
                     except ModelOutputError:
+                        if metrics is None:
+                            metrics = _model_request_metrics(
+                                self.model,
+                                inference_seconds=inference_seconds,
+                            )
                         result = self._output_schemas.model_output_failure(
                             request.schema_name
                         )
@@ -208,6 +224,7 @@ class GPUWorker:
                 worker_id=self.worker_id,
                 attempt=job.attempt,
                 now=now,
+                metrics=metrics,
             )
         except (InvalidTransition, WorkerMismatch):
             if not claim_returned:
@@ -631,6 +648,23 @@ def _model_request(job: InferenceJob) -> ModelRequest:
         reasoning_effort=payload.get("reasoning_effort"),
         clip_context=payload.get("clip_context"),
     )
+
+
+def _model_request_metrics(
+    model: VideoModel,
+    *,
+    inference_seconds: float,
+) -> dict[str, Any]:
+    request_metrics = getattr(model, "request_metrics", None)
+    reported = request_metrics() if callable(request_metrics) else None
+    if reported is None:
+        metrics: dict[str, Any] = {}
+    elif isinstance(reported, Mapping):
+        metrics = dict(reported)
+    else:
+        raise TypeError("model request_metrics must return a mapping or None")
+    metrics["inference_seconds"] = inference_seconds
+    return metrics
 
 
 def _schema_validation_context(

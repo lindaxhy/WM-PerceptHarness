@@ -879,6 +879,8 @@ def test_inference_affinity_then_fallback_and_expired_lease_reclaim(store):
     assert recovered is not None
     assert recovered.job_id == job.job_id
     assert recovered.attempt == 2
+    assert first.started_at == 40.0
+    assert recovered.started_at == 40.0
 
 
 def test_inference_jobs_persist_task_model_alias_and_claim_only_exact_matches(store):
@@ -929,6 +931,56 @@ def test_inference_jobs_persist_task_model_alias_and_claim_only_exact_matches(st
     )
     assert claimed_b is not None and claimed_b.job_id == second_job.job_id
     assert claimed_a is not None and claimed_a.job_id == first_job.job_id
+
+
+def test_job_spec_can_route_one_stage_to_a_different_local_model(store):
+    task = store.create_task(
+        {
+            "video_url": "/v.mp4",
+            "task_template": "general_video_captioning",
+            "model_name": "qwen3-vl-8b-instruct",
+        }
+    )
+    [job] = store.create_inference_jobs(
+        task.task_id,
+        [InferenceJobSpec("cv_evidence", 0, {"request": {}}, model_name="sam3.1")],
+        now=10.0,
+    )
+    [repeated] = store.create_inference_jobs(
+        task.task_id,
+        [InferenceJobSpec("cv_evidence", 0, {"request": {}}, model_name="sam3.1")],
+        now=20.0,
+    )
+
+    assert job.model_name == "sam3.1"
+    assert repeated.job_id == job.job_id
+    with pytest.raises(DuplicateInferenceJob):
+        store.create_inference_jobs(
+            task.task_id,
+            [
+                InferenceJobSpec(
+                    "cv_evidence",
+                    0,
+                    {"request": {}},
+                    model_name="another-model",
+                )
+            ],
+            now=20.0,
+        )
+    assert (
+        store.claim_inference_job(
+            "qwen-0",
+            model_name="qwen3-vl-8b-instruct",
+            lease_seconds=30,
+            now=11,
+        )
+        is None
+    )
+    claimed = store.claim_inference_job(
+        "sam-3", model_name="sam3.1", lease_seconds=30, now=11
+    )
+    assert claimed is not None
+    assert claimed.job_id == job.job_id
 
 
 def test_model_filtered_claim_survives_restart_and_expired_lease_recovery(tmp_path):
@@ -1006,6 +1058,9 @@ def test_legacy_model_alias_migration_backfills_all_jobs_and_filters_claims(tmp_
     }
     assert migrated["job-b-pending"].model_name == "model-b"
     assert migrated["job-b-running"].model_name == "model-b"
+    assert migrated["job-b-pending"].started_at is None
+    assert migrated["job-b-pending"].finished_at is None
+    assert migrated["job-b-pending"].metrics is None
     [default_job] = store.list_inference_jobs("task-default")
     assert default_job.model_name == "qwen3-vl-8b-instruct"
     assert (
@@ -1186,6 +1241,140 @@ def test_completed_job_records_immutable_completed_by(store):
             job.job_id, "late", worker_id="gpu-a", attempt=claimed.attempt
         )
     assert store.list_inference_jobs(task.task_id)[0].completed_by == "gpu-a"
+
+
+def test_completed_job_retains_first_start_finish_and_metrics(store):
+    task = store.create_task(
+        {"video_url": "/v.mp4", "task_template": "general_video_captioning"}
+    )
+    [job] = store.create_inference_jobs(
+        task.task_id, [InferenceJobSpec("x", 0, {})], now=10
+    )
+    running = store.claim_inference_job("gpu-0", lease_seconds=30, now=12)
+    assert running is not None
+
+    done = store.complete_inference_job(
+        job.job_id,
+        {"ok": True},
+        worker_id="gpu-0",
+        attempt=running.attempt,
+        now=14,
+        metrics={"inference_seconds": 1.75, "peak_allocated_bytes": 1024},
+    )
+
+    assert done.started_at == 12
+    assert done.finished_at == 14
+    assert done.metrics == {
+        "inference_seconds": 1.75,
+        "peak_allocated_bytes": 1024,
+    }
+
+
+def test_completed_job_accepts_every_metric_with_strict_types(store):
+    task = store.create_task({"video_url": "/v.mp4"})
+    [job] = store.create_inference_jobs(
+        task.task_id, [InferenceJobSpec("x", 0, {})], now=10
+    )
+    running = store.claim_inference_job("gpu-0", lease_seconds=30, now=12)
+    assert running is not None
+    metrics = {
+        "inference_seconds": 0.0,
+        "input_tokens": 0,
+        "output_tokens": 1,
+        "peak_allocated_bytes": 2,
+        "processed_frames": 3,
+        "entity_prompts": 4,
+        "track_count": 5,
+        "cache_hit": False,
+        "oom_retry": True,
+    }
+
+    done = store.complete_inference_job(
+        job.job_id,
+        {"ok": True},
+        worker_id="gpu-0",
+        attempt=running.attempt,
+        now=14,
+        metrics=metrics,
+    )
+
+    assert done.metrics == metrics
+
+
+@pytest.mark.parametrize(
+    "metrics",
+    [
+        {"unknown_metric": 1},
+        {"inference_seconds": True},
+        {"inference_seconds": 1},
+        {"inference_seconds": -0.1},
+        {"inference_seconds": float("nan")},
+        {"inference_seconds": float("inf")},
+        {"inference_seconds": "1.0"},
+        {"input_tokens": True},
+        {"input_tokens": 1.0},
+        {"input_tokens": -1},
+        {"input_tokens": "1"},
+        {"cache_hit": 0},
+        {"cache_hit": "false"},
+        [],
+    ],
+)
+def test_invalid_job_metrics_are_rejected_before_terminal_transition(store, metrics):
+    task = store.create_task({"video_url": "/v.mp4"})
+    [job] = store.create_inference_jobs(
+        task.task_id, [InferenceJobSpec("x", 0, {})], now=10
+    )
+    running = store.claim_inference_job("gpu-0", lease_seconds=30, now=12)
+    assert running is not None
+
+    with pytest.raises((TypeError, ValueError), match="metrics"):
+        store.complete_inference_job(
+            job.job_id,
+            {"ok": True},
+            worker_id="gpu-0",
+            attempt=running.attempt,
+            now=14,
+            metrics=metrics,
+        )
+
+    unchanged = store.get_inference_job(job.job_id)
+    assert unchanged is not None
+    assert unchanged.status is InferenceStatus.RUNNING
+    assert unchanged.finished_at is None
+    assert unchanged.metrics is None
+
+
+@pytest.mark.parametrize("digit_count", [4079, 4080])
+def test_job_metrics_canonical_json_is_bounded_to_4096_bytes(store, digit_count):
+    task = store.create_task({"video_url": "/v.mp4"})
+    [job] = store.create_inference_jobs(
+        task.task_id, [InferenceJobSpec("x", 0, {})], now=10
+    )
+    running = store.claim_inference_job("gpu-0", lease_seconds=30, now=12)
+    assert running is not None
+    metrics = {"input_tokens": 10 ** (digit_count - 1)}
+
+    if digit_count == 4079:
+        done = store.complete_inference_job(
+            job.job_id,
+            {"ok": True},
+            worker_id="gpu-0",
+            attempt=running.attempt,
+            now=14,
+            metrics=metrics,
+        )
+        assert done.metrics == metrics
+    else:
+        with pytest.raises(ValueError, match="metrics.*4096 bytes"):
+            store.complete_inference_job(
+                job.job_id,
+                {"ok": True},
+                worker_id="gpu-0",
+                attempt=running.attempt,
+                now=14,
+                metrics=metrics,
+            )
 
 
 def test_job_owner_mismatch_and_pending_transition_are_rejected(store):
@@ -1451,6 +1640,8 @@ def test_parent_terminalization_atomically_fails_all_nonterminal_children(
         assert cancelled.error == "parent task is terminal"
         assert cancelled.worker_id is None
         assert cancelled.lease_until is None
+        assert cancelled.finished_at == 5.0
+        assert cancelled.metrics is None
         prior_attempt = (
             running_claim.attempt
             if original.job_id == running_claim.job_id
@@ -1506,6 +1697,8 @@ def test_initialize_reconciles_legacy_terminal_parent_children_idempotently(
         assert fenced.lease_until is None
         assert fenced.result is None
         assert fenced.completed_by is None
+        assert fenced.finished_at == 10.0
+        assert fenced.metrics is None
 
     completed = jobs["legacy-completed"]
     assert completed.status is InferenceStatus.COMPLETED
