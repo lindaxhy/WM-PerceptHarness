@@ -209,6 +209,40 @@ def test_gpu_worker_persists_metrics_when_model_output_becomes_safe_failure_resu
     }
 
 
+def test_gpu_worker_does_not_misclassify_metrics_hook_error_as_model_output(
+    store: SQLiteTaskStore, tmp_path: Path
+) -> None:
+    _, job_id = _create_job(store, tmp_path / "metrics-hook-error.mp4")
+
+    class BrokenMetricsModel(FakeVideoModel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.metrics_calls = 0
+
+        def request_metrics(self) -> dict[str, Any]:
+            self.metrics_calls += 1
+            if self.metrics_calls == 1:
+                raise ModelOutputError("metrics hook failed")
+            return {"output_tokens": 7}
+
+    model = BrokenMetricsModel()
+    worker = GPUWorker(
+        store,
+        model,
+        worker_id="gpu-0",
+        device="cuda:0",
+        lease_seconds=10.0,
+    )
+
+    assert worker.run_once(now=100.0) is True
+    failed = store.get_inference_job(job_id)
+    assert failed is not None
+    assert failed.status is InferenceStatus.FAILED
+    assert failed.result is None
+    assert failed.metrics is None
+    assert model.metrics_calls == 1
+
+
 def test_gpu_worker_interrupt_expires_current_generation_before_propagating(
     store: SQLiteTaskStore,
     tmp_path: Path,

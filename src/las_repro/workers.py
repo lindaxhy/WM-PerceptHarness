@@ -189,10 +189,6 @@ class GPUWorker:
                             inference_seconds = (
                                 _finite_clock(self._monotonic()) - generation_started
                             )
-                        metrics = _model_request_metrics(
-                            self.model,
-                            inference_seconds=inference_seconds,
-                        )
                         if not isinstance(generated, Mapping):
                             raise ModelOutputError(
                                 "model output must be a structured object"
@@ -203,16 +199,15 @@ class GPUWorker:
                             _schema_validation_context(job.payload, request),
                         )
                     except ModelOutputError:
-                        if metrics is None:
-                            metrics = _model_request_metrics(
-                                self.model,
-                                inference_seconds=inference_seconds,
-                            )
                         result = self._output_schemas.model_output_failure(
                             request.schema_name
                         )
                         if result is None:
                             raise
+                    metrics = _model_request_metrics(
+                        self.model,
+                        inference_seconds=inference_seconds,
+                    )
                 finally:
                     try:
                         self._release_request(request)
