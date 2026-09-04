@@ -1,5 +1,11 @@
 """Provider-independent contracts and normalization for CV evidence."""
 
+from .base import (
+    CvEvidenceProvider,
+    CvOutOfMemoryError,
+    CvProviderError,
+    FakeCvEvidenceProvider,
+)
 from .contracts import (
     ArtifactFile,
     CvEvidenceArtifact,
@@ -15,11 +21,16 @@ from .contracts import (
     TrackObservation,
 )
 from .entities import EntityCandidate, NormalizedEntities, normalize_entities
+from .worker import CVEvidenceWorker, cv_request_from_job
 
 __all__ = [
     "ArtifactFile",
     "CvEvidenceArtifact",
+    "CvEvidenceProvider",
     "CvEvidenceRequest",
+    "CVEvidenceWorker",
+    "CvOutOfMemoryError",
+    "CvProviderError",
     "CvTrack",
     "EntityCandidate",
     "EntityPrompt",
@@ -28,8 +39,10 @@ __all__ = [
     "EvidenceThresholds",
     "FrameTimeline",
     "FrameTimestamp",
+    "FakeCvEvidenceProvider",
     "NormalizedEntities",
     "SamplingPolicy",
     "TrackObservation",
+    "cv_request_from_job",
     "normalize_entities",
 ]
