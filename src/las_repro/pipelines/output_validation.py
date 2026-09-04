@@ -75,6 +75,10 @@ _COARSE_ENTITY_SCHEMA_CODES = (
     "COARSE_PLAN_ENTITY_ROLE_INVALID",
     "COARSE_PLAN_ENTITY_EXTRA_FIELD",
 )
+_COARSE_ENTITY_FIELDS = frozenset({"name", "aliases", "role"})
+_COARSE_ENTITY_ROLES = frozenset(
+    {"actor", "manipulated_object", "container", "occluder", "surface", "other"}
+)
 _BOUNDARY_TEMPORAL_CODES = (
     "TASK_DESCRIPTION_MISMATCH",
     "EMPTY_ACTIONS",
@@ -516,6 +520,48 @@ def _coarse_pydantic_issue_codes(error: ValidationError) -> tuple[str, ...]:
     return tuple(codes or ["COARSE_PLAN_SCHEMA_INVALID"])
 
 
+def _raw_coarse_entity_issue_codes(snapshot: Mapping[str, Any]) -> tuple[str, ...]:
+    """Audit all entity families from one finite JSON snapshot.
+
+    The snapshot contains only built-in JSON containers.  This scan records
+    fixed booleans and never returns candidate keys or values.
+    """
+    candidates = snapshot.get("entity_candidates")
+    if type(candidates) is not list:
+        return ()
+
+    found = {code: False for code in _COARSE_ENTITY_SCHEMA_CODES}
+    found["COARSE_PLAN_ENTITY_CANDIDATE_LIMIT"] = len(candidates) > 64
+    for candidate in candidates:
+        if type(candidate) is not dict:
+            continue
+        if not set(candidate) <= _COARSE_ENTITY_FIELDS:
+            found["COARSE_PLAN_ENTITY_EXTRA_FIELD"] = True
+
+        name = candidate.get("name")
+        aliases = candidate.get("aliases")
+        if type(name) is str and not name.strip():
+            found["COARSE_PLAN_ENTITY_BLANK_STRING"] = True
+        if type(aliases) is list:
+            normalized_aliases: list[str] = []
+            for alias in aliases:
+                if type(alias) is not str:
+                    continue
+                if not alias.strip():
+                    found["COARSE_PLAN_ENTITY_BLANK_STRING"] = True
+                normalized_aliases.append(" ".join(alias.split()).casefold())
+            if len(normalized_aliases) != len(set(normalized_aliases)):
+                found["COARSE_PLAN_ENTITY_ALIAS_DUPLICATE"] = True
+
+        role = candidate.get("role")
+        if "role" in candidate and (
+            type(role) is not str or role not in _COARSE_ENTITY_ROLES
+        ):
+            found["COARSE_PLAN_ENTITY_ROLE_INVALID"] = True
+
+    return tuple(code for code in _COARSE_ENTITY_SCHEMA_CODES if found[code])
+
+
 def _enrichment_pydantic_issue_codes(error: ValidationError) -> tuple[str, ...]:
     """Return closed enrichment diagnostics without retaining Pydantic locations."""
     codes: list[str] = []
@@ -560,13 +606,24 @@ def _validate_coarse_output(
 ) -> dict[str, Any]:
     duration = _context_finite_number(validation_context, "duration", positive=True)
     try:
-        plan = _model_from_json(CoarsePlan, result)
+        snapshot = _finite_json_snapshot(result)
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        raise DeclaredSchemaOutputError(("COARSE_PLAN_SCHEMA_INVALID",)) from None
+    raw_entity_codes = _raw_coarse_entity_issue_codes(snapshot)
+    try:
+        plan = _model_from_json(CoarsePlan, snapshot)
     except ValidationError as error:
         raise DeclaredSchemaOutputError(
-            _coarse_pydantic_issue_codes(error)
+            tuple(
+                dict.fromkeys(
+                    raw_entity_codes + _coarse_pydantic_issue_codes(error)
+                )
+            )
         ) from None
     except (TypeError, ValueError, OverflowError, RecursionError):
         raise DeclaredSchemaOutputError(("COARSE_PLAN_SCHEMA_INVALID",)) from None
+    if raw_entity_codes:
+        raise DeclaredSchemaOutputError(raw_entity_codes)
     try:
         validate_coarse_plan(plan, duration)
     except TemporalValidationError as error:

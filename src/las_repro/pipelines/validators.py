@@ -300,57 +300,189 @@ def validate_coarse_plan(
     _raise_if_any(issues)
 
 
-_TARGET_BEARING_EVENT_TYPES = frozenset(
-    {
-        CoarseEventType.REACH_AND_GRASP,
-        CoarseEventType.LIFT,
-        CoarseEventType.TRANSPORT,
-        CoarseEventType.LOWER_AND_PLACE,
-        CoarseEventType.RELEASE,
-        CoarseEventType.SEARCH_OR_ADJUST,
-    }
-)
 _ACTOR_DESCRIPTION_PREFIXES = (
     "left hand ",
     "right hand ",
     "both hands ",
     "neither hand ",
 )
-_NONCONCRETE_TARGET_WORDS = frozenset(
+_TARGET_PLACEHOLDER_WORDS = frozenset(
+    {
+        "anything",
+        "it",
+        "item",
+        "none",
+        "object",
+        "something",
+        "that",
+        "them",
+        "thing",
+        "this",
+        "unknown",
+    }
+)
+_TARGET_FUNCTION_WORDS = frozenset(
     {
         "a",
         "an",
-        "anything",
-        "around",
+        "and",
         "at",
+        "beside",
         "for",
         "from",
         "inside",
         "into",
-        "it",
-        "item",
         "near",
-        "none",
-        "object",
+        "of",
+        "on",
         "outside",
-        "something",
-        "that",
         "the",
-        "them",
-        "thing",
-        "this",
         "to",
         "toward",
         "towards",
-        "unknown",
         "with",
     }
 )
+_TARGET_PARTICLE_AND_DIRECTION_WORDS = frozenset(
+    {
+        "across",
+        "around",
+        "aside",
+        "away",
+        "back",
+        "backward",
+        "backwards",
+        "down",
+        "forward",
+        "forwards",
+        "in",
+        "left",
+        "off",
+        "out",
+        "over",
+        "right",
+        "through",
+        "under",
+        "up",
+    }
+)
+_TARGET_EVENT_ACTION_WORDS = {
+    CoarseEventType.REACH_AND_GRASP: frozenset(
+        {
+            "approach",
+            "approaches",
+            "approaching",
+            "contact",
+            "contacting",
+            "contacts",
+            "grab",
+            "grabbing",
+            "grabs",
+            "grasp",
+            "grasping",
+            "grasps",
+            "pick",
+            "picking",
+            "picks",
+            "reach",
+            "reaches",
+            "reaching",
+            "secure",
+            "secures",
+            "securing",
+            "take",
+            "takes",
+            "taking",
+        }
+    ),
+    CoarseEventType.LIFT: frozenset(
+        {
+            "lift",
+            "lifting",
+            "lifts",
+            "pick",
+            "picking",
+            "picks",
+            "raise",
+            "raises",
+            "raising",
+        }
+    ),
+    CoarseEventType.TRANSPORT: frozenset(
+        {
+            "carry",
+            "carries",
+            "carrying",
+            "move",
+            "moves",
+            "moving",
+            "pull",
+            "pulling",
+            "pulls",
+            "push",
+            "pushes",
+            "pushing",
+            "transfer",
+            "transfers",
+            "transferring",
+            "transport",
+            "transporting",
+            "transports",
+        }
+    ),
+    CoarseEventType.LOWER_AND_PLACE: frozenset(
+        {
+            "lower",
+            "lowering",
+            "lowers",
+            "place",
+            "places",
+            "placing",
+            "put",
+            "puts",
+            "putting",
+            "set",
+            "sets",
+            "setting",
+        }
+    ),
+    CoarseEventType.RELEASE: frozenset(
+        {
+            "drop",
+            "dropping",
+            "drops",
+            "go",
+            "let",
+            "lets",
+            "letting",
+            "release",
+            "releases",
+            "releasing",
+        }
+    ),
+    CoarseEventType.SEARCH_OR_ADJUST: frozenset(
+        {
+            "adjust",
+            "adjusting",
+            "adjusts",
+            "align",
+            "aligning",
+            "aligns",
+            "reposition",
+            "repositioning",
+            "repositions",
+            "search",
+            "searches",
+            "searching",
+        }
+    ),
+}
 
 
 def _action_mentions_concrete_target(action: CoarseAction) -> bool:
     """Use a closed syntactic rule; never derive or return an entity name."""
-    if action.event_type not in _TARGET_BEARING_EVENT_TYPES:
+    action_words = _TARGET_EVENT_ACTION_WORDS.get(action.event_type)
+    if action_words is None:
         return False
     description = " ".join(action.description.casefold().split())
     for prefix in _ACTOR_DESCRIPTION_PREFIXES:
@@ -358,9 +490,15 @@ def _action_mentions_concrete_target(action: CoarseAction) -> bool:
             description = description[len(prefix) :]
             break
     words = [word.strip(".,:;!?()[]{}") for word in description.split()]
-    target_suffix = words[1:] if len(words) > 1 else []
+    target_position_words = words[1:] if words else []
+    allowed_words = (
+        action_words
+        | _TARGET_PLACEHOLDER_WORDS
+        | _TARGET_FUNCTION_WORDS
+        | _TARGET_PARTICLE_AND_DIRECTION_WORDS
+    )
     return any(
-        word and word not in _NONCONCRETE_TARGET_WORDS for word in target_suffix
+        word and word not in allowed_words for word in target_position_words
     )
 
 

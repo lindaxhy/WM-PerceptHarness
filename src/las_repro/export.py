@@ -54,6 +54,10 @@ _NORMALIZATION_WARNING_KEYS = frozenset({"code", "fields", "count"})
 _NORMALIZATION_WARNING_CODE = "ENRICHMENT_ENUM_NORMALIZED_TO_UNKNOWN"
 _BOUNDARY_WARNING_KEYS = frozenset({"code", "issue_codes", "count"})
 _BOUNDARY_WARNING_CODE = "BOUNDARY_TOPOLOGY_NORMALIZED"
+_CV_ENTITY_LIMIT_WARNING_KEYS = frozenset(
+    {"code", "omitted_count", "limit", "message"}
+)
+_CV_ENTITY_LIMIT_WARNING_CODE = "CV_ENTITY_LIMIT_APPLIED"
 _SCENE_WARNING_CODE = "SCENE_SEMANTICS_UNAVAILABLE"
 _BOUNDARY_WARNING_ISSUE_CODES = (
     "SEGMENT_TOO_LONG",
@@ -351,11 +355,11 @@ def _validate_normalization_warnings(
     segments: tuple[_CompletedSegment, ...],
     result: Mapping[str, object],
 ) -> None:
-    if type(value) is not list or not 1 <= len(value) <= 3:
+    if type(value) is not list or not 1 <= len(value) <= 4:
         raise ValueError
     codes: list[str] = []
     for warning in value:
-        if not isinstance(warning, Mapping):
+        if type(warning) is not dict:
             raise ValueError
         code = warning.get("code")
         if type(code) is not str or code in codes:
@@ -365,6 +369,8 @@ def _validate_normalization_warnings(
             _validate_enrichment_warning(warning, segments)
         elif code == _BOUNDARY_WARNING_CODE:
             _validate_boundary_warning(warning, segments)
+        elif code == _CV_ENTITY_LIMIT_WARNING_CODE:
+            _validate_cv_entity_limit_warning(warning)
         elif code == _SCENE_WARNING_CODE:
             if dict(warning) != {"code": _SCENE_WARNING_CODE}:
                 raise ValueError
@@ -376,6 +382,30 @@ def _validate_normalization_warnings(
                 raise ValueError
         else:
             raise ValueError
+
+
+def _validate_cv_entity_limit_warning(warning: Mapping[str, object]) -> None:
+    warning_data = dict(warning)
+    if set(warning_data) != _CV_ENTITY_LIMIT_WARNING_KEYS:
+        raise ValueError
+    code = warning_data["code"]
+    omitted_count = warning_data["omitted_count"]
+    limit = warning_data["limit"]
+    message = warning_data["message"]
+    if (
+        type(code) is not str
+        or code != _CV_ENTITY_LIMIT_WARNING_CODE
+        or type(omitted_count) is not int
+        or not 1 <= omitted_count <= 63
+        or type(limit) is not int
+        or not 1 <= limit <= 16
+        or omitted_count + limit > 64
+        or type(message) is not str
+    ):
+        raise ValueError
+    noun = "candidate" if omitted_count == 1 else "candidates"
+    if message != f"{omitted_count} entity {noun} omitted by limit {limit}":
+        raise ValueError
 
 
 def _validate_enrichment_warning(

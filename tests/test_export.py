@@ -217,6 +217,156 @@ def test_export_accepts_canonical_enum_normalization_warning_without_mutation(
     assert normalized == original
 
 
+@pytest.mark.parametrize(
+    ("omitted_count", "limit", "message"),
+    [
+        (1, 16, "1 entity candidate omitted by limit 16"),
+        (2, 16, "2 entity candidates omitted by limit 16"),
+        (48, 16, "48 entity candidates omitted by limit 16"),
+        (63, 1, "63 entity candidates omitted by limit 1"),
+    ],
+)
+def test_export_accepts_canonical_cv_entity_limit_warning_without_mutation(
+    embodied_result: dict[str, object],
+    omitted_count: int,
+    limit: int,
+    message: str,
+) -> None:
+    """The local CV truncation warning is closed data, not model evidence."""
+    warned = copy.deepcopy(embodied_result)
+    warned["warnings"] = [
+        {
+            "code": "CV_ENTITY_LIMIT_APPLIED",
+            "omitted_count": omitted_count,
+            "limit": limit,
+            "message": message,
+        }
+    ]
+    original = copy.deepcopy(warned)
+
+    rows = list(iter_action_captions("video_0001", warned, source_fps=30.0))
+
+    assert len(rows) == 2
+    assert warned == original
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda warning: warning.update({"private_payload": "DO NOT LEAK"}),
+        lambda warning: warning.pop("message"),
+        lambda warning: warning.update({"code": "DO NOT LEAK"}),
+        lambda warning: warning.update({"omitted_count": True}),
+        lambda warning: warning.update({"omitted_count": 0}),
+        lambda warning: warning.update({"omitted_count": 1.0}),
+        lambda warning: warning.update(
+            {
+                "omitted_count": 999,
+                "message": "999 entity candidates omitted by limit 16",
+            }
+        ),
+        lambda warning: warning.update(
+            {
+                "omitted_count": 49,
+                "message": "49 entity candidates omitted by limit 16",
+            }
+        ),
+        lambda warning: warning.update({"limit": True}),
+        lambda warning: warning.update({"limit": 0}),
+        lambda warning: warning.update({"limit": 17}),
+        lambda warning: warning.update({"limit": 16.0}),
+        lambda warning: warning.update({"message": "DO NOT LEAK"}),
+        lambda warning: warning.update(
+            {"message": "2 entity candidate omitted by limit 16"}
+        ),
+        lambda warning: warning.update(
+            {"message": "2 entity candidates omitted by limit 15"}
+        ),
+    ],
+    ids=[
+        "extra-key",
+        "missing-key",
+        "unknown-code",
+        "boolean-omitted-count",
+        "zero-omitted-count",
+        "float-omitted-count",
+        "omitted-count-above-raw-cap",
+        "omitted-count-plus-limit-above-raw-cap",
+        "boolean-limit",
+        "zero-limit",
+        "limit-above-supported-cap",
+        "float-limit",
+        "private-message",
+        "wrong-plural",
+        "wrong-message-limit",
+    ],
+)
+def test_export_rejects_malformed_cv_entity_limit_warning_without_mutation_or_leak(
+    embodied_result: dict[str, object], mutation: object
+) -> None:
+    warned = copy.deepcopy(embodied_result)
+    warning = {
+        "code": "CV_ENTITY_LIMIT_APPLIED",
+        "omitted_count": 2,
+        "limit": 16,
+        "message": "2 entity candidates omitted by limit 16",
+    }
+    assert callable(mutation)
+    mutation(warning)
+    warned["warnings"] = [warning]
+    original = copy.deepcopy(warned)
+
+    with pytest.raises(ActionCaptionExportError) as error:
+        list(iter_action_captions("video_0001", warned, source_fps=30.0))
+
+    assert str(error.value) == "completed embodied result is invalid"
+    assert "DO NOT LEAK" not in str(error.value)
+    assert warned == original
+
+
+def test_export_accepts_all_four_unique_canonical_warning_families(
+    embodied_result: dict[str, object],
+) -> None:
+    combined = copy.deepcopy(embodied_result)
+    segments = combined["segments"]
+    assert isinstance(segments, list)
+    segments[0]["actor_state"] = "unknown"
+    combined.update(
+        {
+            "objects": [],
+            "initial_state": [],
+            "final_state": [],
+            "outcome": {
+                "status": "unknown",
+                "description": "scene semantics unavailable",
+                "confidence": 0.0,
+            },
+            "semantic_events": [],
+            "warnings": [
+                {
+                    "code": "CV_ENTITY_LIMIT_APPLIED",
+                    "omitted_count": 1,
+                    "limit": 16,
+                    "message": "1 entity candidate omitted by limit 16",
+                },
+                {
+                    "code": "BOUNDARY_TOPOLOGY_NORMALIZED",
+                    "issue_codes": ["SEGMENT_DESCRIPTION_INVALID"],
+                    "count": 2,
+                },
+                {
+                    "code": "ENRICHMENT_ENUM_NORMALIZED_TO_UNKNOWN",
+                    "fields": ["actor_state"],
+                    "count": 1,
+                },
+                {"code": "SCENE_SEMANTICS_UNAVAILABLE"},
+            ],
+        }
+    )
+
+    assert len(list(iter_action_captions("all_warnings", combined, source_fps=30))) == 2
+
+
 def test_export_rejects_noncanonical_warning_code_type_without_leaking_content(
     embodied_result: dict[str, object],
 ) -> None:

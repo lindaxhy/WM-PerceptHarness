@@ -174,10 +174,109 @@ def test_coarse_entity_schema_families_have_closed_repair_codes(
     assert "must-not-survive" not in encoded
 
 
-def test_coarse_plan_requires_an_entity_for_a_concrete_action_target() -> None:
+@pytest.mark.parametrize(
+    ("candidate_count", "expected_codes"),
+    [
+        (
+            1,
+            [
+                "COARSE_PLAN_ENTITY_BLANK_STRING",
+                "COARSE_PLAN_ENTITY_ALIAS_DUPLICATE",
+                "COARSE_PLAN_ENTITY_ROLE_INVALID",
+                "COARSE_PLAN_ENTITY_EXTRA_FIELD",
+            ],
+        ),
+        (
+            65,
+            [
+                "COARSE_PLAN_ENTITY_CANDIDATE_LIMIT",
+                "COARSE_PLAN_ENTITY_BLANK_STRING",
+                "COARSE_PLAN_ENTITY_ALIAS_DUPLICATE",
+                "COARSE_PLAN_ENTITY_ROLE_INVALID",
+                "COARSE_PLAN_ENTITY_EXTRA_FIELD",
+            ],
+        ),
+    ],
+)
+def test_coarse_entity_schema_gate_aggregates_all_discoverable_families_once(
+    candidate_count: int, expected_codes: list[str]
+) -> None:
+    """Nested failures and the list cap must not force serial field repairs."""
+    private_alias = "private-alias-token"
+    private_role = "private-role-token"
+    private_key = "private-key-token"
+    private_value = "private-value-token"
+    raw = _valid_entity_coarse_payload()
+    raw["entity_candidates"] = [
+        {
+            "name": "  ",
+            "aliases": [private_alias, f" {private_alias.upper()} "],
+            "role": private_role,
+            private_key: private_value,
+        }
+        for _ in range(candidate_count)
+    ]
+
+    sanitized = DEFAULT_OUTPUT_SCHEMAS.sanitize(
+        "CoarsePlan",
+        raw,
+        {"duration": 2.0},
+    )
+
+    assert sanitized == {
+        "_schema_validation": {
+            "schema_name": "CoarsePlan",
+            "status": "invalid",
+            "issue_codes": expected_codes,
+        }
+    }
+    persisted = json.dumps(sanitized)
+    for private in (private_alias, private_role, private_key, private_value):
+        assert private not in persisted
+
+
+def test_coarse_entity_snapshot_finds_nonstring_role_past_list_short_circuit() -> None:
+    raw = _valid_entity_coarse_payload()
+    raw["entity_candidates"] = [
+        {"name": "cup", "aliases": [], "role": 7} for _ in range(65)
+    ]
+
+    sanitized = DEFAULT_OUTPUT_SCHEMAS.sanitize(
+        "CoarsePlan", raw, {"duration": 2.0}
+    )
+
+    assert sanitized == {
+        "_schema_validation": {
+            "schema_name": "CoarsePlan",
+            "status": "invalid",
+            "issue_codes": [
+                "COARSE_PLAN_ENTITY_CANDIDATE_LIMIT",
+                "COARSE_PLAN_ENTITY_ROLE_INVALID",
+            ],
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    ("event_type", "description"),
+    [
+        ("reach_and_grasp", "right hand reaches for red container"),
+        ("lift", "right hand picks red container up"),
+        ("transport", "right hand moves red container forward"),
+        ("transport", "right hand manipulates red container"),
+        ("lower_and_place", "right hand places red container down"),
+        ("release", "right hand releases red container"),
+        ("search_or_adjust", "right hand searches for red container"),
+    ],
+)
+def test_coarse_plan_requires_an_entity_for_each_concrete_target_event(
+    event_type: str, description: str
+) -> None:
     """An explicit target may not silently disappear before CV normalization."""
     targeted = _valid_entity_coarse_payload()
     targeted["entity_candidates"] = []
+    targeted["actions"][0]["event_type"] = event_type
+    targeted["actions"][0]["description"] = description
     plan = CoarsePlan.model_validate(targeted)
 
     with pytest.raises(TemporalValidationError) as error:
@@ -186,25 +285,17 @@ def test_coarse_plan_requires_an_entity_for_a_concrete_action_target() -> None:
     assert [issue.code for issue in error.value.issues] == [
         "EMPTY_ENTITY_CANDIDATES"
     ]
-    targetless = {
-        "task_description": "remain idle",
-        "entity_candidates": [],
-        "actions": [
-            {
-                "action_index": 0,
-                "start": 0.0,
-                "end": 2.0,
-                "description": "neither hand remains idle",
-                "event_type": "idle",
-            }
-        ],
-    }
-    validate_coarse_plan(CoarsePlan.model_validate(targetless), duration=2.0)
-
-
 @pytest.mark.parametrize(
     ("event_type", "description"),
     [
+        ("reach_and_grasp", "right hand picks it up"),
+        ("reach_and_grasp", "right hand reaches and grasps it"),
+        ("lift", "right hand picks it up"),
+        ("transport", "right hand moves it forward"),
+        ("transport", "right hand manipulates it"),
+        ("lower_and_place", "right hand places it down"),
+        ("release", "right hand releases it"),
+        ("search_or_adjust", "right hand searches around for it"),
         ("idle", "neither hand waits beside red container"),
         ("retract", "right hand retracts from red container"),
         ("unknown_action", "right hand moves red container"),

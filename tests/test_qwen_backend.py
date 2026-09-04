@@ -880,7 +880,7 @@ def test_worker_schema_gate_replaces_invalid_qwen_object_before_persistence(
     assert "unvalidated model value" not in json.dumps(persisted.result)
 
 
-def test_worker_schema_gate_replaces_invalid_qwen_entity_before_persistence(
+def test_worker_schema_gate_aggregates_invalid_qwen_entity_before_persistence(
     tmp_path: Path,
 ) -> None:
     """Pass-A entity errors must persist only their closed repair family."""
@@ -890,13 +890,17 @@ def test_worker_schema_gate_replaces_invalid_qwen_entity_before_persistence(
     from las_repro.workers import GPUWorker
 
     private_alias = "private alias token"
+    private_role = "private role token"
+    private_key = "private key token"
+    private_value = "private value token"
     raw = {
         "task_description": "move the red container",
         "entity_candidates": [
             {
-                "name": "red container",
+                "name": "  ",
                 "aliases": [private_alias, f" {private_alias.upper()} "],
-                "role": "manipulated_object",
+                "role": private_role,
+                private_key: private_value,
             }
         ],
         "actions": [
@@ -958,10 +962,17 @@ def test_worker_schema_gate_replaces_invalid_qwen_entity_before_persistence(
         "_schema_validation": {
             "schema_name": "CoarsePlan",
             "status": "invalid",
-            "issue_codes": ["COARSE_PLAN_ENTITY_ALIAS_DUPLICATE"],
+            "issue_codes": [
+                "COARSE_PLAN_ENTITY_BLANK_STRING",
+                "COARSE_PLAN_ENTITY_ALIAS_DUPLICATE",
+                "COARSE_PLAN_ENTITY_ROLE_INVALID",
+                "COARSE_PLAN_ENTITY_EXTRA_FIELD",
+            ],
         }
     }
-    assert private_alias not in json.dumps(persisted.result)
+    persisted_text = json.dumps(persisted.result)
+    for private in (private_alias, private_role, private_key, private_value):
+        assert private not in persisted_text
 
 
 def test_general_schema_gate_replaces_invalid_raw_evidence_before_persistence() -> None:

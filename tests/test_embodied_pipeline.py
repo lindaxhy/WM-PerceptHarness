@@ -856,6 +856,24 @@ def test_pass_a_prompt_injects_exact_video_duration_into_initial_and_repair(
     assert "{{VIDEO_DURATION_SECONDS_JSON}}" not in repair
 
 
+def test_pass_a_entity_repair_requires_a_full_candidate_reaudit(
+    renderer: PromptRenderer,
+) -> None:
+    repair = renderer.pass_a(
+        video_duration=2.0,
+        repair={
+            "issue_codes": [
+                "COARSE_PLAN_ENTITY_BLANK_STRING",
+                "COARSE_PLAN_ENTITY_ALIAS_DUPLICATE",
+            ]
+        },
+    )
+
+    assert "re-audit every field of every entity candidate" in repair
+    assert "rebuild the entire entity_candidates list" in repair
+    assert "do not patch only one reported candidate or field" in repair
+
+
 @pytest.mark.parametrize(
     "hostile_duration",
     [
@@ -2064,6 +2082,10 @@ def test_pass_a_normalizes_entity_candidates_without_an_extra_model_call(
             "message": "1 entity candidate omitted by limit 16",
         }
     ]
+    exported = list(
+        iter_action_captions("cv_entity_limited", completed.result, source_fps=20.0)
+    )
+    assert len(exported) == len(completed.result["segments"])
 
 
 def test_invalid_scene_semantics_repairs_once_then_completes_conservatively(
@@ -2755,6 +2777,71 @@ def test_each_action_stage_gets_one_pre_persistence_validation_repair(
         }
     }
     assert expected_code in jobs[0].result["_schema_validation"]["issue_codes"]
+
+
+def test_pass_a_compound_entity_failure_gets_one_complete_repair_envelope(
+    tmp_path: Path,
+) -> None:
+    private_alias = "private-alias-token"
+    private_role = "private-role-token"
+    private_key = "private-key-token"
+    private_value = "private-value-token"
+    invalid = {
+        "task_description": "move the red container",
+        "entity_candidates": [
+            {
+                "name": "  ",
+                "aliases": [private_alias, f" {private_alias.upper()} "],
+                "role": private_role,
+                private_key: private_value,
+            }
+        ],
+        "actions": [
+            {
+                "action_index": 0,
+                "start": 0.0,
+                "end": 2.0,
+                "description": "right hand moves red container",
+                "event_type": "transport",
+            }
+        ],
+    }
+    harness = _ActionHarness(
+        tmp_path,
+        FakeVideoModel(failure_script={"embodied_pass_a": [invalid]}),
+    )
+
+    completed = harness.run()
+
+    assert completed.status is TaskStatus.COMPLETED
+    jobs = [
+        job
+        for job in harness.store.list_inference_jobs(completed.task_id)
+        if job.stage == "embodied_pass_a"
+    ]
+    assert [job.ordinal for job in jobs] == [0, 1]
+    expected_codes = [
+        "COARSE_PLAN_ENTITY_BLANK_STRING",
+        "COARSE_PLAN_ENTITY_ALIAS_DUPLICATE",
+        "COARSE_PLAN_ENTITY_ROLE_INVALID",
+        "COARSE_PLAN_ENTITY_EXTRA_FIELD",
+    ]
+    assert jobs[0].result == {
+        "_schema_validation": {
+            "schema_name": "CoarsePlan",
+            "status": "invalid",
+            "issue_codes": expected_codes,
+        }
+    }
+    repair_prompt = jobs[1].payload["prompt"]
+    assert all(code in repair_prompt for code in expected_codes)
+    assert "re-audit every field of every entity candidate" in repair_prompt
+    assert "rebuild the entire entity_candidates list" in repair_prompt
+    assert "do not patch only one reported candidate or field" in repair_prompt
+    for private in (private_alias, private_role, private_key, private_value):
+        assert private not in json.dumps(
+            [{"result": job.result, "prompt": job.payload["prompt"]} for job in jobs]
+        )
 
 
 @pytest.mark.parametrize(
