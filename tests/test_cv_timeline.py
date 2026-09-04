@@ -246,6 +246,19 @@ def test_refinement_rejects_change_indices_absent_from_source_timeline() -> None
         refinement_sample_indices(_timeline(30, 60), (9999,), _policy())
 
 
+def test_overlapping_refinement_windows_do_not_exceed_max_fps() -> None:
+    """Independently anchored overlap grids can interleave at twice the allowed rate."""
+    timeline = _timeline(60, 60)
+
+    refined = refinement_sample_indices(timeline, (600, 601), _policy())
+
+    timestamps = [timeline.frames[index].timestamp_seconds for index in refined]
+    assert all(
+        later - earlier >= (1 / 30) - 1e-12
+        for earlier, later in zip(timestamps, timestamps[1:])
+    )
+
+
 def test_materialize_sampled_frames_uses_source_indices_and_returns_sam_mapping(
     tmp_path: Path,
 ) -> None:
@@ -264,8 +277,11 @@ def test_materialize_sampled_frames_uses_source_indices_and_returns_sam_mapping(
 
     def extract(*args: object, **kwargs: object) -> types.SimpleNamespace:
         calls.append((args, kwargs))
-        for number in range(3):
-            (destination / f"{number:06d}.jpg").write_bytes(b"jpeg")
+        command = args[0]
+        assert isinstance(command, list)
+        output = command[-1]
+        assert isinstance(output, str) and output.startswith("pipe:")
+        os.write(int(output.removeprefix("pipe:")), b"jpeg")
         return types.SimpleNamespace(stdout="")
 
     sampled = materialize_sampled_frames(
@@ -280,10 +296,14 @@ def test_materialize_sampled_frames_uses_source_indices_and_returns_sam_mapping(
         "000001.jpg",
         "000002.jpg",
     ]
-    arguments, keywords = calls[0]
-    assert arguments[0][0] == "ffmpeg"
-    assert "select='eq(n\\,0)+eq(n\\,2)+eq(n\\,5)'" in arguments[0]
-    assert keywords["shell"] is False
+    assert len(calls) == 3
+    assert [arguments[0][12] for arguments, _ in calls] == [
+        "select='eq(n\\,0)'",
+        "select='eq(n\\,2)'",
+        "select='eq(n\\,5)'",
+    ]
+    assert all(arguments[0][0] == "ffmpeg" for arguments, _ in calls)
+    assert all(keywords["shell"] is False for _, keywords in calls)
 
 
 def test_materialize_sampled_frames_rejects_missing_output_or_unknown_source_index(
@@ -308,6 +328,48 @@ def test_materialize_sampled_frames_rejects_missing_output_or_unknown_source_ind
 
     with pytest.raises(TimelineError, match="unable to materialize sampled frames"):
         materialize_sampled_frames(video, timeline, (0, 2), tmp_path / "partial", run=write_one)
+
+
+def test_materialize_sampled_frames_pins_destination_during_swap_and_restore(
+    tmp_path: Path,
+) -> None:
+    """A swapped output pathname must not redirect FFmpeg writes outside its directory."""
+    video = tmp_path / "source.mp4"
+    video.write_bytes(b"video")
+    destination = tmp_path / "sam-frames"
+    held = tmp_path / "held-frames"
+    attacker = tmp_path / "attacker"
+    attacker.mkdir()
+    timeline = FrameTimeline(
+        frames=(
+            FrameTimestamp(frame_index=0, timestamp_seconds=0.0),
+            FrameTimestamp(frame_index=2, timestamp_seconds=0.1),
+        )
+    )
+
+    def swap_and_write(*args: object, **kwargs: object) -> types.SimpleNamespace:
+        command = args[0]
+        assert isinstance(command, list)
+        output = command[-1]
+        if not isinstance(output, str) or not output.startswith("pipe:"):
+            raise OSError("FFmpeg did not receive a pinned output descriptor")
+        os.replace(destination, held)
+        destination.symlink_to(attacker, target_is_directory=True)
+        os.write(int(output.removeprefix("pipe:")), b"jpeg")
+        destination.unlink()
+        os.replace(held, destination)
+        return types.SimpleNamespace(stdout="")
+
+    sampled = materialize_sampled_frames(
+        video, timeline, (0, 2), destination, run=swap_and_write
+    )
+
+    assert [frame.path.name for frame in sampled.frames] == ["000000.jpg", "000001.jpg"]
+    assert sorted(path.name for path in destination.glob("*.jpg")) == [
+        "000000.jpg",
+        "000001.jpg",
+    ]
+    assert list(attacker.iterdir()) == []
 
 
 def test_materialize_sampled_frames_extracts_real_zero_based_jpegs(

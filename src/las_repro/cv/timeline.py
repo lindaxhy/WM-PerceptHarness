@@ -176,23 +176,58 @@ def refinement_sample_indices(
         points_by_index = {point.frame_index: point for point in timeline.frames}
         radius = Fraction(str(policy.refinement_radius_seconds))
         rate = Fraction(str(policy.max_fps))
-        selected: set[int] = set()
+        windows: list[tuple[Fraction, Fraction]] = []
         for index in change_indices:
             if isinstance(index, bool) or index not in points_by_index:
                 raise ValueError
             change_time = Fraction(str(points_by_index[index].timestamp_seconds))
+            windows.append(
+                (
+                    max(start, change_time - radius),
+                    min(end, change_time + radius),
+                )
+            )
+        selected: set[int] = set()
+        for window_start, window_end in _merge_overlapping_windows(windows):
             selected.update(
                 _select_pts_at_or_after(
                     timeline,
-                    max(start, change_time - radius),
-                    min(end, change_time + radius),
+                    window_start,
+                    window_end,
                     rate,
                     retain_timeline_bounds=False,
                 )
             )
-        return tuple(sorted(selected))
+        return _cap_selected_pts(timeline, selected, rate)
     except (AttributeError, TypeError, ValueError, ZeroDivisionError):
         raise TimelineError("unable to sample video frames") from None
+
+
+def _merge_overlapping_windows(
+    windows: list[tuple[Fraction, Fraction]],
+) -> tuple[tuple[Fraction, Fraction], ...]:
+    merged: list[tuple[Fraction, Fraction]] = []
+    for start, end in sorted(windows):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = merged[-1][0], max(merged[-1][1], end)
+        else:
+            merged.append((start, end))
+    return tuple(merged)
+
+
+def _cap_selected_pts(
+    timeline: FrameTimeline, selected: set[int], rate: Fraction
+) -> tuple[int, ...]:
+    points_by_index = {point.frame_index: point for point in timeline.frames}
+    interval = Fraction(1, 1) / rate
+    capped: list[int] = []
+    previous: Fraction | None = None
+    for index in sorted(selected):
+        timestamp = Fraction(str(points_by_index[index].timestamp_seconds))
+        if previous is None or timestamp - previous >= interval:
+            capped.append(index)
+            previous = timestamp
+    return tuple(capped)
 
 
 def _timeline_bounds(timeline: FrameTimeline) -> tuple[Fraction, Fraction]:
@@ -262,38 +297,15 @@ def materialize_sampled_frames(
         if requested != tuple(sorted(set(requested))):
             raise ValueError
         destination.mkdir(parents=True, exist_ok=False)
-        destination_identity = _directory_identity(destination)
-        expression = "+".join(f"eq(n\\,{index})" for index in requested)
-        run(
-            [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-i",
-                _descriptor_path(descriptor),
-                "-map",
-                "0:v:0",
-                "-an",
-                "-sn",
-                "-dn",
-                "-vf",
-                f"select='{expression}'",
-                "-fps_mode:v",
-                "passthrough",
-                "-q:v",
-                "2",
-                "-start_number",
-                "0",
-                "-y",
-                str(destination / "%06d.jpg"),
-            ],
-            check=True,
-            shell=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            pass_fds=(descriptor,),
-        )
+        destination_descriptor, destination_identity = _open_pinned_directory(destination)
+        for sam_index, source_index in enumerate(requested):
+            _extract_pinned_jpeg(
+                descriptor,
+                destination_descriptor,
+                source_index,
+                sam_index,
+                run,
+            )
         if _regular_file_identity(video_path) != source_identity:
             raise ValueError
         if _directory_identity(destination) != destination_identity:
@@ -325,8 +337,63 @@ def materialize_sampled_frames(
     ):
         raise TimelineError("unable to materialize sampled frames") from None
     finally:
+        if "destination_descriptor" in locals():
+            os.close(destination_descriptor)
         if "descriptor" in locals():
             os.close(descriptor)
+
+
+def _extract_pinned_jpeg(
+    source_descriptor: int,
+    destination_descriptor: int,
+    source_index: int,
+    sam_index: int,
+    run: Callable[..., object],
+) -> None:
+    output_descriptor = os.open(
+        f"{sam_index:06d}.jpg",
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o600,
+        dir_fd=destination_descriptor,
+    )
+    try:
+        run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                _descriptor_path(source_descriptor),
+                "-map",
+                "0:v:0",
+                "-an",
+                "-sn",
+                "-dn",
+                "-vf",
+                f"select='eq(n\\,{source_index})'",
+                "-frames:v",
+                "1",
+                "-fps_mode:v",
+                "passthrough",
+                "-c:v",
+                "mjpeg",
+                "-q:v",
+                "2",
+                "-f",
+                "image2pipe",
+                f"pipe:{output_descriptor}",
+            ],
+            check=True,
+            shell=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            pass_fds=(source_descriptor, output_descriptor),
+        )
+        if os.fstat(output_descriptor).st_size <= 0:
+            raise ValueError
+    finally:
+        os.close(output_descriptor)
 
 
 def _directory_identity(path: Path) -> tuple[int, int]:
@@ -337,3 +404,28 @@ def _directory_identity(path: Path) -> tuple[int, int]:
     if stat.S_ISLNK(status.st_mode) or not stat.S_ISDIR(status.st_mode):
         raise ValueError
     return status.st_dev, status.st_ino
+
+
+def _open_pinned_directory(path: Path) -> tuple[int, tuple[int, int]]:
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory is None:
+        raise ValueError
+    try:
+        descriptor = os.open(path, os.O_RDONLY | directory | nofollow)
+    except OSError:
+        raise ValueError from None
+    try:
+        opened = os.fstat(descriptor)
+        current = path.lstat()
+        identity = opened.st_dev, opened.st_ino
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or stat.S_ISLNK(current.st_mode)
+            or (current.st_dev, current.st_ino) != identity
+        ):
+            raise ValueError
+        return descriptor, identity
+    except (OSError, ValueError):
+        os.close(descriptor)
+        raise ValueError from None
