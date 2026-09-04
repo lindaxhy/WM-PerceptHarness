@@ -334,7 +334,7 @@ def test_settings_defaults_and_environment_overrides(monkeypatch, tmp_path):
     monkeypatch.setenv("LAS_WORK_ROOT", str(tmp_path / "work"))
     monkeypatch.setenv("LAS_ALLOWED_MEDIA_ROOTS", f'{tmp_path / "media"},{tmp_path / "other"}')
     monkeypatch.setenv("LAS_MODEL_REGISTRY", '{"custom": "/models/custom"}')
-    monkeypatch.setenv("LAS_GPU_DEVICES", "4,5")
+    monkeypatch.setenv("LAS_GPU_DEVICES", "1,2")
     monkeypatch.setenv("LAS_TOS_ACCESS_KEY", "access-secret")
 
     settings = Settings.from_env()
@@ -343,7 +343,7 @@ def test_settings_defaults_and_environment_overrides(monkeypatch, tmp_path):
     assert settings.work_root == tmp_path / "work"
     assert settings.allowed_media_roots == (tmp_path / "media", tmp_path / "other")
     assert settings.model_registry == {"custom": Path("/models/custom")}
-    assert settings.gpu_devices == (4, 5)
+    assert settings.gpu_devices == (1, 2)
     assert settings.segment_seconds == 30.0
     assert settings.segment_overlap_seconds == 2.0
     assert settings.max_fine_segment_seconds == 1.0

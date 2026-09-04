@@ -150,6 +150,15 @@ class Settings(BaseSettings):
             raise ValueError("gpu_devices must be non-negative")
         if len(set(value)) != len(value):
             raise ValueError("gpu_devices must be distinct")
+        if not set(value) <= {0, 1, 2}:
+            raise ValueError("gpu_devices must use only physical GPUs 0-2")
+        return value
+
+    @field_validator("cv_device")
+    @classmethod
+    def validate_cv_device(cls, value: int) -> int:
+        if value != 3:
+            raise ValueError("cv_device must use physical GPU 3")
         return value
 
     @field_validator("cv_checkpoint_sha256")

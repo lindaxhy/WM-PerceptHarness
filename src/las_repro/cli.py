@@ -297,6 +297,8 @@ def _cv_worker_runtime(
 
 
 def _configure_execution_chunk_frames(provider: Any, value: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError("requested CV execution chunk must be a positive integer")
     current = getattr(provider, "execution_chunk_frames", None)
     if isinstance(current, bool) or not isinstance(current, int) or current <= 0:
         raise ValueError("CV provider must expose positive execution_chunk_frames")
@@ -313,8 +315,9 @@ def _configure_execution_chunk_frames(provider: Any, value: int) -> None:
         isinstance(configured, bool)
         or not isinstance(configured, int)
         or configured <= 0
+        or configured != value
     ):
-        raise ValueError("CV provider execution chunk must remain positive")
+        raise ValueError("CV provider execution chunk must equal the exact requested value")
 
 
 def _close_provider_state(provider: Any) -> None:

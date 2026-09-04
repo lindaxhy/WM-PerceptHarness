@@ -908,7 +908,7 @@ def test_cv_settings_accept_only_non_sam_provider_values_without_local_assets(
 
 
 def test_cv_settings_require_distinct_nonnegative_qwen_and_cv_devices() -> None:
-    with pytest.raises(ValidationError, match="distinct"):
+    with pytest.raises(ValidationError, match="physical"):
         Settings(gpu_devices=(0, 1, 3), cv_device=3)
     with pytest.raises(ValidationError):
         Settings(gpu_devices=(0, -1), cv_device=3)
@@ -920,6 +920,58 @@ def test_cv_settings_require_distinct_nonnegative_qwen_and_cv_devices() -> None:
         Settings(gpu_devices=(0, True), cv_device=3)
     with pytest.raises(ValidationError):
         Settings(gpu_devices=(0, 1, 2), cv_device=True)
+
+
+@pytest.mark.parametrize(
+    ("gpu_devices", "cv_device"),
+    [
+        ((0, 1, 2, 3), 4),
+        ((4,), 3),
+        ((0, 1, 2), 4),
+    ],
+    ids=("four-qwen-devices", "qwen-device-four", "cv-device-four"),
+)
+def test_hybrid_gpu_settings_enforce_the_physical_three_plus_one_boundary(
+    gpu_devices: tuple[int, ...],
+    cv_device: int,
+) -> None:
+    with pytest.raises(ValidationError, match="physical"):
+        Settings(gpu_devices=gpu_devices, cv_device=cv_device)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "arguments"),
+    [
+        (
+            {"LAS_GPU_DEVICES": "0,1,2,3", "LAS_CV_DEVICE": "4"},
+            ["gpu-worker", "--device", "3", "--once"],
+        ),
+        (
+            {"LAS_GPU_DEVICES": "4"},
+            ["gpu-worker", "--device", "4", "--once"],
+        ),
+        (
+            {"LAS_CV_DEVICE": "4", "LAS_CV_PROVIDER": "fake"},
+            ["cv-worker", "--provider", "fake", "--device", "4", "--once"],
+        ),
+    ],
+    ids=("four-qwen-devices", "qwen-device-four", "cv-device-four"),
+)
+def test_cli_environment_cannot_bypass_the_physical_three_plus_one_boundary(
+    tmp_path: Path,
+    overrides: dict[str, str],
+    arguments: list[str],
+) -> None:
+    media_root = tmp_path / "media"
+    media_root.mkdir()
+    environment = _cli_environment(tmp_path, media_root)
+    environment.update(overrides)
+
+    completed = _run_cli(*arguments, environment=environment)
+
+    assert completed.returncode == 2
+    assert "invalid LAS_ configuration" in completed.stderr
+    _assert_secret_absent(completed)
 
 
 def _sam31_settings(tmp_path: Path) -> dict[str, Any]:
@@ -1390,6 +1442,22 @@ def test_cv_worker_sam31_sets_visibility_before_lazy_import_and_loads_once(
     assert constructed[0][3] == "cv-sam31-3"
     assert constructed[0][4] == {"lease_seconds": settings.lease_seconds}
     assert provider_closes == 1
+
+
+@pytest.mark.parametrize("behavior", ["ignore", "clamp"])
+def test_cv_execution_chunk_setter_must_apply_the_exact_requested_value(
+    behavior: str,
+) -> None:
+    class NonconformingProvider:
+        def __init__(self) -> None:
+            self.execution_chunk_frames = 2
+
+        def set_execution_chunk_frames(self, value: int) -> None:
+            if behavior == "clamp":
+                self.execution_chunk_frames = min(value, 4)
+
+    with pytest.raises(ValueError, match="exact"):
+        cli._configure_execution_chunk_frames(NonconformingProvider(), 8)
 
 
 def test_cv_worker_fake_provider_without_close_has_a_clean_once_lifecycle(
