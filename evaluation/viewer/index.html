@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="五个冻结视频的官方 LAS 与本地实现标注同步对比工具">
+    <title>LAS / Local · Video Annotation Compare</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand-block">
+        <div class="brand-mark" aria-hidden="true"><span>L</span><i></i><span>O</span></div>
+        <div>
+          <p class="eyebrow">ANNOTATION REVIEW / 05 DEMOS</p>
+          <h1>LAS <span>/</span> Local</h1>
+        </div>
+      </div>
+      <nav id="sample-nav" class="sample-nav" aria-label="Demo samples"></nav>
+      <div class="header-readout" aria-label="Current sample information">
+        <span id="sample-duration">--:--.--</span>
+        <span id="event-total">— events</span>
+      </div>
+    </header>
+
+    <main id="comparison-workspace" class="workspace" aria-busy="true">
+      <section id="las-panel" class="annotation-panel las-panel" aria-labelledby="las-title">
+        <header class="panel-header">
+          <div>
+            <p class="source-kicker"><span class="source-dot"></span>OFFICIAL REFERENCE</p>
+            <h2 id="las-title">LAS 标注</h2>
+          </div>
+          <span id="las-count" class="count-badge">—</span>
+        </header>
+        <div id="las-events" class="event-list" aria-live="polite"></div>
+        <details class="context-drawer" open>
+          <summary>对象与结果</summary>
+          <div id="las-context" class="context-content"></div>
+        </details>
+      </section>
+
+      <section class="playback-panel" aria-label="Video and synchronized timeline">
+        <div class="video-shell">
+          <video id="demo-video" controls playsinline preload="metadata"></video>
+          <div id="video-missing" class="video-missing" hidden>
+            <p class="missing-code">VIDEO FILE NOT FOUND</p>
+            <h2>选择本机视频继续</h2>
+            <p id="expected-video">需要对应的 MP4 文件。</p>
+            <label class="file-button" for="video-file">选择视频</label>
+          </div>
+          <input id="video-file" class="visually-hidden" type="file" accept="video/mp4,video/quicktime,video/webm">
+          <div class="video-corner" aria-hidden="true">VISUAL EVIDENCE ONLY</div>
+        </div>
+
+        <div class="transport">
+          <button id="play-toggle" class="play-toggle" type="button" aria-label="播放视频">
+            <span class="play-icon" aria-hidden="true"></span>
+            <span id="play-label">播放</span>
+          </button>
+          <div class="time-readout" aria-live="off">
+            <strong id="current-time">00:00.00</strong>
+            <span>/</span>
+            <span id="total-time">--:--.--</span>
+          </div>
+          <label class="scrubber-label" for="scrubber">视频时间</label>
+          <input id="scrubber" class="scrubber" type="range" min="0" max="1" step="0.01" value="0">
+        </div>
+
+        <aside id="sample-caveat" class="sample-caveat" hidden></aside>
+
+        <section id="timeline-panel" class="timeline-panel" aria-labelledby="timeline-title">
+          <header class="timeline-header">
+            <div>
+              <p class="eyebrow">SHARED CLOCK</p>
+              <h2 id="timeline-title">对齐时间轴</h2>
+            </div>
+            <div class="timeline-legend" aria-label="Timeline legend">
+              <span><i class="las-key"></i>LAS</span>
+              <span><i class="local-key"></i>Local</span>
+            </div>
+          </header>
+          <div class="timeline-stage">
+            <div id="time-ticks" class="time-ticks" aria-hidden="true"></div>
+            <div id="timeline-tracks" class="timeline-tracks">
+              <div id="playhead" class="playhead" aria-hidden="true"><span></span></div>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section id="local-panel" class="annotation-panel local-panel" aria-labelledby="local-title">
+        <header class="panel-header local-heading">
+          <div>
+            <p class="source-kicker"><span class="source-dot"></span>OUR IMPLEMENTATION</p>
+            <h2 id="local-title">本地标注</h2>
+          </div>
+          <span id="local-count" class="count-badge">—</span>
+        </header>
+        <div id="local-modes" class="mode-switch" role="group" aria-label="Local annotation level">
+          <button type="button" data-mode="grouped" aria-pressed="true">Grouped</button>
+          <button type="button" data-mode="fine" aria-pressed="false">Fine</button>
+          <button type="button" data-mode="scene" aria-pressed="false">Scene</button>
+        </div>
+        <div id="local-events" class="event-list" aria-live="polite"></div>
+        <details class="context-drawer">
+          <summary>对象、状态与结果</summary>
+          <div id="local-context" class="context-content"></div>
+        </details>
+      </section>
+
+      <div id="status" class="status-message" role="alert">正在载入标注…</div>
+    </main>
+
+    <template id="event-card-template">
+      <button class="event-card" type="button">
+        <span class="event-index"></span>
+        <span class="event-body">
+          <span class="event-topline">
+            <strong class="event-type"></strong>
+            <time class="event-time"></time>
+          </span>
+          <span class="event-description"></span>
+          <span class="event-meta"></span>
+        </span>
+        <span class="event-confidence"></span>
+      </button>
+    </template>
+
+    <script type="module" src="js/app.js"></script>
+  </body>
+</html>
