@@ -50,6 +50,9 @@ _MAX_OBJECTS = 16
 _DEFAULT_MAX_ARTIFACT_BYTES = 8 * 1024 * 1024 * 1024
 _DEFAULT_MAX_ARTIFACT_FILES = 10_000
 _ZIP_ENTRY_ALLOWANCE = 1024
+_MAX_GIT_TREE_BYTES = 16 * 1024 * 1024
+_MAX_GIT_SOURCE_FILES = 100_000
+_MAX_GIT_SOURCE_BYTES = 1024 * 1024 * 1024
 _NETWORK_PREFIX = re.compile(
     r"(?i)^(?:https?|ssh|git|ftp|s3|gs|hf)://|^[^/\\\s]+@[^/\\\s]+:"
 )
@@ -82,6 +85,13 @@ class _PromptRun:
 class _SamModuleSnapshot:
     modules: dict[str, Any]
     namespaces: dict[str, dict[str, Any]]
+
+
+@dataclass(frozen=True, slots=True)
+class _PinnedBlob:
+    path: str
+    object_id: str
+    size: int
 
 
 @dataclass(slots=True)
@@ -542,11 +552,22 @@ class Sam31EvidenceProvider:
             self._clear_retry_plan()
             raise CvProviderError(_INFERENCE_FAILURE) from None
         finally:
+            primary_error = sys.exception()
+            cleanup_error: BaseException | None = None
             if work_directory is not None:
-                _remove_tree(work_directory)
-            if not completed:
+                try:
+                    _remove_tree(work_directory)
+                except BaseException as error:
+                    cleanup_error = error
+            if not completed or cleanup_error is not None:
                 for directory in reversed(output_directories):
-                    _remove_tree(directory)
+                    try:
+                        _remove_tree(directory)
+                    except BaseException as error:
+                        if cleanup_error is None:
+                            cleanup_error = error
+            if cleanup_error is not None and primary_error is None:
+                raise CvProviderError(_INFERENCE_FAILURE) from None
 
     def request_metrics(self) -> dict[str, int]:
         """Return bounded metrics for the most recent completed request."""
@@ -999,19 +1020,18 @@ def _verify_repository_revision(repository: Path) -> None:
 
 
 def _snapshot_repository_source(repository: Path, destination: Path) -> Path:
-    tracked = _tracked_sam_paths(repository)
-    if "sam3/__init__.py" not in tracked or "sam3/model_builder.py" not in tracked:
+    blobs = _pinned_sam_blobs(repository)
+    names = {blob.path for blob in blobs}
+    if "sam3/__init__.py" not in names or "sam3/model_builder.py" not in names:
         raise ValueError
     destination.mkdir(mode=0o700, exist_ok=False)
     try:
-        for relative_name in tracked:
-            relative = Path(relative_name)
-            source = repository / relative
+        for blob in blobs:
+            relative = Path(blob.path)
             target = destination / relative
             target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            _copy_verified_source_file(source, target)
-        if tracked != _tracked_sam_paths(repository):
-            raise ValueError
+            _copy_pinned_blob(repository, blob, target)
+        _verify_pinned_snapshot(destination, blobs)
         for directory in sorted(
             (path for path in destination.rglob("*") if path.is_dir()),
             key=lambda path: len(path.parts),
@@ -1025,78 +1045,217 @@ def _snapshot_repository_source(repository: Path, destination: Path) -> Path:
         raise
 
 
-def _tracked_sam_paths(repository: Path) -> tuple[str, ...]:
-    completed = subprocess.run(
-        ["git", "-C", str(repository), "ls-files", "-z", "--", "sam3"],
-        check=True,
-        capture_output=True,
-        text=True,
-        shell=False,
+def _pinned_sam_blobs(repository: Path) -> tuple[_PinnedBlob, ...]:
+    payload = _bounded_git_output(
+        repository,
+        (
+            "ls-tree",
+            "-r",
+            "-z",
+            "-l",
+            "--full-tree",
+            _PINNED_REPOSITORY_REVISION,
+            "--",
+            "sam3",
+        ),
+        _MAX_GIT_TREE_BYTES,
     )
-    if not isinstance(completed.stdout, str) or not completed.stdout.endswith("\0"):
+    if not payload or not payload.endswith(b"\0"):
         raise ValueError
-    names = tuple(item for item in completed.stdout.split("\0") if item)
-    if not names or names != tuple(sorted(set(names))):
-        raise ValueError
-    for name in names:
+    blobs: list[_PinnedBlob] = []
+    names: set[str] = set()
+    total_bytes = 0
+    pattern = re.compile(
+        rb"(100644|100755) blob ([0-9a-f]{40}) +([0-9]+)\t([^\0]+)"
+    )
+    for record in payload[:-1].split(b"\0"):
+        match = pattern.fullmatch(record)
+        if match is None:
+            raise ValueError
+        try:
+            name = match.group(4).decode("utf-8", errors="strict")
+        except UnicodeDecodeError:
+            raise ValueError from None
         path = Path(name)
         if (
             path.is_absolute()
             or path.parts[:1] != ("sam3",)
             or any(part in {"", ".", ".."} for part in path.parts)
+            or "\\" in name
+            or len(name.encode("utf-8")) > 4096
+            or any(ord(character) < 32 or ord(character) == 127 for character in name)
+            or name in names
         ):
             raise ValueError
-    return names
+        size = int(match.group(3))
+        total_bytes += size
+        if (
+            len(blobs) >= _MAX_GIT_SOURCE_FILES
+            or total_bytes > _MAX_GIT_SOURCE_BYTES
+        ):
+            raise ValueError
+        names.add(name)
+        blobs.append(
+            _PinnedBlob(
+                path=name,
+                object_id=match.group(2).decode("ascii"),
+                size=size,
+            )
+        )
+    if not blobs:
+        raise ValueError
+    return tuple(sorted(blobs, key=lambda item: item.path))
 
 
-def _copy_verified_source_file(source: Path, destination: Path) -> None:
+def _bounded_git_output(
+    repository: Path, arguments: tuple[str, ...], max_bytes: int
+) -> bytes:
+    if max_bytes <= 0:
+        raise ValueError
+    process = subprocess.Popen(
+        ["git", "-C", str(repository), *arguments],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        shell=False,
+    )
+    output = bytearray()
+    try:
+        if process.stdout is None:
+            raise ValueError
+        while True:
+            payload = process.stdout.read(
+                min(_HASH_READ_BYTES, max_bytes - len(output) + 1)
+            )
+            if not payload:
+                break
+            output.extend(payload)
+            if len(output) > max_bytes:
+                raise ValueError
+        if process.wait() != 0:
+            raise ValueError
+        return bytes(output)
+    except BaseException:
+        _stop_process(process)
+        raise
+    finally:
+        if process.stdout is not None:
+            try:
+                process.stdout.close()
+            except BaseException:
+                pass
+
+
+def _copy_pinned_blob(
+    repository: Path, blob: _PinnedBlob, destination: Path
+) -> None:
     nofollow = getattr(os, "O_NOFOLLOW", None)
     if nofollow is None:
         raise ValueError
-    before = source.lstat()
-    if (
-        stat.S_ISLNK(before.st_mode)
-        or not stat.S_ISREG(before.st_mode)
-        or before.st_nlink != 1
-        or before.st_uid not in {0, os.getuid()}
-        or stat.S_IMODE(before.st_mode) & 0o022
-    ):
-        raise ValueError
-    source_descriptor = os.open(source, os.O_RDONLY | nofollow)
-    destination_descriptor: int | None = None
+    process = subprocess.Popen(
+        ["git", "-C", str(repository), "cat-file", "blob", blob.object_id],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        shell=False,
+    )
+    destination_descriptor = os.open(
+        destination,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow,
+        0o400,
+    )
     try:
-        opened = os.fstat(source_descriptor)
-        identity = opened.st_dev, opened.st_ino
-        if identity != (before.st_dev, before.st_ino):
+        if process.stdout is None:
             raise ValueError
-        destination_descriptor = os.open(
-            destination,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow,
-            0o400,
-        )
-        while payload := os.read(source_descriptor, _HASH_READ_BYTES):
+        digest = hashlib.sha1()
+        digest.update(f"blob {blob.size}\0".encode("ascii"))
+        copied = 0
+        while copied < blob.size:
+            payload = process.stdout.read(
+                min(_HASH_READ_BYTES, blob.size - copied)
+            )
+            if not payload:
+                raise ValueError
+            copied += len(payload)
+            digest.update(payload)
             view = memoryview(payload)
             while view:
                 written = os.write(destination_descriptor, view)
                 if written <= 0:
                     raise OSError
                 view = view[written:]
+        if process.stdout.read(1) or process.wait() != 0:
+            raise ValueError
         os.fsync(destination_descriptor)
-        after_open = os.fstat(source_descriptor)
-        after_path = source.lstat()
+        opened = os.fstat(destination_descriptor)
+        after_path = destination.lstat()
         if (
-            (after_open.st_dev, after_open.st_ino) != identity
-            or (after_path.st_dev, after_path.st_ino) != identity
-            or after_open.st_size != opened.st_size
-            or after_open.st_mtime_ns != opened.st_mtime_ns
-            or after_path.st_size != opened.st_size
-            or after_path.st_mtime_ns != opened.st_mtime_ns
+            digest.hexdigest() != blob.object_id
+            or not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or opened.st_uid != os.getuid()
+            or stat.S_IMODE(opened.st_mode) != 0o400
+            or opened.st_size != blob.size
+            or (after_path.st_dev, after_path.st_ino)
+            != (opened.st_dev, opened.st_ino)
         ):
             raise ValueError
+    except BaseException:
+        _stop_process(process)
+        raise
     finally:
-        if destination_descriptor is not None:
-            os.close(destination_descriptor)
-        os.close(source_descriptor)
+        os.close(destination_descriptor)
+        if process.stdout is not None:
+            try:
+                process.stdout.close()
+            except BaseException:
+                pass
+
+
+def _verify_pinned_snapshot(
+    destination: Path, blobs: tuple[_PinnedBlob, ...]
+) -> None:
+    expected = {blob.path: blob for blob in blobs}
+    actual = {
+        path.relative_to(destination).as_posix(): path
+        for path in destination.rglob("*")
+        if not path.is_dir()
+    }
+    if set(actual) != set(expected):
+        raise ValueError
+    for name, blob in expected.items():
+        path = actual[name]
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            status = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(status.st_mode)
+                or status.st_nlink != 1
+                or status.st_uid != os.getuid()
+                or stat.S_IMODE(status.st_mode) != 0o400
+                or status.st_size != blob.size
+            ):
+                raise ValueError
+            digest = hashlib.sha1()
+            digest.update(f"blob {blob.size}\0".encode("ascii"))
+            while payload := os.read(descriptor, _HASH_READ_BYTES):
+                digest.update(payload)
+            if digest.hexdigest() != blob.object_id:
+                raise ValueError
+        finally:
+            os.close(descriptor)
+
+
+def _stop_process(process: subprocess.Popen[bytes]) -> None:
+    try:
+        if process.poll() is None:
+            process.kill()
+    except BaseException:
+        pass
+    try:
+        process.wait()
+    except BaseException:
+        pass
 
 
 def _sam_module_snapshot() -> _SamModuleSnapshot:
@@ -1878,7 +2037,7 @@ def _empty_cuda_cache(torch_module: Any) -> None:
     if callable(empty):
         try:
             empty()
-        except Exception:
+        except BaseException:
             pass
 
 

@@ -1120,6 +1120,55 @@ def test_oom_is_translated_once_without_internal_retry_and_releases_resources(
     assert all(not path.exists() for path in predictor.resources)
 
 
+@pytest.mark.parametrize("cleanup_type", [KeyboardInterrupt, SystemExit])
+def test_cuda_cache_baseexception_cannot_mask_oom_or_discard_retry_plan(
+    tmp_path: Path,
+    fake_torch: SimpleNamespace,
+    cleanup_type: type[BaseException],
+) -> None:
+    request = make_request(
+        tmp_path,
+        entities=(make_request(tmp_path).entities[0],),
+    )
+    attempts = 0
+
+    def oom_once(
+        _session_number: int, _prompt: str, stream_request: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise fake_torch.cuda.OutOfMemoryError("private allocator state")
+        return [
+            frame_output(index)
+            for index in range(stream_request["max_frame_num_to_track"] + 1)
+        ]
+
+    empty_cache_calls = 0
+
+    def exploding_empty_cache() -> None:
+        nonlocal empty_cache_calls
+        empty_cache_calls += 1
+        raise cleanup_type("cache cleanup interrupt")
+
+    fake_torch.cuda.empty_cache = exploding_empty_cache
+    materializer = MaterializerDouble()
+    provider = make_provider(PredictorDouble(oom_once), fake_torch, materializer)
+
+    raised: BaseException | None = None
+    try:
+        provider.analyze(request, tmp_path / "first-staging")
+    except BaseException as error:
+        raised = error
+
+    assert isinstance(raised, CvOutOfMemoryError)
+    assert str(raised) == "SAM3.1 CV evidence inference ran out of memory"
+    artifact = provider.analyze(request, tmp_path / "retry-staging")
+    assert artifact.tracks
+    assert [call[1] for call in materializer.calls] == [(0, 1, 2), (0, 1, 2)]
+    assert empty_cache_calls == 1
+
+
 def test_worker_owned_oom_retry_reuses_identical_long_video_final_samples(
     tmp_path: Path, fake_torch: SimpleNamespace
 ) -> None:
@@ -1266,6 +1315,78 @@ def test_session_cleanup_interrupt_cannot_mask_primary_system_exit(
     assert raised.value is primary
 
 
+@pytest.mark.parametrize("primary_kind", ["keyboard", "system-exit", "ordinary"])
+def test_analysis_cleanup_baseexception_preserves_primary_and_attempts_all_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_torch: SimpleNamespace,
+    primary_kind: str,
+) -> None:
+    request = make_request(tmp_path)
+    primary: BaseException
+    if primary_kind == "keyboard":
+        primary = KeyboardInterrupt("primary keyboard interrupt")
+    elif primary_kind == "system-exit":
+        primary = SystemExit("primary system exit")
+    else:
+        primary = RuntimeError("private ordinary failure")
+
+    def fail(*_: Any) -> list[dict[str, Any]]:
+        raise primary
+
+    cleanup_paths: list[Path] = []
+
+    def exploding_cleanup(path: Path) -> None:
+        cleanup_paths.append(path)
+        raise KeyboardInterrupt("cleanup interrupt")
+
+    monkeypatch.setattr(SAM31_MODULE, "_remove_tree", exploding_cleanup)
+    provider = make_provider(PredictorDouble(fail), fake_torch, MaterializerDouble())
+
+    raised: BaseException | None = None
+    try:
+        provider.analyze(request, tmp_path / "staging")
+    except BaseException as error:
+        raised = error
+
+    if primary_kind == "ordinary":
+        assert type(raised) is CvProviderError
+        assert str(raised) == "SAM3.1 CV evidence inference failed"
+    else:
+        assert raised is primary
+    assert len(cleanup_paths) == 2
+    assert cleanup_paths[0].name.startswith(".sam31-frames-")
+    assert cleanup_paths[1] == tmp_path / "staging" / "masks"
+
+
+def test_successful_analysis_with_cleanup_baseexception_fails_sanitized_and_cleans_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_torch: SimpleNamespace,
+) -> None:
+    request = make_request(tmp_path)
+    cleanup_paths: list[Path] = []
+
+    def exploding_cleanup(path: Path) -> None:
+        cleanup_paths.append(path)
+        raise SystemExit("cleanup exit detail")
+
+    monkeypatch.setattr(SAM31_MODULE, "_remove_tree", exploding_cleanup)
+    provider = make_provider(PredictorDouble(), fake_torch, MaterializerDouble())
+
+    raised: BaseException | None = None
+    try:
+        provider.analyze(request, tmp_path / "staging")
+    except BaseException as error:
+        raised = error
+
+    assert type(raised) is CvProviderError
+    assert str(raised) == "SAM3.1 CV evidence inference failed"
+    assert len(cleanup_paths) == 2
+    assert cleanup_paths[0].name.startswith(".sam31-frames-")
+    assert cleanup_paths[1] == tmp_path / "staging" / "masks"
+
+
 def test_non_oom_failure_is_sanitized_closed_and_not_retried(
     tmp_path: Path, fake_torch: SimpleNamespace
 ) -> None:
@@ -1397,6 +1518,239 @@ def successful_git_run(
         return SimpleNamespace(stdout=PINNED_REVISION + "\n")
 
     return run
+
+
+PINNED_BUILDER_SOURCE = (
+    "SOURCE_MARKER = 'pinned commit blob'\n"
+    "calls = []\n"
+    "class Predictor:\n"
+    "    def handle_request(self, request):\n"
+    "        return {}\n"
+    "    def handle_stream_request(self, request):\n"
+    "        return iter(())\n"
+    "def build_sam3_multiplex_video_predictor(**kwargs):\n"
+    "    calls.append(kwargs)\n"
+    "    return Predictor()\n"
+)
+
+
+def pin_runtime_repository(
+    monkeypatch: pytest.MonkeyPatch, repository: Path
+) -> str:
+    subprocess.run(
+        ["git", "init", "-q", str(repository)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "add", "sam3"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "user.name=SAM Test",
+            "-c",
+            "user.email=sam-test@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "pinned fixture",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    revision = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    monkeypatch.setattr(SAM31_MODULE, "_PINNED_REPOSITORY_REVISION", revision)
+    return revision
+
+
+@pytest.mark.parametrize(
+    "attack",
+    ["assume-unchanged", "check-copy-restore"],
+)
+def test_source_snapshot_uses_pinned_commit_blobs_not_worktree_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_torch: SimpleNamespace,
+    attack: str,
+) -> None:
+    repository, checkpoint, digest = local_runtime_assets(tmp_path)
+    builder = repository / "sam3" / "model_builder.py"
+    lazy = repository / "sam3" / "lazy_component.py"
+    builder.write_text(PINNED_BUILDER_SOURCE, encoding="utf-8")
+    lazy.write_text("VALUE = 'pinned commit blob'\n", encoding="utf-8")
+    pin_runtime_repository(monkeypatch, repository)
+    install_fake_torch_module(monkeypatch, fake_torch)
+    malicious_builder = PINNED_BUILDER_SOURCE.replace(
+        "pinned commit blob", "malicious worktree bytes"
+    )
+
+    if attack == "assume-unchanged":
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repository),
+                "update-index",
+                "--assume-unchanged",
+                "sam3/model_builder.py",
+                "sam3/lazy_component.py",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        builder.write_text(malicious_builder, encoding="utf-8")
+        lazy.write_text("VALUE = 'malicious worktree bytes'\n", encoding="utf-8")
+    else:
+        real_run = subprocess.run
+        status_calls = 0
+
+        def race_between_status_checks(
+            command: list[str], **kwargs: Any
+        ) -> subprocess.CompletedProcess[Any]:
+            nonlocal status_calls
+            if "status" not in command:
+                return real_run(command, **kwargs)
+            status_calls += 1
+            if status_calls == 1:
+                result = real_run(command, **kwargs)
+                builder.write_text(malicious_builder, encoding="utf-8")
+                lazy.write_text(
+                    "VALUE = 'malicious worktree bytes'\n", encoding="utf-8"
+                )
+                return result
+            builder.write_text(PINNED_BUILDER_SOURCE, encoding="utf-8")
+            lazy.write_text("VALUE = 'pinned commit blob'\n", encoding="utf-8")
+            return real_run(command, **kwargs)
+
+        monkeypatch.setattr(SAM31_MODULE.subprocess, "run", race_between_status_checks)
+
+    provider = Sam31EvidenceProvider.load(repository, checkpoint, digest)
+
+    imported_builder = sys.modules["sam3.model_builder"]
+    imported_lazy = importlib.import_module("sam3.lazy_component")
+    imported_root = Path(imported_builder.__file__).resolve().parents[1]
+    assert imported_builder.SOURCE_MARKER == "pinned commit blob"
+    assert imported_lazy.VALUE == "pinned commit blob"
+    assert "malicious worktree bytes" not in (
+        imported_root / "sam3" / "model_builder.py"
+    ).read_text(encoding="utf-8")
+    provider.close()
+
+
+@pytest.mark.parametrize(
+    "tree_output",
+    [
+        b"malformed tree record\0",
+        b"120000 blob " + (b"a" * 40) + b"       1\tsam3/link.py\0",
+        b"160000 commit " + (b"a" * 40) + b"       1\tsam3/vendor\0",
+        (
+            b"100644 blob "
+            + (b"a" * 40)
+            + b"       1\tsam3/duplicate.py\0"
+        )
+        * 2,
+        b"100644 blob " + (b"a" * 40) + b"       1\tsam3/../escape.py\0",
+        b"100644 blob " + (b"a" * 40) + b"       1\tsam3/invalid-\xff.py\0",
+    ],
+    ids=(
+        "malformed",
+        "symlink",
+        "submodule",
+        "duplicate",
+        "noncanonical-path",
+        "non-utf8-path",
+    ),
+)
+def test_pinned_tree_rejects_malformed_duplicate_and_special_entries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tree_output: bytes,
+) -> None:
+    monkeypatch.setattr(
+        SAM31_MODULE,
+        "_bounded_git_output",
+        lambda *_args: tree_output,
+    )
+
+    with pytest.raises(ValueError):
+        SAM31_MODULE._pinned_sam_blobs(tmp_path)
+
+
+def test_pinned_tree_output_is_bounded_and_git_command_failure_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, _, _ = local_runtime_assets(tmp_path)
+    (repository / "sam3" / "model_builder.py").write_text(
+        PINNED_BUILDER_SOURCE, encoding="utf-8"
+    )
+    pin_runtime_repository(monkeypatch, repository)
+    monkeypatch.setattr(SAM31_MODULE, "_MAX_GIT_TREE_BYTES", 32)
+
+    with pytest.raises(ValueError):
+        SAM31_MODULE._pinned_sam_blobs(repository)
+
+    non_repository = tmp_path / "not-a-repository"
+    non_repository.mkdir()
+    with pytest.raises(ValueError):
+        SAM31_MODULE._bounded_git_output(
+            non_repository,
+            ("ls-tree", "HEAD"),
+            1024,
+        )
+
+
+@pytest.mark.parametrize("damage", ["missing", "changed"])
+def test_source_snapshot_rejects_incomplete_or_changed_destination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    damage: str,
+) -> None:
+    payloads = {
+        "sam3/__init__.py": b"",
+        "sam3/model_builder.py": PINNED_BUILDER_SOURCE.encode("utf-8"),
+    }
+
+    def blob_id(payload: bytes) -> str:
+        return hashlib.sha1(
+            f"blob {len(payload)}\0".encode("ascii") + payload
+        ).hexdigest()
+
+    blobs = tuple(
+        SAM31_MODULE._PinnedBlob(name, blob_id(payload), len(payload))
+        for name, payload in payloads.items()
+    )
+    monkeypatch.setattr(SAM31_MODULE, "_pinned_sam_blobs", lambda _: blobs)
+
+    def damaged_copy(
+        _repository: Path, blob: Any, destination: Path
+    ) -> None:
+        if damage == "missing" and blob.path == "sam3/model_builder.py":
+            return
+        payload = payloads[blob.path]
+        if damage == "changed" and blob.path == "sam3/model_builder.py":
+            payload = b"X" + payload[1:]
+        destination.write_bytes(payload)
+        destination.chmod(0o400)
+
+    monkeypatch.setattr(SAM31_MODULE, "_copy_pinned_blob", damaged_copy)
+    destination = tmp_path / "private-source"
+
+    with pytest.raises(ValueError):
+        SAM31_MODULE._snapshot_repository_source(tmp_path, destination)
+
+    assert not destination.exists()
 
 
 def test_load_verifies_local_revision_and_hash_then_calls_official_builder(
@@ -1773,7 +2127,7 @@ def test_load_imports_sam_only_from_configured_repository_and_restores_sys_path(
     )
     lazy_module = repository / "sam3" / "lazy_component.py"
     lazy_module.write_text("VALUE = 'pinned bytes'\n", encoding="utf-8")
-    monkeypatch.setattr(SAM31_MODULE.subprocess, "run", successful_git_run([]))
+    pin_runtime_repository(monkeypatch, repository)
     install_fake_torch_module(monkeypatch, fake_torch)
     path_before = list(sys.path)
 
@@ -1871,7 +2225,7 @@ def test_failed_local_builder_restores_sys_path_and_new_sam_modules(
         "    raise RuntimeError('private checkpoint path and allocator state')\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(SAM31_MODULE.subprocess, "run", successful_git_run([]))
+    pin_runtime_repository(monkeypatch, repository)
     install_fake_torch_module(monkeypatch, fake_torch)
     path_before = list(sys.path)
 
@@ -1905,7 +2259,7 @@ def test_failed_builder_restores_preloaded_local_package_namespace(
     package.__path__ = [str(repository / "sam3")]  # type: ignore[attr-defined]
     package.original_marker = object()  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "sam3", package)
-    monkeypatch.setattr(SAM31_MODULE.subprocess, "run", successful_git_run([]))
+    pin_runtime_repository(monkeypatch, repository)
     install_fake_torch_module(monkeypatch, fake_torch)
 
     with pytest.raises(CvProviderError, match="^Unable to load local SAM3.1 runtime$"):
@@ -1931,7 +2285,7 @@ def test_interrupted_local_builder_restores_import_state_before_reraising(
         "    raise KeyboardInterrupt('interrupted local load')\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(SAM31_MODULE.subprocess, "run", successful_git_run([]))
+    pin_runtime_repository(monkeypatch, repository)
     install_fake_torch_module(monkeypatch, fake_torch)
     path_before = list(sys.path)
 
@@ -1961,7 +2315,7 @@ def test_load_shutdown_interrupt_cannot_mask_primary_or_skip_import_restore(
         "    return Predictor()\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(SAM31_MODULE.subprocess, "run", successful_git_run([]))
+    pin_runtime_repository(monkeypatch, repository)
     install_fake_torch_module(monkeypatch, fake_torch)
 
     with pytest.raises(SystemExit, match="primary interface exit"):
@@ -1988,7 +2342,7 @@ def test_provider_close_restores_imports_and_assets_after_shutdown_failure(
         "    return Predictor()\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(SAM31_MODULE.subprocess, "run", successful_git_run([]))
+    pin_runtime_repository(monkeypatch, repository)
     install_fake_torch_module(monkeypatch, fake_torch)
     provider = Sam31EvidenceProvider.load(repository, checkpoint, digest)
     imported_root = Path(sys.modules["sam3"].__file__).resolve().parents[1]
