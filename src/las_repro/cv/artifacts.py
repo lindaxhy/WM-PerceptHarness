@@ -15,6 +15,7 @@ import stat
 import threading
 import time
 from typing import Iterator
+import weakref
 
 from pydantic import ValidationError
 
@@ -120,9 +121,77 @@ class CvArtifactStore:
             raise CvArtifactError("unsafe CV artifact directory") from None
         root_status = os.fstat(self._root_descriptor)
         self._root_identity = root_status.st_dev, root_status.st_ino
+        self._lifecycle_lock = threading.Lock()
+        self._active_operations = 0
+        self._closed = False
+        self._root_finalizer = weakref.finalize(
+            self, os.close, self._root_descriptor
+        )
+
+    def __enter__(self) -> CvArtifactStore:
+        self._begin_operation()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        try:
+            self._finish_operation()
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        """Idempotently release the trusted root after active operations finish."""
+        descriptor: int | None = None
+        with self._lifecycle_lock:
+            if not self._closed:
+                self._closed = True
+            if self._active_operations == 0:
+                descriptor = self._take_root_descriptor_locked()
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                raise CvArtifactError("unable to close CV artifact store") from None
+
+    @contextmanager
+    def _operation(self) -> Iterator[None]:
+        self._begin_operation()
+        try:
+            yield
+        finally:
+            self._finish_operation()
+
+    def _begin_operation(self) -> None:
+        with self._lifecycle_lock:
+            if self._closed:
+                raise CvArtifactError("CV artifact store is closed")
+            self._active_operations += 1
+
+    def _finish_operation(self) -> None:
+        descriptor: int | None = None
+        with self._lifecycle_lock:
+            self._active_operations -= 1
+            if self._active_operations == 0 and self._closed:
+                descriptor = self._take_root_descriptor_locked()
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                raise CvArtifactError("unable to close CV artifact store") from None
+
+    def _take_root_descriptor_locked(self) -> int | None:
+        if self._root_descriptor < 0:
+            return None
+        descriptor = self._root_descriptor
+        self._root_descriptor = -1
+        self._root_finalizer.detach()
+        return descriptor
 
     def lookup(self, key: str) -> CvArtifactHandle | None:
         """Return a digest-validated immutable handle, or None on a miss."""
+        with self._operation():
+            return self._lookup(key)
+
+    def _lookup(self, key: str) -> CvArtifactHandle | None:
         self._validate_key(key)
         self._validate_store_root()
         prefix_descriptor = self._open_prefix(key, create=False)
@@ -153,6 +222,12 @@ class CvArtifactStore:
     @contextmanager
     def staging(self, key: str) -> Iterator[Path]:
         """Yield an owner-only sibling directory and remove it on exit."""
+        with self._operation():
+            with self._staging_directory(key) as staging:
+                yield staging
+
+    @contextmanager
+    def _staging_directory(self, key: str) -> Iterator[Path]:
         self._validate_key(key)
         self._validate_store_root()
         prefix = self._prefix_directory(key)
@@ -182,6 +257,15 @@ class CvArtifactStore:
         artifact: CvEvidenceArtifact,
     ) -> CvArtifactHandle:
         """Validate, fsync, and atomically publish one complete entry."""
+        with self._operation():
+            return self._publish(request, staging, artifact)
+
+    def _publish(
+        self,
+        request: CvEvidenceRequest,
+        staging: Path,
+        artifact: CvEvidenceArtifact,
+    ) -> CvArtifactHandle:
         try:
             request = CvEvidenceRequest.model_validate(request.model_dump(mode="python"))
             artifact = CvEvidenceArtifact.model_validate(
@@ -326,6 +410,10 @@ class CvArtifactStore:
 
     def load(self, handle: CvArtifactHandle) -> CvEvidenceArtifact:
         """Revalidate the handle and parse its canonical manifest."""
+        with self._operation():
+            return self._load(handle)
+
+    def _load(self, handle: CvArtifactHandle) -> CvEvidenceArtifact:
         try:
             if not isinstance(handle, CvArtifactHandle):
                 raise ValueError
@@ -406,18 +494,28 @@ class CvArtifactStore:
             parts = path.parts[1:]
             for index, part in enumerate(parts):
                 final = index == len(parts) - 1
+                observed_missing = False
                 try:
                     child = cls._open_directory_descriptor(part, dir_fd=descriptor)
                 except FileNotFoundError:
                     if not (create_final and final):
                         raise
-                    os.mkdir(part, mode=0o700, dir_fd=descriptor)
-                    os.fsync(descriptor)
+                    observed_missing = True
+                    try:
+                        os.mkdir(part, mode=0o700, dir_fd=descriptor)
+                    except FileExistsError:
+                        pass
                     child = cls._open_directory_descriptor(part, dir_fd=descriptor)
-                status = os.fstat(child)
-                cls._validate_ancestor_status(status, final=final)
-                identities.append((status.st_dev, status.st_ino))
-                os.close(descriptor)
+                try:
+                    status = os.fstat(child)
+                    cls._validate_ancestor_status(status, final=final)
+                    if observed_missing:
+                        os.fsync(descriptor)
+                    identities.append((status.st_dev, status.st_ino))
+                    os.close(descriptor)
+                except BaseException:
+                    os.close(child)
+                    raise
                 descriptor = child
             return descriptor, tuple(identities)
         except BaseException:
@@ -438,7 +536,7 @@ class CvArtifactStore:
 
     def _open_prefix(self, key: str, *, create: bool) -> int | None:
         name = key[:2]
-        created = False
+        observed_missing = False
         try:
             descriptor = self._open_directory_descriptor(
                 name, dir_fd=self._root_descriptor
@@ -446,9 +544,9 @@ class CvArtifactStore:
         except FileNotFoundError:
             if not create:
                 return None
+            observed_missing = True
             try:
                 os.mkdir(name, mode=0o700, dir_fd=self._root_descriptor)
-                created = True
             except FileExistsError:
                 pass
             descriptor = self._open_directory_descriptor(
@@ -459,7 +557,7 @@ class CvArtifactStore:
         if status.st_uid != effective_uid or status.st_mode & 0o077:
             os.close(descriptor)
             raise CvArtifactError("unsafe CV artifact directory")
-        if created:
+        if observed_missing:
             os.fsync(self._root_descriptor)
         return descriptor
 
@@ -618,21 +716,34 @@ class CvArtifactStore:
 
     def _quarantine_entry(
         self, key: str, entry: Path, identity: tuple[int, int]
-    ) -> None:
+    ) -> bool:
         prefix_descriptor: int | None = None
         quarantine_descriptor: int | None = None
         try:
             prefix_descriptor = self._open_prefix(key, create=False)
             if prefix_descriptor is None:
+                return False
+            try:
+                current = os.stat(
+                    key, dir_fd=prefix_descriptor, follow_symlinks=False
+                )
+            except FileNotFoundError:
+                return False
+            if (current.st_dev, current.st_ino) != identity:
                 raise ValueError
-            created = False
+            observed_missing = False
             try:
                 quarantine_descriptor = self._open_directory_descriptor(
                     "quarantine", dir_fd=self._root_descriptor
                 )
             except FileNotFoundError:
-                os.mkdir("quarantine", mode=0o700, dir_fd=self._root_descriptor)
-                created = True
+                observed_missing = True
+                try:
+                    os.mkdir(
+                        "quarantine", mode=0o700, dir_fd=self._root_descriptor
+                    )
+                except FileExistsError:
+                    pass
                 quarantine_descriptor = self._open_directory_descriptor(
                     "quarantine", dir_fd=self._root_descriptor
                 )
@@ -642,20 +753,33 @@ class CvArtifactStore:
             )
             if quarantine_status.st_uid != effective_uid or quarantine_status.st_mode & 0o077:
                 raise ValueError
-            if created:
+            if observed_missing:
                 os.fsync(self._root_descriptor)
-            current = os.stat(key, dir_fd=prefix_descriptor, follow_symlinks=False)
+            try:
+                current = os.stat(
+                    key, dir_fd=prefix_descriptor, follow_symlinks=False
+                )
+            except FileNotFoundError:
+                return False
             if (current.st_dev, current.st_ino) != identity:
                 raise ValueError
             destination = f"{key}-{time.time_ns()}-{secrets.token_hex(8)}"
-            os.replace(
-                key,
-                destination,
-                src_dir_fd=prefix_descriptor,
-                dst_dir_fd=quarantine_descriptor,
-            )
+            try:
+                os.replace(
+                    key,
+                    destination,
+                    src_dir_fd=prefix_descriptor,
+                    dst_dir_fd=quarantine_descriptor,
+                )
+            except FileNotFoundError:
+                try:
+                    os.stat(key, dir_fd=prefix_descriptor, follow_symlinks=False)
+                except FileNotFoundError:
+                    return False
+                raise
             os.fsync(quarantine_descriptor)
             os.fsync(prefix_descriptor)
+            return True
         except (CvArtifactError, OSError, ValueError):
             raise CvArtifactError("unable to quarantine CV artifact") from None
         finally:
@@ -800,11 +924,14 @@ class CvArtifactStore:
                 os.O_RDONLY | nofollow | directory_flag,
                 dir_fd=dir_fd,
             )
-        status = os.fstat(descriptor)
-        if not stat.S_ISDIR(status.st_mode):
+        try:
+            status = os.fstat(descriptor)
+            if not stat.S_ISDIR(status.st_mode):
+                raise ValueError
+            return descriptor
+        except BaseException:
             os.close(descriptor)
-            raise ValueError
-        return descriptor
+            raise
 
     @staticmethod
     def _open_new_regular_file(path: Path) -> int:

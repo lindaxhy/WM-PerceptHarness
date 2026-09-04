@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+import gc
 import hashlib
 import json
 import os
@@ -10,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import weakref
 
 import pytest
 
@@ -1139,3 +1141,288 @@ def test_lookup_quarantines_deep_json_without_recursion_error(tmp_path, cv_reque
     assert store.lookup(key) is None
     assert not entry.exists()
     assert len(tuple((root / "quarantine").iterdir())) == 1
+
+
+def test_concurrent_prefix_observer_fsyncs_root_before_using_winner(
+    tmp_path, cv_request, monkeypatch
+):
+    """An EEXIST loser must not use a newly observed prefix without its own fsync."""
+    root = tmp_path / "cv-cache"
+    stores = (CvArtifactStore(root), CvArtifactStore(root))
+    key = cv_cache_key(cv_request)
+    barrier = threading.Barrier(2)
+    real_mkdir = os.mkdir
+    real_fsync = os.fsync
+    mkdir_threads = set()
+    fsync_threads = set()
+    failures = []
+
+    def race_prefix_mkdir(path, mode=0o777, *, dir_fd=None):
+        if path == key[:2] and same_directory_endpoint(dir_fd, root):
+            mkdir_threads.add(threading.get_ident())
+            barrier.wait(timeout=5)
+        return real_mkdir(path, mode, dir_fd=dir_fd)
+
+    def record_root_fsync(descriptor):
+        if same_directory_endpoint(descriptor, root):
+            fsync_threads.add(threading.get_ident())
+        return real_fsync(descriptor)
+
+    def create_staging(store):
+        try:
+            with store.staging(key):
+                pass
+        except BaseException as error:
+            failures.append(error)
+
+    monkeypatch.setattr(os, "mkdir", race_prefix_mkdir)
+    monkeypatch.setattr(os, "fsync", record_root_fsync)
+    threads = [threading.Thread(target=create_staging, args=(store,)) for store in stores]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not failures
+    assert len(mkdir_threads) == 2
+    assert mkdir_threads <= fsync_threads
+
+
+def test_lookup_returns_miss_when_entry_disappears_after_identity(
+    tmp_path, cv_request, monkeypatch
+):
+    """A vanished identified entry must remain a cache miss, not an error."""
+    root = tmp_path / "cv-cache"
+    store = CvArtifactStore(root)
+    key = cv_cache_key(cv_request)
+    entry = write_raw_entry(root, key, b"partial")
+    displaced = tmp_path / "disappeared-after-identity"
+    original_validate = store._validate_entry
+    removed = False
+
+    def disappear_before_validation(path, expected_key):
+        nonlocal removed
+        if path == entry and not removed:
+            entry.rename(displaced)
+            removed = True
+        return original_validate(path, expected_key)
+
+    monkeypatch.setattr(store, "_validate_entry", disappear_before_validation)
+
+    assert store.lookup(key) is None
+    assert removed
+
+
+def test_store_context_manager_closes_root_descriptor_without_double_close(tmp_path):
+    """Closing twice must not close a new resource that reuses the old fd number."""
+    root = tmp_path / "cv-cache"
+    with CvArtifactStore(root) as store:
+        root_descriptor = store._root_descriptor
+        os.fstat(root_descriptor)
+
+    with pytest.raises(OSError):
+        os.fstat(root_descriptor)
+
+    source_descriptor = os.open(root, os.O_RDONLY)
+    try:
+        os.dup2(source_descriptor, root_descriptor)
+        store.close()
+        os.fstat(root_descriptor)
+    finally:
+        os.close(root_descriptor)
+        if source_descriptor != root_descriptor:
+            os.close(source_descriptor)
+
+
+def test_store_close_waits_for_active_staging_before_releasing_root(
+    tmp_path, cv_request
+):
+    """Close requested inside an active operation must defer descriptor release."""
+    store = CvArtifactStore(tmp_path / "cv-cache")
+    root_descriptor = store._root_descriptor
+
+    with store.staging(cv_cache_key(cv_request)):
+        store.close()
+        os.fstat(root_descriptor)
+
+    with pytest.raises(OSError):
+        os.fstat(root_descriptor)
+    with pytest.raises(CvArtifactError):
+        store.lookup(cv_cache_key(cv_request))
+
+
+def test_store_close_defers_root_release_until_context_exit(tmp_path):
+    """The context-manager lease must keep the descriptor alive through its body."""
+    store = CvArtifactStore(tmp_path / "cv-cache")
+
+    with store:
+        root_descriptor = store._root_descriptor
+        store.close()
+        os.fstat(root_descriptor)
+
+    with pytest.raises(OSError):
+        os.fstat(root_descriptor)
+
+
+def test_store_finalizer_releases_unclosed_root_descriptor(tmp_path):
+    """Dropping an unclosed store must not leak its trusted root descriptor."""
+    store = CvArtifactStore(tmp_path / "cv-cache")
+    root_descriptor = store._root_descriptor
+    reference = weakref.ref(store)
+
+    del store
+    gc.collect()
+
+    assert reference() is None
+    with pytest.raises(OSError):
+        os.fstat(root_descriptor)
+
+
+def test_rejected_ancestry_closes_newly_opened_child_descriptor(
+    tmp_path, monkeypatch
+):
+    """Rejecting an unsafe child must close both parent and rejected child fds."""
+    unsafe_parent = tmp_path / "unsafe-parent"
+    unsafe_parent.mkdir(mode=0o700)
+    unsafe_parent.chmod(0o777)
+    opened_descriptors = set()
+    original_open = CvArtifactStore._open_directory_descriptor
+
+    def track_open(path, *, dir_fd=None):
+        descriptor = original_open(path, dir_fd=dir_fd)
+        opened_descriptors.add(descriptor)
+        return descriptor
+
+    monkeypatch.setattr(
+        CvArtifactStore, "_open_directory_descriptor", staticmethod(track_open)
+    )
+
+    with pytest.raises(CvArtifactError, match="unsafe CV artifact directory"):
+        CvArtifactStore(unsafe_parent / "cache")
+
+    assert opened_descriptors
+    for descriptor in opened_descriptors:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+
+
+def test_directory_open_closes_descriptor_when_fstat_fails(tmp_path, monkeypatch):
+    """An error validating a just-opened directory must not leak its descriptor."""
+    opened_descriptors = []
+    real_open = os.open
+    real_fstat = os.fstat
+
+    def track_open(*args, **kwargs):
+        descriptor = real_open(*args, **kwargs)
+        opened_descriptors.append(descriptor)
+        return descriptor
+
+    def fail_fstat(descriptor):
+        raise OSError("injected fstat failure")
+
+    monkeypatch.setattr(os, "open", track_open)
+    monkeypatch.setattr(os, "fstat", fail_fstat)
+
+    with pytest.raises(OSError, match="injected fstat failure"):
+        CvArtifactStore._open_directory_descriptor(tmp_path)
+
+    assert len(opened_descriptors) == 1
+    with pytest.raises(OSError):
+        real_fstat(opened_descriptors[0])
+
+
+def test_concurrent_cache_root_creators_reopen_validate_and_fsync_winner(
+    tmp_path, monkeypatch
+):
+    """A root-creation EEXIST loser must validate and fsync the winning entry."""
+    root = tmp_path / "cv-cache"
+    barrier = threading.Barrier(2)
+    real_mkdir = os.mkdir
+    real_fsync = os.fsync
+    mkdir_threads = set()
+    fsync_threads = set()
+    stores = []
+    failures = []
+
+    def race_root_mkdir(path, mode=0o777, *, dir_fd=None):
+        if path == root.name and same_directory_endpoint(dir_fd, tmp_path):
+            mkdir_threads.add(threading.get_ident())
+            barrier.wait(timeout=5)
+        return real_mkdir(path, mode, dir_fd=dir_fd)
+
+    def record_parent_fsync(descriptor):
+        if same_directory_endpoint(descriptor, tmp_path):
+            fsync_threads.add(threading.get_ident())
+        return real_fsync(descriptor)
+
+    def construct_store():
+        try:
+            stores.append(CvArtifactStore(root))
+        except BaseException as error:
+            failures.append(error)
+
+    monkeypatch.setattr(os, "mkdir", race_root_mkdir)
+    monkeypatch.setattr(os, "fsync", record_parent_fsync)
+    threads = [threading.Thread(target=construct_store) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not failures
+    assert len(stores) == 2
+    assert len(mkdir_threads) == 2
+    assert mkdir_threads <= fsync_threads
+
+
+def test_concurrent_first_quarantines_reopen_and_fsync_winner(
+    tmp_path, cv_request, monkeypatch
+):
+    """Different corrupt keys racing first quarantine must both finish durably."""
+    root = tmp_path / "cv-cache"
+    stores = (CvArtifactStore(root), CvArtifactStore(root))
+    other_request = cv_request.model_copy(update={"checkpoint_sha256": "c" * 64})
+    keys = (cv_cache_key(cv_request), cv_cache_key(other_request))
+    for key in keys:
+        write_raw_entry(root, key, b"partial")
+    barrier = threading.Barrier(2)
+    real_mkdir = os.mkdir
+    real_fsync = os.fsync
+    mkdir_threads = set()
+    fsync_threads = set()
+    results = []
+    failures = []
+
+    def race_quarantine_mkdir(path, mode=0o777, *, dir_fd=None):
+        if path == "quarantine" and same_directory_endpoint(dir_fd, root):
+            mkdir_threads.add(threading.get_ident())
+            barrier.wait(timeout=5)
+        return real_mkdir(path, mode, dir_fd=dir_fd)
+
+    def record_root_fsync(descriptor):
+        if same_directory_endpoint(descriptor, root):
+            fsync_threads.add(threading.get_ident())
+        return real_fsync(descriptor)
+
+    def lookup_corrupt(store, key):
+        try:
+            results.append(store.lookup(key))
+        except BaseException as error:
+            failures.append(error)
+
+    monkeypatch.setattr(os, "mkdir", race_quarantine_mkdir)
+    monkeypatch.setattr(os, "fsync", record_root_fsync)
+    threads = [
+        threading.Thread(target=lookup_corrupt, args=(store, key))
+        for store, key in zip(stores, keys, strict=True)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not failures
+    assert results == [None, None]
+    assert len(tuple((root / "quarantine").iterdir())) == 2
+    assert len(mkdir_threads) == 2
+    assert mkdir_threads <= fsync_threads
