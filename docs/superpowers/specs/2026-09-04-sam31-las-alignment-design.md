@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-04
 
-**Status:** user-approved design, pending written-spec review
+**Status:** user-approved design
 
 **Scope:** add SAM3.1-derived visual evidence to the existing Qwen3-VL
 annotation pipeline and evaluate whether it improves alignment with the frozen
@@ -34,10 +34,11 @@ Relevant existing documents:
 - [LAS video understanding architecture](../../architecture/las-video-understanding-design.md)
 - [LAS versus local implementation report](../../reports/2026-09-03-las-vs-local-implementation-report.md)
 
-The implementation branch starts from `main`; it does not contain the commits
-from the comparison-viewer feature branch. Viewer integration is added to this
-new PR only after the comparison viewer has itself entered `main`. Its commits
-will not be copied or stacked into this branch.
+The implementation branch starts from current `main`, including the already
+merged comparison viewer from PR #3. This is a new PR and not a continuation of
+the former feature branch: no PR #3 head commits are amended or cherry-picked,
+and only the new branch's diff is proposed for review. Viewer integration can
+therefore extend the merged files directly.
 
 ## 2. Goals
 
@@ -52,8 +53,8 @@ will not be copied or stacked into this branch.
 5. Produce versioned, cacheable, inspectable evidence with complete provenance.
 6. Preserve deterministic Fake-mode development and strict output validation.
 7. Publish a viewer-compatible projection so a reviewer can distinguish LAS,
-   Qwen-only, Qwen-plus-SAM, and the evidence supporting each claim. Bind that
-   projection to the viewer only when the viewer is available on `main`.
+   Qwen-only, Qwen-plus-SAM, and the evidence supporting each claim, and bind it
+   to the comparison viewer now present on `main`.
 
 ## 3. Non-goals
 
@@ -333,11 +334,10 @@ larger blinded and human-reviewed set.
 
 ## 13. Viewer projection and integration boundary
 
-The SAM implementation owns a validated, static viewer projection but does not
-own or duplicate the comparison-viewer feature. Once the viewer is present on
-`main`, the new PR adds a selectable Qwen-plus-SAM result alongside the frozen
-LAS and Qwen-only data. Its default comparison remains LAS on the left and the
-selected local result on the right.
+The SAM implementation owns a validated, static viewer projection and extends
+the comparison viewer already merged into `main`. The new PR adds a selectable
+Qwen-plus-SAM result alongside the frozen LAS and Qwen-only data. Its default
+comparison remains LAS on the left and the selected local result on the right.
 
 For each local event, the viewer displays branch, evidence mode, source track
 IDs, confidence, warnings, and review status. When available, a reviewer can
@@ -398,9 +398,10 @@ compatibility matrix and a GPU smoke command for each environment.
 - viewer projection validation and synchronized playback checks;
 - idle-memory, SQLite integrity, terminal job state, and artifact-digest audit.
 
-The pre-change baseline for this branch is 744 passing local tests under Python
-3.12. Any unrelated baseline failure must be resolved or explicitly separated
-before SAM integration is evaluated.
+The pre-change baseline for this branch is 762 passing local tests under Python
+3.12 plus 8 passing viewer model tests under Node. Any unrelated baseline
+failure must be resolved or explicitly separated before SAM integration is
+evaluated.
 
 ## 16. Delivery sequence
 
@@ -412,9 +413,8 @@ before SAM integration is evaluated.
 5. Implement the Action, Occlusion, and Scene Facts branches and deterministic
    merge.
 6. Add evaluation metrics, five-demo A/B artifacts, and manual-review records.
-7. Add the viewer projection and deployment documentation. If the comparison
-   viewer has entered `main`, bind the new projection to its UI; otherwise keep
-   the projection independently testable and defer only the UI binding.
+7. Add the viewer projection and deployment documentation, then bind the
+   projection to the merged comparison viewer as a new commit in this branch.
 8. Run the complete local suite and four-GPU acceptance before creating the
    implementation PR.
 
