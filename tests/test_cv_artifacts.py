@@ -256,6 +256,42 @@ def test_store_publishes_canonical_manifest_and_loads_validated_artifact(
         handle.key = "0" * 64  # type: ignore[misc]
 
 
+def test_publish_commit_guard_failure_prevents_atomic_installation(
+    tmp_path, cv_request
+):
+    """A failed generation guard must leave no installed cache entry."""
+    payload = b"mask"
+    artifact = artifact_for(cv_request, payload)
+    key = cv_cache_key(cv_request)
+    store = CvArtifactStore(tmp_path / "cv-cache")
+    guard_entered = False
+
+    class LeaseLost(RuntimeError):
+        pass
+
+    class RejectCommit:
+        def __enter__(self):
+            nonlocal guard_entered
+            guard_entered = True
+            raise LeaseLost("generation changed")
+
+        def __exit__(self, *exc_info):
+            return None
+
+    with store.staging(key) as staging:
+        write_artifact_file(staging, payload)
+        with pytest.raises(LeaseLost, match="generation changed"):
+            store.publish(
+                cv_request,
+                staging,
+                artifact,
+                commit_guard=RejectCommit,
+            )
+
+    assert guard_entered is True
+    assert store.lookup(key) is None
+
+
 def test_staging_is_removed_when_producer_fails(tmp_path, cv_request):
     """Leaking failed staging directories must leave unbounded partial artifacts."""
     store = CvArtifactStore(tmp_path / "cv-cache")

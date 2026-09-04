@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import sys
 import threading
 import time
 from typing import Any
@@ -447,6 +448,57 @@ def test_stale_cv_result_is_neither_published_nor_completed(
     assert cache.lookup(cv_cache_key(cv_request)) is None
 
 
+def test_lease_reclaimed_at_artifact_commit_cannot_install_stale_cache(
+    store: SQLiteTaskStore,
+    cv_request: CvEvidenceRequest,
+    cache: CvArtifactStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lease ownership must be held across the atomic cache installation."""
+    job = create_job(store, cv_request)
+    original_validate_entry = cache._validate_entry
+    reclaimed_after_preparation = False
+
+    def reclaim_after_preparation(entry: Path, expected_key: str):
+        nonlocal reclaimed_after_preparation
+        validated = original_validate_entry(entry, expected_key)
+        if entry.name.startswith(".publish-") and not reclaimed_after_preparation:
+            reclaimed_after_preparation = True
+            recovered = store.claim_inference_job(
+                "sam-new",
+                model_name="sam3.1",
+                lease_seconds=10.0,
+                now=101.1,
+            )
+            assert recovered is not None
+            store.complete_inference_job(
+                recovered.job_id,
+                {"winner": "new-owner"},
+                worker_id="sam-new",
+                attempt=recovered.attempt,
+                now=101.2,
+            )
+        return validated
+
+    monkeypatch.setattr(cache, "_validate_entry", reclaim_after_preparation)
+    stale = CVEvidenceWorker(
+        store,
+        FakeCvEvidenceProvider(),
+        cache,
+        "sam-old",
+        lease_seconds=1.0,
+    )
+
+    assert stale.run_once(now=100.0)
+
+    completed = store.get_inference_job(job.job_id)
+    assert reclaimed_after_preparation is True
+    assert completed is not None
+    assert completed.result == {"winner": "new-owner"}
+    assert completed.completed_by == "sam-new"
+    assert cache.lookup(cv_cache_key(cv_request)) is None
+
+
 def test_cv_worker_interrupt_expires_lease_and_removes_staging(
     store: SQLiteTaskStore,
     cv_request: CvEvidenceRequest,
@@ -550,6 +602,61 @@ def test_provider_metrics_failure_cannot_publish_a_future_cache_hit(
     assert failed.status is InferenceStatus.FAILED
     assert failed.error == "CV evidence inference failed"
     assert all(not path.exists() for path in staging_paths)
+    assert cache.lookup(cv_cache_key(cv_request)) is None
+
+
+def test_decreasing_inference_clock_cannot_publish_cache_entry(
+    store: SQLiteTaskStore,
+    cv_request: CvEvidenceRequest,
+    cache: CvArtifactStore,
+) -> None:
+    """A negative elapsed metric must fail before durable artifact installation."""
+    job = create_job(store, cv_request)
+    times = iter((10.0, 9.0))
+    worker = CVEvidenceWorker(
+        store,
+        FakeCvEvidenceProvider(),
+        cache,
+        "sam",
+        monotonic=lambda: next(times),
+    )
+
+    assert worker.run_once(now=20.0)
+
+    failed = store.get_inference_job(job.job_id)
+    assert failed is not None
+    assert failed.status is InferenceStatus.FAILED
+    assert failed.error == "CV evidence inference failed"
+    assert failed.result is None
+    assert failed.metrics is None
+    assert cache.lookup(cv_cache_key(cv_request)) is None
+
+
+def test_overflowing_inference_elapsed_cannot_publish_cache_entry(
+    store: SQLiteTaskStore,
+    cv_request: CvEvidenceRequest,
+    cache: CvArtifactStore,
+) -> None:
+    """Finite readings whose subtraction overflows must fail before publication."""
+    job = create_job(store, cv_request)
+    limit = sys.float_info.max
+    times = iter((-limit, limit))
+    worker = CVEvidenceWorker(
+        store,
+        FakeCvEvidenceProvider(),
+        cache,
+        "sam",
+        monotonic=lambda: next(times),
+    )
+
+    assert worker.run_once(now=20.0)
+
+    failed = store.get_inference_job(job.job_id)
+    assert failed is not None
+    assert failed.status is InferenceStatus.FAILED
+    assert failed.error == "CV evidence inference failed"
+    assert failed.result is None
+    assert failed.metrics is None
     assert cache.lookup(cv_cache_key(cv_request)) is None
 
 

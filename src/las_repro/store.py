@@ -619,6 +619,30 @@ class SQLiteTaskStore:
         )
         return _job_from_row(row)
 
+    @contextmanager
+    def inference_job_lease_guard(
+        self,
+        job_id: str,
+        worker_id: str,
+        *,
+        attempt: int,
+    ) -> Iterator[None]:
+        """Hold current generation ownership across one short external commit."""
+        attempt = _lease_attempt(attempt)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                current = _required_row(
+                    connection, "inference_jobs", "job_id", job_id
+                )
+                _require_running_owner(current, worker_id, attempt)
+                yield
+            except BaseException:
+                connection.rollback()
+                raise
+            else:
+                connection.commit()
+
     def expire_inference_job_lease(
         self,
         job_id: str,
@@ -1440,6 +1464,11 @@ def _validated_job_metrics_json(metrics: Mapping[str, Any] | None) -> str | None
     if len(encoded.encode("utf-8")) > _MAX_JOB_METRICS_BYTES:
         raise ValueError("metrics canonical JSON exceeds 4096 bytes")
     return encoded
+
+
+def validate_inference_job_metrics(metrics: Mapping[str, Any] | None) -> None:
+    """Validate completion metrics with the store's canonical Task-1 rules."""
+    _validated_job_metrics_json(metrics)
 
 
 def _task_model_alias(payload_json: str) -> str:

@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from contextlib import ExitStack, contextmanager
+from collections.abc import Callable
+from contextlib import (
+    AbstractContextManager,
+    ExitStack,
+    contextmanager,
+    nullcontext,
+)
 from dataclasses import dataclass
 import fcntl
 import hashlib
@@ -255,16 +261,25 @@ class CvArtifactStore:
         request: CvEvidenceRequest,
         staging: Path,
         artifact: CvEvidenceArtifact,
+        *,
+        commit_guard: Callable[[], AbstractContextManager[object]] | None = None,
     ) -> CvArtifactHandle:
         """Validate, fsync, and atomically publish one complete entry."""
         with self._operation():
-            return self._publish(request, staging, artifact)
+            return self._publish(
+                request,
+                staging,
+                artifact,
+                commit_guard=commit_guard,
+            )
 
     def _publish(
         self,
         request: CvEvidenceRequest,
         staging: Path,
         artifact: CvEvidenceArtifact,
+        *,
+        commit_guard: Callable[[], AbstractContextManager[object]] | None,
     ) -> CvArtifactHandle:
         try:
             request = CvEvidenceRequest.model_validate(request.model_dump(mode="python"))
@@ -354,12 +369,18 @@ class CvArtifactStore:
                             current_publication.st_ino,
                         ) != publication_identity:
                             raise ValueError
-                        os.replace(
-                            publication.name,
-                            key,
-                            src_dir_fd=prefix_descriptor,
-                            dst_dir_fd=prefix_descriptor,
+                        guard = (
+                            nullcontext()
+                            if commit_guard is None
+                            else commit_guard()
                         )
+                        with guard:
+                            os.replace(
+                                publication.name,
+                                key,
+                                src_dir_fd=prefix_descriptor,
+                                dst_dir_fd=prefix_descriptor,
+                            )
                         os.fsync(prefix_descriptor)
                         destination_status = os.stat(
                             key,

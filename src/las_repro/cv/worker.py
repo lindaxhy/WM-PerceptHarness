@@ -9,7 +9,12 @@ import time
 from typing import Any
 
 from ..domain import InferenceJob
-from ..store import InvalidTransition, SQLiteTaskStore, WorkerMismatch
+from ..store import (
+    InvalidTransition,
+    SQLiteTaskStore,
+    WorkerMismatch,
+    validate_inference_job_metrics,
+)
 from ..workers import _LeaseKeeper
 from .artifacts import CvArtifactHandle, CvArtifactStore, cv_cache_key
 from .base import CvEvidenceProvider, CvOutOfMemoryError
@@ -142,17 +147,19 @@ class CVEvidenceWorker:
         cached = self.artifact_store.lookup(key)
         if cached is not None:
             artifact = self.artifact_store.load(cached)
+            metrics = _cv_metrics(
+                request,
+                artifact,
+                cache_hit=True,
+                oom_retry=False,
+                peak_allocated_bytes=0,
+                inference_seconds=0.0,
+            )
+            validate_inference_job_metrics(metrics)
             return (
                 cached,
                 artifact,
-                _cv_metrics(
-                    request,
-                    artifact,
-                    cache_hit=True,
-                    oom_retry=False,
-                    peak_allocated_bytes=0,
-                    inference_seconds=0.0,
-                ),
+                metrics,
             )
 
         started = _finite_clock(self._monotonic())
@@ -165,6 +172,15 @@ class CVEvidenceWorker:
                     peak_allocated_bytes = _provider_peak_allocated_bytes(
                         self.provider
                     )
+                    metrics = _cv_metrics(
+                        request,
+                        artifact,
+                        cache_hit=False,
+                        oom_retry=oom_retry,
+                        peak_allocated_bytes=peak_allocated_bytes,
+                        inference_seconds=inference_seconds,
+                    )
+                    validate_inference_job_metrics(metrics)
                     self.store.heartbeat_inference_job(
                         job.job_id,
                         self.worker_id,
@@ -172,7 +188,16 @@ class CVEvidenceWorker:
                         attempt=job.attempt,
                         now=now,
                     )
-                    handle = self.artifact_store.publish(request, staging, artifact)
+                    handle = self.artifact_store.publish(
+                        request,
+                        staging,
+                        artifact,
+                        commit_guard=lambda: self.store.inference_job_lease_guard(
+                            job.job_id,
+                            self.worker_id,
+                            attempt=job.attempt,
+                        ),
+                    )
                 break
             except CvOutOfMemoryError:
                 if attempt_index != 0:
@@ -184,14 +209,7 @@ class CVEvidenceWorker:
         return (
             handle,
             artifact,
-            _cv_metrics(
-                request,
-                artifact,
-                cache_hit=False,
-                oom_retry=oom_retry,
-                peak_allocated_bytes=peak_allocated_bytes,
-                inference_seconds=inference_seconds,
-            ),
+            metrics,
         )
 
     def _expire_after_interrupted_claim(

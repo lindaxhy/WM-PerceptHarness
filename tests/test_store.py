@@ -1424,6 +1424,53 @@ def test_reused_gpu_worker_id_cannot_renew_or_finish_an_expired_generation(store
     assert current.error is None
 
 
+def test_inference_job_lease_guard_requires_current_owner_and_attempt(store):
+    """A stale generation must not enter a guarded external commit point."""
+    task = store.create_task({"video_url": "/v.mp4"})
+    [job] = store.create_inference_jobs(
+        task.task_id,
+        [InferenceJobSpec("cv_evidence", 0, {}, model_name="sam3.1")],
+    )
+    stale = store.claim_inference_job(
+        "sam", model_name="sam3.1", lease_seconds=1.0, now=100.0
+    )
+    current = store.claim_inference_job(
+        "sam", model_name="sam3.1", lease_seconds=10.0, now=101.1
+    )
+    assert stale is not None
+    assert current is not None
+
+    with pytest.raises(WorkerMismatch):
+        with store.inference_job_lease_guard(
+            job.job_id,
+            "sam",
+            attempt=stale.attempt,
+        ):
+            raise AssertionError("stale generation entered commit guard")
+    with pytest.raises(WorkerMismatch):
+        with store.inference_job_lease_guard(
+            job.job_id,
+            "not-sam",
+            attempt=current.attempt,
+        ):
+            raise AssertionError("wrong worker entered commit guard")
+
+    entered = False
+    with store.inference_job_lease_guard(
+        job.job_id,
+        "sam",
+        attempt=current.attempt,
+    ):
+        entered = True
+
+    unchanged = store.get_inference_job(job.job_id)
+    assert entered is True
+    assert unchanged is not None
+    assert unchanged.status is InferenceStatus.RUNNING
+    assert unchanged.worker_id == "sam"
+    assert unchanged.attempt == current.attempt
+
+
 def test_explicit_expiry_fences_a_stalled_inference_heartbeat(store):
     task = store.create_task({"video_url": "/v.mp4"})
     [job] = store.create_inference_jobs(
