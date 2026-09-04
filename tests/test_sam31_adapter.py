@@ -1387,6 +1387,112 @@ def test_successful_analysis_with_cleanup_baseexception_fails_sanitized_and_clea
     assert cleanup_paths[1] == tmp_path / "staging" / "masks"
 
 
+def test_successful_analysis_surfaces_real_rmtree_oserror_as_sanitized_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_torch: SimpleNamespace,
+) -> None:
+    request = make_request(tmp_path)
+    removed_paths: list[Path] = []
+
+    def failing_rmtree(path: Path) -> None:
+        removed_paths.append(Path(path))
+        raise OSError("private filesystem detail")
+
+    monkeypatch.setattr(SAM31_MODULE.shutil, "rmtree", failing_rmtree)
+    provider = make_provider(PredictorDouble(), fake_torch, MaterializerDouble())
+
+    raised: BaseException | None = None
+    try:
+        provider.analyze(request, tmp_path / "staging")
+    except BaseException as error:
+        raised = error
+
+    assert type(raised) is CvProviderError
+    assert str(raised) == "SAM3.1 CV evidence inference failed"
+    assert len(removed_paths) == 2
+    assert removed_paths[0].name.startswith(".sam31-frames-")
+    assert removed_paths[1] == tmp_path / "staging" / "masks"
+
+
+@pytest.mark.parametrize(
+    "primary_kind",
+    ["oom", "keyboard", "system-exit", "ordinary"],
+)
+def test_real_rmtree_oserror_preserves_primary_and_attempts_all_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_torch: SimpleNamespace,
+    primary_kind: str,
+) -> None:
+    request = make_request(tmp_path)
+    if primary_kind == "oom":
+        primary: BaseException = fake_torch.cuda.OutOfMemoryError("private OOM")
+    elif primary_kind == "keyboard":
+        primary = KeyboardInterrupt("primary keyboard")
+    elif primary_kind == "system-exit":
+        primary = SystemExit("primary exit")
+    else:
+        primary = RuntimeError("private ordinary failure")
+
+    def fail(*_: Any) -> list[dict[str, Any]]:
+        raise primary
+
+    removed_paths: list[Path] = []
+
+    def failing_rmtree(path: Path) -> None:
+        removed_paths.append(Path(path))
+        raise OSError("private cleanup failure")
+
+    monkeypatch.setattr(SAM31_MODULE.shutil, "rmtree", failing_rmtree)
+    provider = make_provider(PredictorDouble(fail), fake_torch, MaterializerDouble())
+
+    raised: BaseException | None = None
+    try:
+        provider.analyze(request, tmp_path / "staging")
+    except BaseException as error:
+        raised = error
+
+    if primary_kind == "oom":
+        assert type(raised) is CvOutOfMemoryError
+        assert str(raised) == "SAM3.1 CV evidence inference ran out of memory"
+    elif primary_kind == "ordinary":
+        assert type(raised) is CvProviderError
+        assert str(raised) == "SAM3.1 CV evidence inference failed"
+    else:
+        assert raised is primary
+    assert len(removed_paths) == 2
+    assert removed_paths[0].name.startswith(".sam31-frames-")
+    assert removed_paths[1] == tmp_path / "staging" / "masks"
+
+
+def test_provider_close_surfaces_real_runtime_cleanup_oserror(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_torch: SimpleNamespace,
+) -> None:
+    runtime_directory = tmp_path / "private-runtime"
+    runtime_directory.mkdir(mode=0o700)
+
+    def failing_rmtree(_path: Path) -> None:
+        raise OSError("private runtime cleanup detail")
+
+    monkeypatch.setattr(SAM31_MODULE.shutil, "rmtree", failing_rmtree)
+    provider = make_provider(
+        PredictorDouble(),
+        fake_torch,
+        MaterializerDouble(),
+        runtime_directory=runtime_directory,
+    )
+
+    with pytest.raises(
+        CvProviderError, match="^Unable to close SAM3.1 runtime$"
+    ):
+        provider.close()
+
+    assert runtime_directory.exists()
+
+
 def test_non_oom_failure_is_sanitized_closed_and_not_retried(
     tmp_path: Path, fake_torch: SimpleNamespace
 ) -> None:
@@ -1648,6 +1754,146 @@ def test_source_snapshot_uses_pinned_commit_blobs_not_worktree_bytes(
     provider.close()
 
 
+def test_source_snapshot_ignores_git_replacement_objects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_torch: SimpleNamespace,
+) -> None:
+    repository, checkpoint, digest = local_runtime_assets(tmp_path)
+    builder = repository / "sam3" / "model_builder.py"
+    lazy = repository / "sam3" / "lazy_component.py"
+    builder.write_text(PINNED_BUILDER_SOURCE, encoding="utf-8")
+    lazy.write_text("VALUE = 'pinned commit blob'\n", encoding="utf-8")
+    pinned_revision = pin_runtime_repository(monkeypatch, repository)
+    malicious_builder = PINNED_BUILDER_SOURCE.replace(
+        "pinned commit blob", "malicious replacement commit"
+    )
+    builder.write_text(malicious_builder, encoding="utf-8")
+    lazy.write_text("VALUE = 'malicious replacement commit'\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(repository), "add", "sam3"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "user.name=SAM Test",
+            "-c",
+            "user.email=sam-test@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "malicious replacement",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    malicious_revision = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "-C", str(repository), "checkout", "-q", "--detach", pinned_revision],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "replace", pinned_revision, malicious_revision],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "reset", "--hard", "HEAD"],
+        check=True,
+        capture_output=True,
+    )
+    apparent_revision = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD^{commit}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    apparent_status = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--",
+            "sam3",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    replaced_source = subprocess.run(
+        ["git", "-C", str(repository), "show", "HEAD:sam3/model_builder.py"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert apparent_revision == pinned_revision
+    assert apparent_status == ""
+    assert "malicious replacement commit" in replaced_source
+    install_fake_torch_module(monkeypatch, fake_torch)
+
+    load_error: BaseException | None = None
+    provider: Sam31EvidenceProvider | None = None
+    try:
+        provider = Sam31EvidenceProvider.load(repository, checkpoint, digest)
+    except BaseException as error:
+        load_error = error
+    if provider is not None:
+        provider.close()
+
+    subprocess.run(
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(repository),
+            "reset",
+            "--hard",
+            "HEAD",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    inherited_redirect = tmp_path / "inherited-git-redirect"
+    for name in (
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_REPLACE_REF_BASE",
+    ):
+        monkeypatch.setenv(name, str(inherited_redirect))
+    monkeypatch.setenv("GIT_NO_REPLACE_OBJECTS", "0")
+    direct_snapshot = SAM31_MODULE._snapshot_repository_source(
+        repository, tmp_path / "direct-source"
+    )
+    snapshotted_builder = (direct_snapshot / "sam3/model_builder.py").read_text(
+        encoding="utf-8"
+    )
+    snapshotted_lazy = (direct_snapshot / "sam3/lazy_component.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert type(load_error) is CvProviderError
+    assert str(load_error) == "Unable to load local SAM3.1 runtime"
+    assert "pinned commit blob" in snapshotted_builder
+    assert "malicious replacement commit" not in snapshotted_builder
+    assert snapshotted_lazy == "VALUE = 'pinned commit blob'\n"
+
+
 @pytest.mark.parametrize(
     "tree_output",
     [
@@ -1662,6 +1908,9 @@ def test_source_snapshot_uses_pinned_commit_blobs_not_worktree_bytes(
         * 2,
         b"100644 blob " + (b"a" * 40) + b"       1\tsam3/../escape.py\0",
         b"100644 blob " + (b"a" * 40) + b"       1\tsam3/invalid-\xff.py\0",
+        b"100644 blob " + (b"a" * 40) + b"       1\tsam3//double.py\0",
+        b"100644 blob " + (b"a" * 40) + b"       1\tsam3/./dot.py\0",
+        b"100644 blob " + (b"a" * 40) + b"       1\tsam3/c1-\xc2\x85.py\0",
     ],
     ids=(
         "malformed",
@@ -1670,6 +1919,9 @@ def test_source_snapshot_uses_pinned_commit_blobs_not_worktree_bytes(
         "duplicate",
         "noncanonical-path",
         "non-utf8-path",
+        "double-separator",
+        "dot-segment",
+        "c1-control",
     ),
 )
 def test_pinned_tree_rejects_malformed_duplicate_and_special_entries(
@@ -1709,6 +1961,33 @@ def test_pinned_tree_output_is_bounded_and_git_command_failure_is_rejected(
             ("ls-tree", "HEAD"),
             1024,
         )
+
+
+def test_cat_file_process_is_not_started_when_exclusive_destination_open_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = tmp_path / "already-exists.py"
+    destination.write_bytes(b"existing private file")
+    blob = SAM31_MODULE._PinnedBlob(
+        "sam3/already-exists.py",
+        "a" * 40,
+        1,
+    )
+    process_started = False
+
+    def unexpected_process_start(*_args: Any, **_kwargs: Any) -> Any:
+        nonlocal process_started
+        process_started = True
+        raise AssertionError("cat-file must start after exclusive destination open")
+
+    monkeypatch.setattr(SAM31_MODULE.subprocess, "Popen", unexpected_process_start)
+
+    with pytest.raises(FileExistsError):
+        SAM31_MODULE._copy_pinned_blob(tmp_path, blob, destination)
+
+    assert process_started is False
+    assert destination.read_bytes() == b"existing private file"
 
 
 @pytest.mark.parametrize("damage", ["missing", "changed"])
@@ -1784,6 +2063,16 @@ def test_load_verifies_local_revision_and_hash_then_calls_official_builder(
         )
         return predictor
 
+    for name in (
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_REPLACE_REF_BASE",
+    ):
+        monkeypatch.setenv(name, str(tmp_path / "inherited-git-redirect"))
+    monkeypatch.setenv("GIT_NO_REPLACE_OBJECTS", "0")
+
     provider = Sam31EvidenceProvider.load(
         repository,
         checkpoint,
@@ -1794,42 +2083,42 @@ def test_load_verifies_local_revision_and_hash_then_calls_official_builder(
         max_artifact_files=7,
     )
 
-    assert git_calls == [
-        (
-            [
-                "git",
-                "-C",
-                str(repository.resolve()),
-                "rev-parse",
-                "--verify",
-                "HEAD^{commit}",
-            ],
-            {
-                "check": True,
-                "capture_output": True,
-                "text": True,
-                "shell": False,
-            },
-        ),
-        (
-            [
-                "git",
-                "-C",
-                str(repository.resolve()),
-                "status",
-                "--porcelain=v1",
-                "--untracked-files=all",
-                "--",
-                "sam3",
-            ],
-            {
-                "check": True,
-                "capture_output": True,
-                "text": True,
-                "shell": False,
-            },
-        ),
+    assert [call[0] for call in git_calls] == [
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(repository.resolve()),
+            "rev-parse",
+            "--verify",
+            "HEAD^{commit}",
+        ],
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(repository.resolve()),
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--",
+            "sam3",
+        ],
     ]
+    for _, kwargs in git_calls:
+        environment = kwargs["env"]
+        assert kwargs | {"env": None} == {
+            "check": True,
+            "capture_output": True,
+            "text": True,
+            "shell": False,
+            "env": None,
+        }
+        assert environment["GIT_NO_REPLACE_OBJECTS"] == "1"
+        assert environment["LC_ALL"] == "C"
+        assert {
+            name for name in environment if name.startswith("GIT_")
+        } == {"GIT_NO_REPLACE_OBJECTS"}
     checkpoint_argument = Path(factory_calls[0]["checkpoint_path"])
     bpe_argument = Path(factory_calls[0]["bpe_path"])
     assert checkpoint_argument != checkpoint.resolve()

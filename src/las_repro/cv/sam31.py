@@ -857,7 +857,10 @@ def _private_runtime_directory() -> Path:
     path.chmod(0o700)
     status = path.stat()
     if status.st_uid != os.getuid() or stat.S_IMODE(status.st_mode) != 0o700:
-        _remove_tree(path)
+        try:
+            _remove_tree(path)
+        except BaseException:
+            pass
         raise ValueError
     return path
 
@@ -982,38 +985,36 @@ def _local_path(value: Path | str) -> Path:
 
 def _verify_repository_revision(repository: Path) -> None:
     completed = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repository),
+        _git_command(
+            repository,
             "rev-parse",
             "--verify",
             "HEAD^{commit}",
-        ],
+        ),
         check=True,
         capture_output=True,
         text=True,
         shell=False,
+        env=_git_environment(),
     )
     if not isinstance(completed.stdout, str):
         raise ValueError
     if completed.stdout.strip() != _PINNED_REPOSITORY_REVISION:
         raise ValueError
     status = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repository),
+        _git_command(
+            repository,
             "status",
             "--porcelain=v1",
             "--untracked-files=all",
             "--",
             "sam3",
-        ],
+        ),
         check=True,
         capture_output=True,
         text=True,
         shell=False,
+        env=_git_environment(),
     )
     if not isinstance(status.stdout, str) or status.stdout:
         raise ValueError
@@ -1041,7 +1042,10 @@ def _snapshot_repository_source(repository: Path, destination: Path) -> Path:
         destination.chmod(0o500)
         return destination.resolve(strict=True)
     except BaseException:
-        _remove_tree(destination)
+        try:
+            _remove_tree(destination)
+        except BaseException:
+            pass
         raise
 
 
@@ -1081,9 +1085,13 @@ def _pinned_sam_blobs(repository: Path) -> tuple[_PinnedBlob, ...]:
             path.is_absolute()
             or path.parts[:1] != ("sam3",)
             or any(part in {"", ".", ".."} for part in path.parts)
+            or path.as_posix() != name
             or "\\" in name
             or len(name.encode("utf-8")) > 4096
-            or any(ord(character) < 32 or ord(character) == 127 for character in name)
+            or any(
+                ord(character) < 32 or 127 <= ord(character) <= 159
+                for character in name
+            )
             or name in names
         ):
             raise ValueError
@@ -1113,11 +1121,12 @@ def _bounded_git_output(
     if max_bytes <= 0:
         raise ValueError
     process = subprocess.Popen(
-        ["git", "-C", str(repository), *arguments],
+        _git_command(repository, *arguments),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         shell=False,
+        env=_git_environment(),
     )
     output = bytearray()
     try:
@@ -1152,19 +1161,21 @@ def _copy_pinned_blob(
     nofollow = getattr(os, "O_NOFOLLOW", None)
     if nofollow is None:
         raise ValueError
-    process = subprocess.Popen(
-        ["git", "-C", str(repository), "cat-file", "blob", blob.object_id],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        shell=False,
-    )
     destination_descriptor = os.open(
         destination,
         os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow,
         0o400,
     )
+    process: subprocess.Popen[bytes] | None = None
     try:
+        process = subprocess.Popen(
+            _git_command(repository, "cat-file", "blob", blob.object_id),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            shell=False,
+            env=_git_environment(),
+        )
         if process.stdout is None:
             raise ValueError
         digest = hashlib.sha1()
@@ -1201,11 +1212,12 @@ def _copy_pinned_blob(
         ):
             raise ValueError
     except BaseException:
-        _stop_process(process)
+        if process is not None:
+            _stop_process(process)
         raise
     finally:
         os.close(destination_descriptor)
-        if process.stdout is not None:
+        if process is not None and process.stdout is not None:
             try:
                 process.stdout.close()
             except BaseException:
@@ -1256,6 +1268,31 @@ def _stop_process(process: subprocess.Popen[bytes]) -> None:
         process.wait()
     except BaseException:
         pass
+
+
+def _git_command(repository: Path, *arguments: str) -> list[str]:
+    return [
+        "git",
+        "--no-replace-objects",
+        "-C",
+        str(repository),
+        *arguments,
+    ]
+
+
+def _git_environment() -> dict[str, str]:
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("GIT_")
+    }
+    environment.update(
+        {
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "LC_ALL": "C",
+        }
+    )
+    return environment
 
 
 def _sam_module_snapshot() -> _SamModuleSnapshot:
@@ -2054,13 +2091,20 @@ def _positive_integer(value: int, name: str) -> int:
 
 def _remove_tree(path: Path) -> None:
     try:
-        if path.exists() and not path.is_symlink():
-            for directory in [path, *path.rglob("*")]:
-                try:
-                    if directory.is_dir() and not directory.is_symlink():
-                        directory.chmod(0o700)
-                except OSError:
-                    pass
-            shutil.rmtree(path)
-    except OSError:
-        pass
+        status = path.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(status.st_mode) or not stat.S_ISDIR(status.st_mode):
+        raise OSError("refusing to remove a replaced cleanup directory")
+    for directory in [path, *path.rglob("*")]:
+        try:
+            if directory.is_dir() and not directory.is_symlink():
+                directory.chmod(0o700)
+        except OSError:
+            pass
+    shutil.rmtree(path)
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return
+    raise OSError("cleanup directory still exists")
