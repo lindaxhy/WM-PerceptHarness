@@ -142,6 +142,10 @@ class EntityPrompt(StrictModel):
     @field_validator("role", mode="before")
     @classmethod
     def parse_role(cls, value: EntityRole | str) -> EntityRole:
+        if type(value) is EntityRole:
+            return value
+        if type(value) is not str:
+            raise ValueError("entity role must be a plain string or EntityRole")
         return EntityRole(value)
 
     @field_validator("canonical_label")
@@ -300,6 +304,12 @@ class CvTrack(StrictModel):
     @field_validator("status", mode="before")
     @classmethod
     def parse_status(cls, value: EvidenceStatus | str) -> EvidenceStatus:
+        if type(value) is EvidenceStatus:
+            return value
+        if type(value) is not str:
+            raise ValueError(
+                "track status must be a plain string or EvidenceStatus"
+            )
         return EvidenceStatus(value)
 
     @model_validator(mode="after")
@@ -474,6 +484,12 @@ class CvEvidenceArtifact(StrictModel):
     @field_validator("status", mode="before")
     @classmethod
     def parse_artifact_status(cls, value: EvidenceStatus | str) -> EvidenceStatus:
+        if type(value) is EvidenceStatus:
+            return value
+        if type(value) is not str:
+            raise ValueError(
+                "artifact status must be a plain string or EvidenceStatus"
+            )
         return EvidenceStatus(value)
 
     @field_validator("model_identity")

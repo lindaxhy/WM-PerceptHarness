@@ -67,8 +67,11 @@ _MAX_CANDIDATE_OCCLUDERS = 16
 _MAX_CANDIDATE_SUPPORTING_FRAMES = 64
 _MAX_TOTAL_CANDIDATE_COMPONENTS = 32_768
 _MAX_CANONICAL_INT = 2**63 - 1
-_MIN_BUNDLE_ENVELOPE_CHARS = 512
+_MAX_CANONICAL_OBJECT_FIELDS = 64
+_MAX_CANONICAL_ARRAY_ITEMS = 10_000
 _MAX_VALIDATION_METADATA_CHARS = 256
+# Longest JSON rendering width for a nonnegative finite binary64 in [0, 1].
+_WIDEST_THRESHOLD_FLOAT = 2.2250738585072014e-308
 _ABS_MAX_ARTIFACT_ENTITIES = 64
 _ABS_MAX_ARTIFACT_TRACKS = 256
 _ABS_MAX_ALIASES_PER_INPUT_ENTITY = 256
@@ -87,6 +90,11 @@ _MANDATORY_PRIORITY_TEXT = (
     "first,last,state_changes,min_area_context,max_area,lowest_confidence_context"
 )
 _SAFE_OVERLAY_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_WIDEST_THRESHOLDS = EvidenceThresholds(
+    min_confidence=_WIDEST_THRESHOLD_FLOAT,
+    min_area_fraction=_WIDEST_THRESHOLD_FLOAT,
+    occlusion_visibility_drop=_WIDEST_THRESHOLD_FLOAT,
+)
 
 
 class SummaryEntity(StrictModel):
@@ -103,6 +111,10 @@ class SummaryEntity(StrictModel):
     @field_validator("role", mode="before")
     @classmethod
     def parse_role(cls, value: EntityRole | str) -> EntityRole:
+        if type(value) is EntityRole:
+            return value
+        if type(value) is not str:
+            raise ValueError("summary role must be a plain string or EntityRole")
         return EntityRole(value)
 
     @field_validator("canonical_label")
@@ -229,6 +241,12 @@ class SummaryTrack(StrictModel):
     @field_validator("status", mode="before")
     @classmethod
     def parse_status(cls, value: EvidenceStatus | str) -> EvidenceStatus:
+        if type(value) is EvidenceStatus:
+            return value
+        if type(value) is not str:
+            raise ValueError(
+                "summary track status must be a plain string or EvidenceStatus"
+            )
         return EvidenceStatus(value)
 
     @model_validator(mode="after")
@@ -425,6 +443,12 @@ class CvEvidenceSummary(StrictModel):
     @field_validator("status", mode="before")
     @classmethod
     def parse_status(cls, value: EvidenceStatus | str) -> EvidenceStatus:
+        if type(value) is EvidenceStatus:
+            return value
+        if type(value) is not str:
+            raise ValueError(
+                "summary status must be a plain string or EvidenceStatus"
+            )
         return EvidenceStatus(value)
 
     @field_validator("overlay_refs")
@@ -1065,17 +1089,68 @@ class _ExpectedBundleComponents:
 
 @dataclass(frozen=True, slots=True)
 class _CanonicalObject:
-    """A lazy JSON object whose values may reference bounded model tuples."""
+    """A validated immutable canonical JSON object."""
 
     fields: tuple[tuple[str, Any], ...]
+
+    def __post_init__(self) -> None:
+        fields = self.fields
+        if type(fields) is not tuple:
+            raise ValueError("canonical object fields must be a plain tuple")
+        if len(fields) > _MAX_CANONICAL_OBJECT_FIELDS:
+            raise ValueError("canonical object has too many fields")
+        names: set[str] = set()
+        for item in fields:
+            if type(item) is not tuple or len(item) != 2:
+                raise ValueError("canonical object fields must be exact pairs")
+            name, value = item
+            if type(name) is not str:
+                raise ValueError("canonical object keys must be plain strings")
+            if len(name) > _ABS_MAX_INPUT_STRING_CHARS:
+                raise ValueError("canonical object key exceeds its bound")
+            if name in names:
+                raise ValueError("canonical object keys must be unique")
+            names.add(name)
+            _validate_canonical_value(value)
+        object.__setattr__(self, "fields", tuple(sorted(fields)))
 
 
 @dataclass(frozen=True, slots=True)
 class _CanonicalArray:
-    """A replayable lazy JSON array with an optional per-item projection."""
+    """A validated immutable and replayable canonical JSON array."""
 
     values: tuple[Any, ...]
-    projector: Any = None
+
+    def __post_init__(self) -> None:
+        values = self.values
+        if type(values) is not tuple:
+            raise ValueError("canonical array values must be a plain tuple")
+        if len(values) > _MAX_CANONICAL_ARRAY_ITEMS:
+            raise ValueError("canonical array has too many items")
+        for value in values:
+            _validate_canonical_value(value)
+
+
+def _validate_canonical_value(value: Any) -> None:
+    """Validate one already-frozen JSON value without coercion or recursion bombs."""
+    value_type = type(value)
+    if value is None or value_type is bool:
+        return
+    if value_type is str:
+        if len(value) > _ABS_MAX_INPUT_STRING_CHARS:
+            raise ValueError("canonical string exceeds its bound")
+        return
+    if value_type is int:
+        if not -(_MAX_CANONICAL_INT + 1) <= value <= _MAX_CANONICAL_INT:
+            raise ValueError("canonical integer exceeds its bound")
+        return
+    if value_type is float:
+        if not math.isfinite(value):
+            raise ValueError("canonical float must be finite")
+        return
+    if value_type in {_CanonicalObject, _CanonicalArray}:
+        return
+    raise ValueError("canonical JSON contains an unvalidated value")
 
 
 def summarize_cv_evidence(
@@ -2003,11 +2078,6 @@ def _candidate_component_count(candidate: object) -> int:
     if isinstance(candidate, OcclusionCandidate):
         get_candidate = lambda name: getattr(candidate, name)
     elif type(candidate) is dict:
-        if any(
-            type(name) is not str or name not in OcclusionCandidate.model_fields
-            for name in candidate
-        ):
-            raise _structural_error("candidate extra fields")
         get_candidate = lambda name: candidate.get(name)
     else:
         raise _structural_error("candidate item type")
@@ -2021,12 +2091,6 @@ def _candidate_component_count(candidate: object) -> int:
         if isinstance(provenance, OccluderProvenance):
             supporting_frames = provenance.supporting_frames
         elif type(provenance) is dict:
-            if any(
-                type(name) is not str
-                or name not in OccluderProvenance.model_fields
-                for name in provenance
-            ):
-                raise _structural_error("candidate provenance extra fields")
             supporting_frames = provenance.get("supporting_frames")
         else:
             raise _structural_error("candidate possible_occluders item type")
@@ -3052,7 +3116,16 @@ def _summary_warnings(
 def _canonical_array(
     values: tuple[Any, ...], projector: Any = None
 ) -> _CanonicalArray:
-    return _CanonicalArray(values=values, projector=projector)
+    if type(values) is not tuple:
+        raise ValueError("canonical array source must be a plain tuple")
+    if len(values) > _MAX_CANONICAL_ARRAY_ITEMS:
+        raise ValueError("canonical array source has too many items")
+    projected = (
+        values
+        if projector is None
+        else tuple(projector(value) for value in values)
+    )
+    return _CanonicalArray(values=projected)
 
 
 def _frame_projection(frame: FrameTimestamp) -> _CanonicalObject:
@@ -3354,11 +3427,9 @@ def _bundle_projection(
 
 def _iter_canonical_json(value: Any) -> Iterator[str]:
     """Yield canonical JSON directly from lazy specs without nested containers."""
-    if isinstance(value, _CanonicalObject):
+    if type(value) is _CanonicalObject:
         yield "{"
-        for index, (name, field_value) in enumerate(
-            sorted(value.fields, key=lambda item: item[0])
-        ):
+        for index, (name, field_value) in enumerate(value.fields):
             if index:
                 yield ","
             yield json.dumps(name, ensure_ascii=False)
@@ -3366,36 +3437,16 @@ def _iter_canonical_json(value: Any) -> Iterator[str]:
             yield from _iter_canonical_json(field_value)
         yield "}"
         return
-    if isinstance(value, _CanonicalArray):
+    if type(value) is _CanonicalArray:
         yield "["
         for index, item in enumerate(value.values):
-            if index:
-                yield ","
-            projected = item if value.projector is None else value.projector(item)
-            yield from _iter_canonical_json(projected)
-        yield "]"
-        return
-    if type(value) is dict:
-        yield "{"
-        for index, name in enumerate(sorted(value)):
-            if type(name) is not str:
-                raise ValueError("canonical JSON object keys must be plain strings")
-            if index:
-                yield ","
-            yield json.dumps(name, ensure_ascii=False)
-            yield ":"
-            yield from _iter_canonical_json(value[name])
-        yield "}"
-        return
-    if type(value) in {list, tuple}:
-        yield "["
-        for index, item in enumerate(value):
             if index:
                 yield ","
             yield from _iter_canonical_json(item)
         yield "]"
         return
     if value is None or type(value) in {str, int, float, bool}:
+        _validate_canonical_value(value)
         yield json.dumps(
             value,
             allow_nan=False,
@@ -3407,26 +3458,18 @@ def _iter_canonical_json(value: Any) -> Iterator[str]:
 
 
 def _materialize_value(value: Any) -> Any:
-    if isinstance(value, _CanonicalObject):
+    if type(value) is _CanonicalObject:
         return {
             name: _materialize_value(field_value)
-            for name, field_value in sorted(value.fields, key=lambda item: item[0])
+            for name, field_value in value.fields
         }
-    if isinstance(value, _CanonicalArray):
+    if type(value) is _CanonicalArray:
         return [
-            _materialize_value(
-                item if value.projector is None else value.projector(item)
-            )
+            _materialize_value(item)
             for item in value.values
         ]
-    if type(value) is dict:
-        return {
-            name: _materialize_value(value[name])
-            for name in sorted(value)
-        }
-    if type(value) in {list, tuple}:
-        return [_materialize_value(item) for item in value]
     if value is None or type(value) in {str, int, float, bool}:
+        _validate_canonical_value(value)
         return value
     raise ValueError("canonical JSON contains a non-plain scalar")
 
@@ -3554,18 +3597,75 @@ def _canonical_char_count(record: Any, *, maximum: int | None = None) -> int:
 
 
 def _summary_fits(summary: CvEvidenceSummary, cap: int) -> bool:
-    reserved_cap = max(1, cap - min(_MIN_BUNDLE_ENVELOPE_CHARS, cap // 4))
-    return (
-        _canonical_char_count(
-            _summary_projection(summary, validation=True),
-            maximum=reserved_cap,
+    # This public bundle envelope contains the complete public summary plus
+    # substantially more than the summary's sole private integer field.
+    return _minimum_usable_bundle_char_count(summary) <= cap
+
+
+def _maximum_candidate_count(summary: CvEvidenceSummary) -> int:
+    """Count candidates possible under any valid thresholds, stopping at 257."""
+    if summary.status is not EvidenceStatus.AVAILABLE:
+        return 0
+    count = 0
+    for track in summary.tracks:
+        count += len(track.missing_intervals)
+        if count > _MAX_BUNDLE_CANDIDATES:
+            return count
+        observations = track.observations
+        in_run = False
+        for index in range(1, len(observations) - 1):
+            previous = observations[index - 1]
+            current = observations[index]
+            following = observations[index + 1]
+            reference_area = max(
+                previous.area_fraction, following.area_fraction
+            )
+            possible = (
+                previous.visible
+                and current.visible
+                and following.visible
+                and previous.source_ordinal + 1 == current.source_ordinal
+                and current.source_ordinal + 1 == following.source_ordinal
+                and (
+                    current.confidence < 1.0
+                    or current.area_fraction < 1.0
+                    or (
+                        reference_area > 0.0
+                        and current.area_fraction <= reference_area
+                    )
+                )
+            )
+            if possible and not in_run:
+                count += 1
+                if count > _MAX_BUNDLE_CANDIDATES:
+                    return count
+            in_run = possible
+    return count
+
+
+def _minimum_usable_bundle_char_count(summary: CvEvidenceSummary) -> int:
+    """Size the widest legal empty default bundle for this summary."""
+    maximum_candidates = _maximum_candidate_count(summary)
+    prompt_truncated = maximum_candidates > 0
+    source_truncated = maximum_candidates > _MAX_BUNDLE_CANDIDATES
+    codes = tuple(
+        code
+        for code, enabled in (
+            (
+                "SUMMARY_CANDIDATE_SEARCH_INCOMPLETE",
+                not summary.candidate_search_complete,
+            ),
+            ("CANDIDATE_SOURCE_TRUNCATED", source_truncated),
+            ("CANDIDATE_PROMPT_TRUNCATED", prompt_truncated),
         )
-        <= reserved_cap
-        and _canonical_char_count(
-            _summary_projection(summary),
-            maximum=reserved_cap,
-        )
-        <= reserved_cap
+        if enabled
+    )
+    return _bundle_empty_candidates_char_count(
+        summary,
+        _WIDEST_THRESHOLDS,
+        source_search_complete=summary.candidate_search_complete,
+        candidates_complete=not prompt_truncated,
+        truncation_codes=codes,
     )
 
 

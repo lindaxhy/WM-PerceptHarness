@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import pytest
 from pydantic import ValidationError
 
@@ -19,6 +21,26 @@ class BombList(list):
 
     def __iter__(self):
         raise RuntimeError("hostile list was iterated")
+
+
+class BombStr(str):
+    """A hostile string subclass whose enum operations must never run."""
+
+    def __hash__(self) -> int:
+        raise RuntimeError("hostile string was hashed")
+
+    def __eq__(self, other: object) -> bool:
+        raise RuntimeError("hostile string was compared")
+
+
+class BombInt(int):
+    """A hostile integer subclass whose enum operations must never run."""
+
+    def __hash__(self) -> int:
+        raise RuntimeError("hostile integer was hashed")
+
+    def __eq__(self, other: object) -> bool:
+        raise RuntimeError("hostile integer was compared")
 
 
 def test_normalize_entities_deduplicates_and_applies_role_priority():
@@ -153,6 +175,27 @@ def test_normalized_entities_enforces_container_text_and_integer_caps() -> None:
         },
         {"entities": [], "omitted_count": 0, "warnings": ["x" * 1_000_000]},
         {"entities": [], "omitted_count": 2**100, "warnings": []},
+        {
+            "entities": [],
+            "omitted_count": 0,
+            "alias_omitted_count": 1,
+            "alias_warning": None,
+            "warnings": [],
+        },
+        {
+            "entities": [],
+            "omitted_count": 0,
+            "alias_omitted_count": 0,
+            "alias_warning": "ENTITY_ALIASES_TRUNCATED",
+            "warnings": [],
+        },
+        {
+            "entities": [],
+            "omitted_count": 0,
+            "alias_omitted_count": 16_385,
+            "alias_warning": "ENTITY_ALIASES_TRUNCATED",
+            "warnings": [],
+        },
     )
 
     for payload in payloads:
@@ -195,3 +238,96 @@ def test_normalize_entities_preserves_the_pass_a_raw_cap_of_sixty_four() -> None
 
     assert len(normalized.entities) == 16
     assert normalized.omitted_count == 48
+
+
+def test_normalize_entities_bounds_long_ascii_and_unicode_expansion() -> None:
+    """Every schema-valid name must produce a bounded canonical prompt entity."""
+    names = (
+        "a" * 129,
+        "b" * 256,
+        "c" * 255 + "x",
+        "c" * 255 + "y",
+        "d" * 107 + " " + "tail" * 8,
+        "\u0130" * 256,
+    )
+    candidates = [
+        EntityCandidate(
+            name=name,
+            aliases=(("\u0130" * 128,) if index == 0 else ()),
+            role=EntityRole.OTHER,
+        )
+        for index, name in enumerate(names)
+    ]
+
+    forward = normalize_entities(candidates)
+    reverse = normalize_entities(list(reversed(candidates)))
+    forward_ids = {
+        entity.canonical_label: entity.entity_id for entity in forward.entities
+    }
+    reverse_ids = {
+        entity.canonical_label: entity.entity_id for entity in reverse.entities
+    }
+
+    assert forward_ids == reverse_ids
+    assert len(forward_ids) == len(names)
+    assert all(len(entity.canonical_label) <= 256 for entity in forward.entities)
+    assert all(len(entity.entity_id) <= 128 for entity in forward.entities)
+    assert all(
+        re.fullmatch(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*", entity.entity_id)
+        for entity in forward.entities
+    )
+    assert all(
+        len(alias) <= 128
+        for entity in forward.entities
+        for alias in entity.aliases
+    )
+
+
+def test_merged_aliases_are_deterministically_capped_with_explicit_audit() -> None:
+    """Merged 256-alias records cannot overflow EntityPrompt or truncate silently."""
+    first_aliases = tuple(f"left alias {index:03d}" for index in range(256))
+    second_aliases = tuple(f"right alias {index:03d}" for index in range(256))
+    same_name = (
+        EntityCandidate(
+            name="shared item",
+            aliases=first_aliases,
+            role=EntityRole.ACTOR,
+        ),
+        EntityCandidate(
+            name=" SHARED ITEM ",
+            aliases=second_aliases,
+            role=EntityRole.ACTOR,
+        ),
+    )
+    trailing = tuple(
+        EntityCandidate(
+            name=f"other {index:02d}", aliases=(), role=EntityRole.OTHER
+        )
+        for index in range(16)
+    )
+
+    forward = normalize_entities((*same_name, *trailing))
+    reverse = normalize_entities((*reversed(same_name), *trailing))
+
+    assert len(forward.entities[0].aliases) == 256
+    assert forward.entities[0].aliases == reverse.entities[0].aliases
+    assert forward.alias_omitted_count == 256
+    assert forward.alias_warning == "ENTITY_ALIASES_TRUNCATED"
+    assert forward.omitted_count == 1
+    assert forward.warnings == ("1 entity candidate omitted by limit 16",)
+
+
+@pytest.mark.parametrize("role", [BombStr("other"), BombInt(1)])
+def test_entity_candidate_enum_preflight_rejects_scalar_subclasses(role: object) -> None:
+    """Enum lookup must reject hostile subclasses before hashing or equality."""
+    with pytest.raises(ValidationError):
+        EntityCandidate.model_validate(
+            {"name": "item", "aliases": [], "role": role}
+        )
+
+    assert EntityCandidate(
+        name="item", aliases=(), role=EntityRole.OTHER
+    ).role is EntityRole.OTHER
+    assert EntityCandidate.model_validate(
+        {"name": "item", "aliases": [], "role": "other"}
+    ).role is EntityRole.OTHER

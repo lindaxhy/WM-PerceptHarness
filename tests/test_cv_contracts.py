@@ -34,6 +34,26 @@ class BombList(list):
         raise RuntimeError("hostile list was iterated")
 
 
+class BombStr(str):
+    """A hostile string subclass whose enum operations must never run."""
+
+    def __hash__(self) -> int:
+        raise RuntimeError("hostile string was hashed")
+
+    def __eq__(self, other: object) -> bool:
+        raise RuntimeError("hostile string was compared")
+
+
+class BombInt(int):
+    """A hostile integer subclass whose enum operations must never run."""
+
+    def __hash__(self) -> int:
+        raise RuntimeError("hostile integer was hashed")
+
+    def __eq__(self, other: object) -> bool:
+        raise RuntimeError("hostile integer was compared")
+
+
 def valid_timeline() -> FrameTimeline:
     return FrameTimeline(
         frames=(
@@ -108,6 +128,38 @@ def valid_artifact() -> CvEvidenceArtifact:
         files=(ArtifactFile(path="masks/0.npz", sha256="c" * 64, size_bytes=4),),
         overlay_records=(),
     )
+
+
+@pytest.mark.parametrize("hostile", [BombStr("available"), BombInt(1)])
+def test_contract_enum_preflight_rejects_scalar_subclasses(hostile: object) -> None:
+    """Every contract enum boundary rejects subclasses before enum lookup."""
+    entity_payload = valid_request().entities[0].model_dump(mode="json")
+    entity_payload["role"] = hostile
+    track_payload = valid_artifact().tracks[0].model_dump(mode="json")
+    track_payload["status"] = hostile
+    artifact_payload = valid_artifact().model_dump(mode="json")
+    artifact_payload["status"] = hostile
+
+    for model, payload in (
+        (EntityPrompt, entity_payload),
+        (CvTrack, track_payload),
+        (CvEvidenceArtifact, artifact_payload),
+    ):
+        with pytest.raises(ValidationError):
+            model.model_validate(payload)
+
+    assert EntityPrompt.model_validate(
+        {
+            **valid_request().entities[0].model_dump(mode="json"),
+            "role": EntityRole.ACTOR,
+        }
+    ).role is EntityRole.ACTOR
+    assert CvTrack.model_validate(
+        {
+            **valid_artifact().tracks[0].model_dump(mode="json"),
+            "status": "available",
+        }
+    ).status is EvidenceStatus.AVAILABLE
 
 
 def test_track_observation_rejects_invalid_geometry_and_time():

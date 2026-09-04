@@ -42,6 +42,16 @@ class BombList(list):
         raise RuntimeError("hostile list was iterated")
 
 
+class BombTuple(tuple):
+    """A hostile tuple subclass that must be rejected before inspection."""
+
+    def __len__(self) -> int:
+        raise RuntimeError("hostile tuple length was read")
+
+    def __iter__(self):
+        raise RuntimeError("hostile tuple was iterated")
+
+
 class BombStr(str):
     """A string subclass whose inherited operations must never be reached."""
 
@@ -242,11 +252,20 @@ def _thresholds(
 
 def _reseal_candidate_payload(payload: dict[str, object]) -> None:
     """Recompute a test candidate ID so bundle-only closure checks are reached."""
+    def freeze(value: object) -> object:
+        if type(value) is dict:
+            return summary_module._CanonicalObject(
+                tuple((name, freeze(item)) for name, item in value.items())
+            )
+        if type(value) in {list, tuple}:
+            return summary_module._CanonicalArray(tuple(freeze(item) for item in value))
+        return value
+
     ordinal = int(str(payload["candidate_id"]).rsplit("_", 1)[1])
     identity = {key: value for key, value in payload.items() if key != "candidate_id"}
     identity["ordinal"] = ordinal
     payload["candidate_id"] = (
-        f"occ_{summary_module._candidate_hash_prefix(identity)}_{ordinal:04d}"
+        f"occ_{summary_module._candidate_hash_prefix(freeze(identity))}_{ordinal:04d}"
     )
 
 
@@ -2909,3 +2928,187 @@ def test_canonical_stream_matches_standard_json_for_unicode_records() -> None:
         )
         assert streamed == standard
         assert summary_module._canonical_char_count(projection) == len(standard)
+
+
+@pytest.mark.parametrize("hostile", [BombStr("available"), BombInt(1)])
+def test_summary_enum_preflight_rejects_scalar_subclasses(hostile: object) -> None:
+    """Summary enum validators must reject subclasses before enum lookup."""
+    summary = summarize_cv_evidence(
+        _artifact((_track("item_1", "item", (_observation(0),)),))
+    )
+    entity_payload = summary.entities[0].model_dump(mode="json")
+    entity_payload["role"] = hostile
+    track_payload = summary.tracks[0].model_dump(mode="json")
+    track_payload["status"] = hostile
+    summary_payload = summary.model_dump(mode="json")
+    summary_payload["status"] = hostile
+
+    for model, payload in (
+        (summary_module.SummaryEntity, entity_payload),
+        (summary_module.SummaryTrack, track_payload),
+        (CvEvidenceSummary, summary_payload),
+    ):
+        with pytest.raises(ValidationError):
+            model.model_validate(payload)
+
+    assert summary_module.SummaryEntity.model_validate(
+        {
+            **summary.entities[0].model_dump(mode="json"),
+            "role": EntityRole.OTHER,
+        }
+    ).role is EntityRole.OTHER
+    assert summary_module.SummaryTrack.model_validate(
+        {
+            **summary.tracks[0].model_dump(mode="json"),
+            "status": "available",
+        }
+    ).status is EvidenceStatus.AVAILABLE
+
+
+def test_canonical_carriers_validate_and_freeze_replayable_json() -> None:
+    """Canonical carriers validate once and replay identical standard JSON."""
+    corpus = summary_module._CanonicalArray(tuple(range(2_000)))
+    carrier = summary_module._CanonicalObject(
+        (
+            ("unicode", "café"),
+            ("corpus", corpus),
+            (
+                "scalars",
+                summary_module._CanonicalArray((None, True, 1, 0.5)),
+            ),
+        )
+    )
+    expected = {
+        "corpus": list(range(2_000)),
+        "scalars": [None, True, 1, 0.5],
+        "unicode": "café",
+    }
+
+    first = "".join(summary_module._iter_canonical_json(carrier))
+    second = "".join(summary_module._iter_canonical_json(carrier))
+    standard = json.dumps(
+        expected, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    )
+
+    assert tuple(name for name, _ in carrier.fields) == (
+        "corpus",
+        "scalars",
+        "unicode",
+    )
+    assert first == second == standard
+    assert summary_module._materialize_value(carrier) == expected
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: summary_module._CanonicalArray([1]),
+        lambda: summary_module._CanonicalArray((item for item in (1,))),
+        lambda: summary_module._CanonicalArray(BombTuple((1,))),
+        lambda: summary_module._CanonicalArray(tuple(range(10_001))),
+        lambda: summary_module._CanonicalArray(({},)),
+        lambda: summary_module._CanonicalArray((2**100,)),
+        lambda: summary_module._CanonicalArray((float("inf"),)),
+        lambda: summary_module._canonical_array(
+            tuple(range(10_001)),
+            lambda _: (_ for _ in ()).throw(
+                RuntimeError("oversized array projector ran")
+            ),
+        ),
+        lambda: summary_module._CanonicalObject([("field", 1)]),
+        lambda: summary_module._CanonicalObject(BombTuple((("field", 1),))),
+        lambda: summary_module._CanonicalObject((BombTuple(("field", 1)),)),
+        lambda: summary_module._CanonicalObject((("field", 1, 2),)),
+        lambda: summary_module._CanonicalObject((("field", 1), ("field", 2))),
+        lambda: summary_module._CanonicalObject(((BombStr("field"), 1),)),
+    ],
+)
+def test_canonical_carriers_reject_untrusted_shapes_at_construction(factory) -> None:
+    """Malformed carrier state must never be deferred to stream traversal."""
+    with pytest.raises(ValueError):
+        factory()
+
+
+@pytest.mark.parametrize("extra", ["ordinary", BombList(["do-not-touch"])])
+def test_bundle_nested_candidate_extra_has_precise_location(extra: object) -> None:
+    """Aggregate preflight leaves nested extra rejection to pydantic-core."""
+    artifact, timeline = _candidate_artifact()
+    bundle = summary_module.build_cv_prompt_bundle(
+        summarize_cv_evidence(artifact, timeline=timeline), _thresholds()
+    )
+    payload = bundle.model_dump(mode="json")
+    payload["candidates"][0]["typo"] = extra
+
+    with pytest.raises(ValidationError) as caught:
+        type(bundle).model_validate(payload)
+
+    assert any(
+        error["loc"] == ("candidates", 0, "typo")
+        and error["type"] == "extra_forbidden"
+        for error in caught.value.errors()
+    )
+
+
+@pytest.mark.parametrize("extra", ["ordinary", BombList(["do-not-touch"])])
+def test_bundle_nested_provenance_extra_has_precise_location(extra: object) -> None:
+    """Provenance extras remain nested and hostile values are not traversed."""
+    artifact, timeline = _candidate_artifact()
+    bundle = summary_module.build_cv_prompt_bundle(
+        summarize_cv_evidence(artifact, timeline=timeline), _thresholds()
+    )
+    payload = bundle.model_dump(mode="json")
+    candidate_index = next(
+        index
+        for index, candidate in enumerate(payload["candidates"])
+        if candidate["possible_occluders"]
+    )
+    payload["candidates"][candidate_index]["possible_occluders"][0][
+        "typo"
+    ] = extra
+
+    with pytest.raises(ValidationError) as caught:
+        type(bundle).model_validate(payload)
+
+    assert any(
+        error["loc"]
+        == ("candidates", candidate_index, "possible_occluders", 0, "typo")
+        and error["type"] == "extra_forbidden"
+        for error in caught.value.errors()
+    )
+
+
+def test_minimum_summary_budget_is_immediately_bundle_usable() -> None:
+    """The first accepted cap reserves the exact widest empty bundle envelope."""
+    artifact = CvEvidenceArtifact(
+        schema_version="cv_evidence_v1",
+        status=EvidenceStatus.DISABLED,
+        provider="fake",
+        model_identity="fake",
+        video_sha256=SHA256,
+        checkpoint_sha256="b" * 64,
+        processed_timeline=None,
+        entities=(),
+        tracks=(),
+        files=(),
+        overlay_records=(),
+        warnings=(),
+    )
+    widest_thresholds = EvidenceThresholds(
+        min_confidence=2.2250738585072014e-308,
+        min_area_fraction=2.2250738585072014e-308,
+        occlusion_visibility_drop=2.2250738585072014e-308,
+    )
+
+    with pytest.raises(ValueError, match="cannot fit"):
+        summarize_cv_evidence(artifact, max_prompt_chars=665)
+
+    summary = summarize_cv_evidence(artifact, max_prompt_chars=666)
+    bundle = summary_module.build_cv_prompt_bundle(summary, widest_thresholds)
+    encoded = json.dumps(
+        bundle.prompt_record(),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+    assert len(encoded) == 666
