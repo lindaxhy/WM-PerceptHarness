@@ -1,25 +1,44 @@
 # 本地 LAS 兼容实现与 LAS/本地标注对比报告
 
 日期：2026-09-03
+当前复验更新：2026-09-04
 评估代码快照：冻结的本地评估实现（发布前清理）
 
 ## 结论摘要
 
-> **当前状态（实施后）：** `full_0021` 的 Pass B 边界结构问题已经修复；隔离 GPU 复验为 `COMPLETED`，产出 14 个严格连续细片段和 5 个确定性聚合事件。下文仍保留修复前的冻结基线统计，以保证历史评估可复现，不能把其中的 `FAILED` 解读为当前状态。
+> **当前状态（2026-09-04 完整复验）：** 同一组 5 个冻结样本已全部重新运行并全部 `COMPLETED`；`full_0021` 产出 14 个严格连续细片段和 5 个确定性聚合事件，原来的 Pass B 边界失败已不存在。本文第 4 节仍原样保留“修复前冻结基线”，只能用于追溯历史，不能解读为当前实现状态。
 
 当前交付是自托管的视频理解模型服务，不是把请求转发给方舟、远程 LAS 或其他模型 API。服务复现 LAS 的异步 Submit/Poll 使用方式，由本地 `Qwen/Qwen3-VL-8B-Instruct` 完成视觉推理；运行观察未发现模型 API 出站连接，也没有提取音轨、调用 ASR 或把转写作为证据。
 
-修复前的诊断性对比预先冻结了 5 个样本。当时 4 个得到严格可验证的本地结果，1 个（`full_0021`）在 Pass B 初次输出和内置修复后仍违反边界结构约束，因而在该冻结基线中保留为失败且不进入评分。4 个已评分结果覆盖 25 个 LAS 事件：每个事件都与至少一个本地时间片有正时间重叠，但动作兼容覆盖均值只有 `0.12441008674259292`；可比语义中，actor 为 `11/12`，action family 为 `2/15`，target 为 `3/8`。LAS 的 11 个遮挡事件没有一个本地显式遮挡事件匹配，主要是输出 schema 能力差异，不应全部归为基础模型错误。
+修复前的诊断性对比预先冻结了 5 个样本。当时 4 个得到严格可验证的本地结果，1 个（`full_0021`）在 Pass B 初次输出和内置修复后仍违反边界结构约束，因而在历史基线中保留为失败且不进入评分。修复后完整复验覆盖全部 35 个 LAS 事件：每个事件都与至少一个本地时间片有正时间重叠，动作兼容覆盖均值为 `0.08571428571428572`；可比语义中，actor 为 `20/21`，action family 为 `3/20`，target 为 `6/11`。LAS 的 11 个遮挡事件仍没有本地显式遮挡事件匹配：schema 已经具备表达能力，但 3 个样本的场景阶段降级，另外 2 个成功场景结果也没有识别出遮挡。
 
-现有证据不支持立即进行广泛微调。更合理的顺序是：先补齐遮挡、状态、结果和人手 actor schema，调整提示词和事件聚合，再用更大的盲测、人工复核集复测。只有视觉语义遗漏或时间边界偏差在这些改动后仍稳定复现，才应针对性 LoRA/SFT。
+现有证据不支持立即进行广泛微调。遮挡、状态、结果、人手 actor schema 和事件聚合已经补齐，但五样本复验显示场景语义召回仍不足。更合理的下一步是先调整场景提示、检测阶段和评估映射，再用更大的盲测、人工复核集复测；只有视觉语义遗漏或时间边界偏差仍稳定复现，才应针对性 LoRA/SFT。
 
-### 实施后复验（同日，后续证据）
+### 修复后五样本完整复验（2026-09-04）
 
-本节是对下文冻结基线的增量更新，不回写或美化原始评分。已落实以下修改：Pass B 唯一修复轮可对仅含 `SEGMENT_TOO_LONG`、`SEGMENT_BOUNDARY_NOT_ADJACENT`、或可由合法 Pass A 父描述替代的 `SEGMENT_DESCRIPTION_INVALID` 做确定性拓扑重建；最终结果仍须通过原严格 validator，并公开 `BOUNDARY_TOPOLOGY_NORMALIZED`。actor 增加 `left_hand/right_hand/both_hands`。最终细片段额外生成确定性的 `grouped_semantic_events`，同时新增完整视频 `SceneSemantics` 阶段，schema 可表达对象清单、初终态、结果、重叠事件及 `occlusion_enter/occluded/occlusion_exit`。场景阶段两次 schema 无效不会丢弃可导出的细片段，而是写入显式 `SCENE_SEMANTICS_UNAVAILABLE`。
+本节使用当前实现 wheel（SHA-256 `d4ec014afe55bfc75461df06be565cdc896e6e10b2b7dd023951a8dfa3f306e0`），对原先冻结的同 5 个视频、同一英文 query 和同一推理参数重新运行。它是当前结果；第 4 节是历史基线。已落实的修改包括：Pass B 唯一修复轮可对受控边界/描述问题做确定性拓扑重建；actor 增加 `left_hand/right_hand/both_hands`；细片段之上生成 `grouped_semantic_events`；新增可表达对象、初终态、结果、重叠事件和遮挡事件的完整视频 `SceneSemantics`。最终细片段仍须通过原严格 validator，任何确定性修复或降级均公开写入 warning。
 
-冻结的 `full_0021` 在隔离 GPU 复验中由原 FAILED 变为 COMPLETED：14 个严格连续细片段、5 个确定性聚合事件，API、SQLite、导出文件完全一致，JSONL 可导出。该修复解决了结果可用性与 caption 契约问题，但没有改善既有四样本上的语义分数：将 46 个细片段聚为 23 个事件后，action-compatible coverage 仍为 `0.12441008674259292`，最大 IoU 均值由细片段的 `0.42306189086185725` 变为聚合后的约 `0.37116`（聚合不是语义修复）。新 `full_0021` 的 actor 为 `9/9`，action 为 `0/6`，target 为 `3/3`；同样说明角色标签改善不能替代动作语义召回。
+| Sample | Terminal / runtime | LAS events | Fine / grouped / scene events | Any-overlap | Action-compatible | Max-IoU mean / median | Actor | Action | Target | LAS occlusion / local explicit |
+| --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| `full_0001` | `COMPLETED` / `135.118s` | 7 | `13 / 10 / 0` | `1.0` | `0.14285714285714285` | `0.36741097934158373 / 0.4686346863468642` | `2/3` | `1/6` | `0/4` | `3/0` |
+| `full_0002` | `COMPLETED` / `570.381s` | 8 | `17 / 2 / 2` | `1.0` | `0.25` | `0.37232128042927864 / 0.34502923976608185` | `1/1` | `2/8` | `3/4` | `6/0` |
+| `full_0024` | `COMPLETED` / `325.271s` | 4 | `6 / 4 / 3` | `1.0` | `0.0` | `0.44689672825277577 / 0.41171215074723844` | `4/4` | `0/0` | `0/0` | `0/0` |
+| `full_0021` | `COMPLETED` / `255.208s` | 10 | `14 / 5 / 0` | `1.0` | `0.0` | `0.45009071592023553 / 0.4605263157894738` | `9/9` | `0/6` | `3/3` | `0/0` |
+| `full_0004` | `COMPLETED` / `465.334s` | 6 | `10 / 5 / 0` | `1.0` | `0.0` | `0.5397522099516687 / 0.5422413793103448` | `4/4` | `0/0` | `0/0` | `2/0` |
 
-场景 schema 的真实 GPU 结果同样必须如实区分“可表达”和“已识别”。对已知含 1 条遮挡记录、3 个遮挡 semantic events 的 `full_0001`，最终 v7 运行在 140.106 秒完成 13 个细片段和 10 个确定性聚合事件；但 Qwen 场景阶段初次与唯一修复输出都为空，被 `EMPTY_SCENE_OBJECTS`、`EMPTY_SCENE_EVENTS`、`SCENE_REQUIRED_OBJECT_MISSING` 拒绝，最终按设计降级，显式遮挡仍为 `0/3`。API、SQLite、保存结果一致，13 行 JSONL 导出通过，非终态 task/job 均为 0，服务随后停止。此前 v5 曾产生 schema 合法但退化的空场景结果，促成了非空和可信目标骨架约束；v6/v7 证明这些约束能阻止假成功，但当前模型/提示组合尚未缩小该样本的遮挡召回差距。因此下面“先改 schema 再决定微调”的建议只完成了 schema 与评估前提，下一步应在人工复核盲测上评估更专门的视觉提示、分阶段检测或针对性训练。
+当前五样本聚合为：`5/5` 完成、35/35 个 LAS 事件进入评分、60 个连续细片段、26 个确定性聚合事件；最大 IoU 均值/中位数为 `0.4307844123071082 / 0.4558823529411774`，`23/35` 达到 0.3，`14/35` 达到 0.5，start/end 绝对误差中位数为 `0.20000000000000018 / 0.39999999999999997` 秒，local extra 为 8。API Poll、SQLite 终态结果和保存 JSON 对 5 个样本逐一相等；SQLite integrity check 为 `ok`，29 个 inference jobs 全部 `COMPLETED`；60 行训练导出均通过验证且 frame range 连续。服务在核验后已停止。
+
+`full_0021` 的当前输出明确不再是失败：14 个 fine segments 完整覆盖 `[0.0, 7.3]`，边界修复 warning 如实记录 `SEGMENT_TOO_LONG`、`SEGMENT_BOUNDARY_NOT_ADJACENT` 和 `SEGMENT_DESCRIPTION_INVALID`，最终严格验证通过。它的 actor `9/9`、target `3/3`，但 action `0/6`，所以“可运行性修复”不等于“语义完全对齐”。
+
+`full_0001` 的 LAS reference 没有重生成或修改，仍是同一份中文冻结标注；当前 local 结果仍为 13 个 fine segments，时间边界与上一轮一致，但 enrichment/描述不是逐字段不变：actor 已改为人手标签，action 命中由历史基线的 `0/6` 变为 `1/6`，并有 1 个 skill 被保守归一为 `unknown`。场景阶段仍降级为 `SCENE_SEMANTICS_UNAVAILABLE`，因此该样本的 3 个 LAS 遮挡事件依旧为 `0/3`。
+
+场景 schema 的结果必须区分“可表达”和“已识别”。`full_0002`、`full_0024` 分别生成 2、3 个合法 scene events；`full_0001`、`full_0021`、`full_0004` 降级并公开 `SCENE_SEMANTICS_UNAVAILABLE`。全部当前输出仍未生成任何 `occlusion_enter/occluded/occlusion_exit`，所以显式遮挡总计仍为 `0/11`。这不再是“没有字段可写”的纯 schema gap，而是当前模型/提示/场景阶段的实际召回差距。
+
+### LAS 输出语言说明
+
+LAS 官方接口并非只能生成中文，也没有文档化的独立 `language` 或 `output_language` 字段。《逆矩阵-Pipeline-调用方法-对客》给出了两种英文输出方法：优先在顶层 `data.query` 中明确要求返回英文；使用 `task_template=embodied_action_captioning` 时，也可以在 `data.task_context.prompt_context` 中加入 `[LANGUAGE OVERRIDE]`，要求所有自由文本字段使用英文。该文档还给出了“lowercase ENGLISH short verb phrase”的自定义 query 和对应英文输出示例。
+
+本报告中的 1,869 份 LAS reference 是此前已经生成并冻结的数据工件，内容为中文；工作区没有保存每条 reference 当时的完整原始请求 payload，因此只能从现有示例和产物推断它们采用了中文/默认提示，不能反向证明当时的精确请求。此次本地复验使用英文 query，本地自由文本为英文。语言不同不妨碍当前以结构化 event type、actor、target 别名和时间区间为主的评分；但如果现在让官方 LAS 以英文提示重新生成，那会是一套新的 reference，应单独冻结、质检并重新评分，不能无声替换本报告的中文基线。
 
 ## 1. 已实现能力
 
@@ -47,7 +66,7 @@
 ### 1.4 测试与真实 GPU 证据
 
 - 当前精确时长修订在对比运行前通过 `693` 项测试；此前分支级覆盖验收为 `85.99%`。测试覆盖 API、契约、安全、媒体、SQLite 租约、worker、三条管线、严格 schema、本地客户端和 JSONL 导出。
-- [GPU 验收记录](2026-09-02-gpu-acceptance.md)显示四张 GPU 均完成设备隔离 smoke，单卡峰值为 `17,581,941,760` bytes；真实 Qwen 具身流程曾完成 12 个连续片段和 JSONL 导出。此次比较又在同一四-worker 架构上完成 4 个样本并保留 1 个严格失败。
+- [GPU 验收记录](2026-09-02-gpu-acceptance.md)显示四张 GPU 均完成设备隔离 smoke，单卡峰值为 `17,581,941,760` bytes；真实 Qwen 具身流程曾完成 12 个连续片段和 JSONL 导出。修复前比较在同一四-worker 架构上完成 4 个样本并保留 1 个严格失败；2026-09-04 完整复验则为 `5/5` 全部完成。
 - 模型推理使用经过清单和 hash 验证的 16 文件固定快照；服务运行时采用离线 hub 控制。易失运行环境丢失后的重建也验证了 wheel/安装树一致性、SQLite 完整性和加密持久化；敏感状态没有明文写入权限语义不足的持久存储。
 
 ## 2. 数据与方法
@@ -82,11 +101,11 @@
 - boundary error 是 LAS event 与 primary local segment 的 start/end 绝对误差。
 - local extra segment 指与任何 LAS event 都没有正时间重叠的本地片段；语义不同但时间重叠的片段不是 extra，而是 semantic mismatch。
 
-固定 action 映射把 LAS `move/transport` 和 local `move/lift/push/pull/rotate/place` 归为 motion，并分别映射 grasp、reach、release；LAS 的三类 occlusion 归为 occlusion，但 local schema 没有对应 family。固定 actor 映射只比较 single-manipulator 与 both-manipulators。target 只通过预冻结的 apple、basket、panel、container、track、block、ball、bottle、tool 中英别名比较。
+固定 action 映射把 LAS `move/transport` 和 local `move/lift/push/pull/rotate/place` 归为 motion，并分别映射 grasp、reach、release。LAS 的三类 occlusion 归为 occlusion；当前 fine-segment 评分仍没有对应 family，新增 `SceneSemantics` 的显式遮挡则单独计数。固定 actor 映射把左右单手投影为 single-manipulator、双手投影为 both-manipulators。target 只通过预冻结的 apple、basket、panel、container、track、block、ball、bottle、tool 中英别名比较。
 
 未列出的 LAS type、对象 actor、local `unknown` 或没有共享别名的 target 都标记为 `not_comparable`，不进入该语义分母；它们既不是命中，也不是失败。本文所有语义结果都显示“matches/comparable”，避免用不同分母的百分比混淆结论。
 
-## 3. 深入对比：`full_0001`
+## 3. 修复前冻结基线深入对比：`full_0001`
 
 LAS reference 的显式对象清单包括：装有 4 个苹果的黄色篮、空透明容器、固定木块、可横移白色遮挡板和连接容器/木块的斜轨。其初态记录篮内 4 个苹果且容器为空；终态记录篮内剩 3 个、容器内有 1 个粉色苹果、遮挡板移到最右，斜轨和木块未位移；outcome 标为 success。Local 输出提供完整连续 fine-segment 时间轴和六字段 enrichment，但没有独立的对象 inventory、initial state、final state、occlusion state 或 outcome 字段，所以这些文档级事实不能做同字段一一对比。
 
@@ -158,7 +177,7 @@ LAS reference 的显式对象清单包括：装有 4 个苹果的黄色篮、空
 - 已评分的 25 个 LAS events 中有 11 个 occlusion events，即 `11/25`（44%），local explicit occlusion matches 为 `0/11`。这首先暴露 schema gap；只有在 local schema 增加遮挡表示后，才适合评估模型是否真正漏看遮挡。
 - actor/action/target 的 comparable denominators 分别只有 12、15、8，远小于 25；直接用总事件数计算“准确率”会把 `not_comparable` 错当 mismatch。
 
-## 5. 相同点与差异
+## 5. 修复前冻结基线的相同点与差异
 
 ### 相同点
 
@@ -186,13 +205,13 @@ LAS reference 的显式对象清单包括：装有 4 个苹果的黄色篮、空
 
 ## 7. 是否需要微调
 
-### 7.1 先做 schema 与提示词改进
+### 7.1 已完成的 schema 前提与下一步提示改进
 
-优先级最高，且不需要改模型权重：
+当前实现已经完成前三项结构前提：
 
-- 增加 `occlusion_enter/occluded/occlusion_exit`、initial/final state、object inventory 和 outcome 的显式输出；否则 11 个遮挡事件永远无法成为同 schema 的命中。
-- 增加 `left_hand/right_hand/both_hands` 等人手 actor，不把人手语义损失地别名为 robot gripper；同时保留 single/both 的评估投影。
-- 在 fine segments 之上生成可重叠、可跨片段的 grouped semantic events，覆盖“抓取—运输—释放”和持续状态；提示词强化 manipulated object 与 destination 的区分。
+- 已增加 `occlusion_enter/occluded/occlusion_exit`、initial/final state、object inventory 和 outcome 的显式输出，但当前复验仍为 `0/11`，下一步要改善场景阶段的遮挡召回，而不是再扩字段。
+- 已增加 `left_hand/right_hand/both_hands` 并保留 single/both 评估投影；当前 actor 为 `20/21`。
+- 已生成可跨 fine segments 的确定性 `grouped_semantic_events`；下一步应对 grouped track 建立独立对齐指标，并继续强化 manipulated object、destination 与自主运动的区分。
 - 继续使用封闭错误 family 和 conservative `unknown`，不要把未经证明的别名自动改成一个“看似合法”的枚举。
 
 ### 7.2 改进确定性评估
@@ -205,16 +224,16 @@ LAS reference 的显式对象清单包括：装有 4 个苹果的黄色篮、空
 
 只有在上述 schema/prompt/grouping 改动后仍在更大人工复核集稳定出现，才考虑：
 
-- 对可见遮挡边界和持续不可见状态做专门 LoRA/SFT；当前 `0/11` 只能证明输出 schema 没有显式 family，尚不能区分“模型没看见”和“无字段可写”。
-- 对 manipulated object、destination 和自主物体运动的区分做训练；deep case 的 panel/apple 与 apple/ramp/container 混淆，以及总体 action `2/15`、target `3/8`，是值得继续验证的候选。
-- 对系统性 boundary bias 做训练前，应先收集有符号误差。当前只有绝对误差中位数（start `0.20000000000000018` 秒、end `0.4571428571428573` 秒），不能判断偏早还是偏晚，也不能排除 ≤1 秒切段策略本身的影响。
+- 对可见遮挡边界和持续不可见状态做专门 LoRA/SFT；schema 已能表达但当前仍为 `0/11`，不过还应先排除场景提示、repair 和分阶段检测策略的影响。
+- 对 manipulated object、destination 和自主物体运动的区分做训练；deep case 的 panel/apple 与 apple/ramp/container 混淆，以及当前总体 action `3/20`、target `6/11`，是值得继续验证的候选。
+- 对系统性 boundary bias 做训练前，应先收集有符号误差。当前只有绝对误差中位数（start `0.20000000000000018` 秒、end `0.39999999999999997` 秒），不能判断偏早还是偏晚，也不能排除 ≤1 秒切段策略本身的影响。
 
 ### 7.4 当前证据不支持的结论
 
-5 个入选样本、4 个已评分结果不足以支持广泛模型微调、模型排名、相对 LAS 优劣结论或任何数据集级性能声明。尤其 LAS reference 不是人工 ground truth。当前建议是“暂不做广泛微调，先改 schema/prompt/eval；再根据更大盲测中的重复视觉语义缺陷决定是否微调”。
+5 个入选且已评分的样本仍不足以支持广泛模型微调、模型排名、相对 LAS 优劣结论或任何数据集级性能声明。尤其 LAS reference 不是人工 ground truth。当前建议是“暂不做广泛微调，先改 scene prompt/detection/eval；再根据更大盲测中的重复视觉语义缺陷决定是否微调”。
 
 ## 8. 可复现性边界
 
-机器可复现的部分包括：冻结样本 digest、固定请求、视频/hash/时长验证、严格结果拓扑、预冻结映射、IoU/coverage/boundary 算法、canonical metrics 再生成和独立算术复核。最终 metrics 文件两次生成 byte-identical，SHA-256 为 `833abb368769105d114d3725fbf4c6d198aa7c39b08d22418c0697efff99050c`。
+机器可复现的部分包括：冻结样本 digest、固定请求、视频/hash/时长验证、严格结果拓扑、预冻结映射、IoU/coverage/boundary 算法、canonical metrics 再生成和独立算术复核。修复前冻结 metrics 文件两次生成 byte-identical，SHA-256 为 `833abb368769105d114d3725fbf4c6d198aa7c39b08d22418c0697efff99050c`；2026-09-04 当前复验的 wheel SHA-256 与逐样本结果摘要见本文开头。
 
 仍需人工复核的部分包括：LAS `machine_only` 标注的事实性、同义词 alias 是否充分、长事件与细片段应如何成组、描述中的对象混淆与 hallucination、以及 `needs_review` 样本的 reference 质量。原始视频、LAS JSON、本地原始结果、运行任务标识、服务坐标和凭据均不进入 Git；本报告只提交去敏后的方法与汇总证据。
