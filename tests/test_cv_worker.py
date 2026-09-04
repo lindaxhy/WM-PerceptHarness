@@ -173,6 +173,7 @@ def test_cv_worker_claims_only_sam_jobs_and_returns_manifest_handle(
         "cache_hit": False,
         "oom_retry": False,
         "processed_frames": 3,
+        "execution_chunk_frames": 1,
         "entity_prompts": 2,
         "track_count": 2,
         "peak_allocated_bytes": 0,
@@ -205,6 +206,37 @@ def test_fake_provider_publishes_valid_empty_entity_evidence(
     assert artifact.entities == ()
     assert artifact.tracks == ()
     assert artifact.files == ()
+
+
+def test_cv_worker_persists_only_provider_reported_sampling_and_chunk_metrics(
+    store: SQLiteTaskStore,
+    cv_request: CvEvidenceRequest,
+    cache: CvArtifactStore,
+) -> None:
+    class SampledMetricsProvider(FakeCvEvidenceProvider):
+        def request_metrics(self) -> dict[str, int]:
+            metrics = super().request_metrics()
+            metrics.update(
+                {
+                    "processed_frames": 1,
+                    "execution_chunk_frames": 7,
+                    "private_provider_counter": 999,
+                }
+            )
+            return metrics
+
+    job = create_job(store, cv_request)
+    worker = CVEvidenceWorker(
+        store, SampledMetricsProvider(), cache, "sampled-metrics"
+    )
+
+    assert worker.run_once(now=20.0)
+
+    done = store.get_inference_job(job.job_id)
+    assert done is not None and done.metrics is not None
+    assert done.metrics["processed_frames"] == 1
+    assert done.metrics["execution_chunk_frames"] == 7
+    assert "private_provider_counter" not in done.metrics
 
 
 def test_second_identical_job_is_cache_hit_without_provider_invocation(
@@ -245,7 +277,8 @@ def test_second_identical_job_is_cache_hit_without_provider_invocation(
     assert second.metrics == {
         "cache_hit": True,
         "oom_retry": False,
-        "processed_frames": 3,
+        "processed_frames": 0,
+        "execution_chunk_frames": 0,
         "entity_prompts": 2,
         "track_count": 2,
         "peak_allocated_bytes": 0,
@@ -360,6 +393,7 @@ def test_cv_worker_retries_one_oom_with_smaller_chunk_and_same_request(
         "cache_hit": False,
         "oom_retry": True,
         "processed_frames": 3,
+        "execution_chunk_frames": 4,
         "entity_prompts": 2,
         "track_count": 2,
         "peak_allocated_bytes": 0,

@@ -41,6 +41,7 @@ class FakeCvEvidenceProvider:
         )
         self._metrics = {
             "processed_frames": 0,
+            "execution_chunk_frames": self.execution_chunk_frames,
             "entity_prompts": 0,
             "track_count": 0,
             "peak_allocated_bytes": 0,
@@ -118,6 +119,7 @@ class FakeCvEvidenceProvider:
             )
             self._metrics = {
                 "processed_frames": len(request.timeline.frames),
+                "execution_chunk_frames": self.execution_chunk_frames,
                 "entity_prompts": len(request.entities),
                 "track_count": len(tracks),
                 "peak_allocated_bytes": 0,

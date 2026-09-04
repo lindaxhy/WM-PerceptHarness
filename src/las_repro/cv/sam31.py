@@ -7,6 +7,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 import importlib
+import inspect
+import io
 import math
 from numbers import Integral, Real
 import os
@@ -20,7 +22,6 @@ import sys
 import tempfile
 from typing import Any, Iterator
 import zipfile
-import zlib
 
 from .base import CvOutOfMemoryError, CvProviderError
 from .contracts import (
@@ -45,6 +46,10 @@ _INFERENCE_FAILURE = "SAM3.1 CV evidence inference failed"
 _OOM_FAILURE = "SAM3.1 CV evidence inference ran out of memory"
 _HASH_READ_BYTES = 1024 * 1024
 _MAX_OVERLAYS = 24
+_MAX_OBJECTS = 16
+_DEFAULT_MAX_ARTIFACT_BYTES = 8 * 1024 * 1024 * 1024
+_DEFAULT_MAX_ARTIFACT_FILES = 10_000
+_ZIP_ENTRY_ALLOWANCE = 1024
 _NETWORK_PREFIX = re.compile(
     r"(?i)^(?:https?|ssh|git|ftp|s3|gs|hf)://|^[^/\\\s]+@[^/\\\s]+:"
 )
@@ -58,7 +63,9 @@ class _Detection:
     object_id: int
     probability: float
     box_xywh: tuple[float, float, float, float]
-    mask: tuple[tuple[bool, ...], ...]
+    area_fraction: float
+    center_xy: tuple[float, float]
+    mask_index: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,12 +75,159 @@ class _PromptRun:
     present_ids_by_frame: tuple[frozenset[int], ...]
     mask_height: int
     mask_width: int
+    mask_relative: str | None
 
 
 @dataclass(frozen=True, slots=True)
 class _SamModuleSnapshot:
     modules: dict[str, Any]
     namespaces: dict[str, dict[str, Any]]
+
+
+@dataclass(slots=True)
+class _ArtifactBudget:
+    max_bytes: int
+    max_files: int
+    projected_bytes: int = 0
+    actual_bytes: int = 0
+    files: int = 0
+
+    def reserve(self, byte_count: int, *, file_count: int = 0) -> None:
+        if byte_count < 0 or file_count < 0:
+            raise ValueError
+        projected = self.projected_bytes + byte_count
+        files = self.files + file_count
+        if projected > self.max_bytes or files > self.max_files:
+            raise ValueError
+        self.projected_bytes = projected
+        self.files = files
+
+    def record_file(self, size: int) -> None:
+        if size < 0 or self.actual_bytes + size > self.max_bytes:
+            raise ValueError
+        self.actual_bytes += size
+
+
+class _MaskArchiveWriter:
+    """Incrementally deflate one prompt's masks without retaining mask tensors."""
+
+    def __init__(self, path: Path, budget: _ArtifactBudget) -> None:
+        budget.reserve(_ZIP_ENTRY_ALLOWANCE, file_count=1)
+        self.path = path
+        self.budget = budget
+        self.mask_count = 0
+        self._closed = False
+        descriptor = os.open(
+            path,
+            os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+        )
+        try:
+            self._output = os.fdopen(descriptor, "w+b")
+            descriptor = -1
+            self._archive = zipfile.ZipFile(
+                self._output,
+                mode="w",
+                compression=zipfile.ZIP_DEFLATED,
+                compresslevel=9,
+            )
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    def write_mask(
+        self,
+        masks: Any,
+        object_offset: int,
+        height: int,
+        width: int,
+    ) -> tuple[int, float, tuple[float, float]]:
+        if self._closed:
+            raise RuntimeError
+        self.budget.reserve(height * width + _ZIP_ENTRY_ALLOWANCE)
+        mask_index = self.mask_count
+        member_name = f"masks/{mask_index:08d}.npy"
+        info = _zip_info(member_name)
+        true_count = 0
+        weighted_columns = 0
+        weighted_rows = 0
+        with self._archive.open(info, mode="w", force_zip64=True) as member:
+            member.write(_npy_header("|b1", (height, width)))
+            for row_index in range(height):
+                row = _mask_row_bytes(masks, object_offset, row_index, width)
+                member.write(row)
+                row_count = sum(row)
+                true_count += row_count
+                weighted_rows += row_index * row_count
+                weighted_columns += sum(
+                    column for column, value in enumerate(row) if value
+                )
+        if true_count <= 0:
+            raise ValueError
+        self.mask_count += 1
+        pixels = height * width
+        return (
+            mask_index,
+            true_count / pixels,
+            (
+                (weighted_columns + (0.5 * true_count)) / true_count / width,
+                (weighted_rows + (0.5 * true_count)) / true_count / height,
+            ),
+        )
+
+    def finish(
+        self, detections: tuple[_Detection, ...], sampled: SampledFrameSet
+    ) -> None:
+        if self._closed or len(detections) != self.mask_count:
+            raise ValueError
+        arrays = (
+            (
+                "local_frame_indices.npy",
+                tuple(item.local_frame_index for item in detections),
+            ),
+            (
+                "frame_indices.npy",
+                tuple(item.source_frame_index for item in detections),
+            ),
+            ("object_ids.npy", tuple(item.object_id for item in detections)),
+            ("mask_indices.npy", tuple(item.mask_index for item in detections)),
+            (
+                "sampled_frame_indices.npy",
+                tuple(item.source_frame_index for item in sampled.frames),
+            ),
+        )
+        try:
+            for name, values in arrays:
+                self.budget.reserve(
+                    len(values) * 8 + _ZIP_ENTRY_ALLOWANCE
+                )
+                _write_int64_npy(self._archive, name, values)
+            self._archive.close()
+            self._output.flush()
+            os.fsync(self._output.fileno())
+            self._output.close()
+            self._closed = True
+            self.budget.record_file(self.path.stat().st_size)
+        except BaseException:
+            self.abort()
+            raise
+
+    def abort(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._archive.close()
+        except BaseException:
+            pass
+        try:
+            self._output.close()
+        except BaseException:
+            pass
+        try:
+            self.path.unlink(missing_ok=True)
+        except BaseException:
+            pass
 
 
 class Sam31EvidenceProvider:
@@ -90,8 +244,15 @@ class Sam31EvidenceProvider:
         refinement_sampler: Callable[..., tuple[int, ...]] = refinement_sample_indices,
         checkpoint_sha256: str | None = None,
         repository_revision: str = _PINNED_REPOSITORY_REVISION,
+        max_artifact_bytes: int = _DEFAULT_MAX_ARTIFACT_BYTES,
+        max_artifact_files: int = _DEFAULT_MAX_ARTIFACT_FILES,
+        overlay_renderer: Callable[..., None] | None = None,
+        runtime_directory: Path | None = None,
+        import_snapshot: _SamModuleSnapshot | None = None,
+        sam_source_root: Path | None = None,
     ) -> None:
         _require_predictor_interface(predictor)
+        _install_pinned_multiplex_init_compatibility(predictor)
         self._predictor = predictor
         self._torch = torch_module
         self._materialize_frames = materialize_frames
@@ -100,11 +261,25 @@ class Sam31EvidenceProvider:
         self._execution_chunk_frames = _positive_integer(
             execution_chunk_frames, "execution_chunk_frames"
         )
+        self._apply_execution_chunk_frames()
         self.checkpoint_sha256 = checkpoint_sha256
         self.repository_revision = repository_revision
+        self._max_artifact_bytes = _positive_integer(
+            max_artifact_bytes, "max_artifact_bytes"
+        )
+        self._max_artifact_files = _positive_integer(
+            max_artifact_files, "max_artifact_files"
+        )
+        self._overlay_renderer = overlay_renderer or _render_context_overlay
+        self._runtime_directory = runtime_directory
+        self._import_snapshot = import_snapshot
+        self._sam_source_root = sam_source_root
+        self._retry_request: CvEvidenceRequest | None = None
+        self._retry_final_indices: tuple[int, ...] | None = None
         self._closed = False
         self._metrics = {
             "processed_frames": 0,
+            "execution_chunk_frames": self.execution_chunk_frames,
             "entity_prompts": 0,
             "track_count": 0,
             "peak_allocated_bytes": 0,
@@ -119,18 +294,35 @@ class Sam31EvidenceProvider:
         *,
         compile_model: bool = False,
         predictor_factory: Callable[..., Any] | None = None,
+        bpe_path: Path | str | None = None,
+        max_artifact_bytes: int = _DEFAULT_MAX_ARTIFACT_BYTES,
+        max_artifact_files: int = _DEFAULT_MAX_ARTIFACT_FILES,
     ) -> Sam31EvidenceProvider:
         """Validate and load the pinned local runtime without any download path."""
         imported_snapshot: _SamModuleSnapshot | None = None
+        runtime_directory: Path | None = None
+        source_root: Path | None = None
         predictor: Any = None
         try:
             if not isinstance(compile_model, bool):
                 raise ValueError
             repository = _validated_repository(repository_path)
-            checkpoint, digest = _validated_checkpoint(
-                checkpoint_path, checkpoint_sha256
-            )
             _verify_repository_revision(repository)
+            runtime_directory = _private_runtime_directory()
+            checkpoint, digest = _snapshot_local_asset(
+                checkpoint_path,
+                runtime_directory / "checkpoint.pt",
+                expected_sha256=checkpoint_sha256,
+            )
+            bpe = _snapshot_local_asset(
+                bpe_path
+                if bpe_path is not None
+                else repository
+                / "sam3"
+                / "assets"
+                / "bpe_simple_vocab_16e6.txt.gz",
+                runtime_directory / "bpe_simple_vocab_16e6.txt.gz",
+            )[0]
             imported_snapshot = _sam_module_snapshot()
             if any(
                 not _module_is_beneath(module, repository)
@@ -141,28 +333,51 @@ class Sam31EvidenceProvider:
             if builder is not None and not callable(builder):
                 raise TypeError
             if builder is None:
-                builder = _import_local_builder(repository, imported_snapshot)
+                source_root = _snapshot_repository_source(
+                    repository, runtime_directory / "source"
+                )
+                _verify_repository_revision(repository)
+                builder = _import_local_builder(source_root, imported_snapshot)
             torch_module = importlib.import_module("torch")
             predictor = builder(
                 checkpoint_path=str(checkpoint),
-                load_from_HF=False,
+                bpe_path=str(bpe),
+                max_num_objects=16,
                 multiplex_count=16,
-                gpus_to_use=[0],
                 compile=compile_model,
             )
             _require_predictor_interface(predictor)
-            if predictor_factory is None or _sam_module_snapshot().modules:
+            if predictor_factory is None:
+                if source_root is None:
+                    raise ValueError
+                _verify_loaded_sam_modules(source_root)
+            elif _sam_module_snapshot().modules:
                 _verify_loaded_sam_modules(repository)
             return cls(
                 predictor=predictor,
                 torch_module=torch_module,
                 checkpoint_sha256=digest,
                 repository_revision=_PINNED_REPOSITORY_REVISION,
+                max_artifact_bytes=max_artifact_bytes,
+                max_artifact_files=max_artifact_files,
+                runtime_directory=runtime_directory,
+                import_snapshot=(
+                    imported_snapshot if predictor_factory is None else None
+                ),
+                sam_source_root=source_root,
             )
         except BaseException as error:
             _shutdown_predictor(predictor)
             if imported_snapshot is not None:
-                _restore_sam_modules(imported_snapshot)
+                try:
+                    _restore_sam_modules(imported_snapshot)
+                except BaseException:
+                    pass
+            if runtime_directory is not None:
+                try:
+                    _remove_tree(runtime_directory)
+                except BaseException:
+                    pass
             if isinstance(error, Exception):
                 raise CvProviderError(_LOAD_FAILURE) from None
             raise
@@ -176,10 +391,21 @@ class Sam31EvidenceProvider:
         self._execution_chunk_frames = _positive_integer(
             value, "execution_chunk_frames"
         )
+        self._apply_execution_chunk_frames()
 
     def set_execution_chunk_frames(self, value: int) -> None:
         """Expose Task-5's positive worker-owned OOM batching interface."""
         self.execution_chunk_frames = value
+
+    def _apply_execution_chunk_frames(self) -> None:
+        model = getattr(self._predictor, "model", None)
+        if model is None:
+            return
+        for name in ("postprocess_batch_size", "batched_grounding_batch_size"):
+            if hasattr(model, name):
+                setattr(model, name, self._execution_chunk_frames)
+                if getattr(model, name) != self._execution_chunk_frames:
+                    raise ValueError
 
     def analyze(
         self, request: CvEvidenceRequest, staging_dir: Path
@@ -203,6 +429,7 @@ class Sam31EvidenceProvider:
             _reset_peak_memory(self._torch)
             self._metrics = {
                 "processed_frames": 0,
+                "execution_chunk_frames": self.execution_chunk_frames,
                 "entity_prompts": 0,
                 "track_count": 0,
                 "peak_allocated_bytes": 0,
@@ -210,75 +437,109 @@ class Sam31EvidenceProvider:
             if not validated_request.entities:
                 artifact = _empty_artifact(validated_request)
                 self._metrics["peak_allocated_bytes"] = _peak_memory(self._torch)
+                self._clear_retry_plan()
                 completed = True
                 return artifact
 
             work_directory = Path(
                 tempfile.mkdtemp(prefix=".sam31-frames-", dir=staging)
             )
-            initial_indices = tuple(
-                self._initial_sampler(
-                    validated_request.timeline, validated_request.sampling
-                )
+            budget = _ArtifactBudget(
+                max_bytes=self._max_artifact_bytes,
+                max_files=self._max_artifact_files,
             )
-            _validate_source_indices(validated_request, initial_indices)
-            if (
-                validated_request.duration_seconds
-                <= validated_request.sampling.short_video_seconds
-            ):
+            retry_indices = (
+                self._retry_final_indices
+                if self._retry_request == validated_request
+                else None
+            )
+            if retry_indices is not None:
                 final_frames = self._materialize(
                     validated_request,
-                    initial_indices,
+                    retry_indices,
                     work_directory / "final",
                 )
             else:
-                scan_frames = self._materialize(
-                    validated_request,
-                    initial_indices,
-                    work_directory / "scan",
-                )
-                preliminary = self._run_all_prompts(
-                    validated_request, scan_frames
-                )
-                change_indices = _visibility_change_source_indices(
-                    preliminary, scan_frames
-                )
-                refined = tuple(
-                    self._refinement_sampler(
-                        validated_request.timeline,
-                        change_indices,
-                        validated_request.sampling,
+                self._clear_retry_plan()
+                initial_indices = tuple(
+                    self._initial_sampler(
+                        validated_request.timeline, validated_request.sampling
                     )
                 )
-                _validate_source_indices(
-                    validated_request, refined, allow_empty=True
-                )
-                final_indices = tuple(sorted(set(initial_indices) | set(refined)))
+                _validate_source_indices(validated_request, initial_indices)
+                if (
+                    validated_request.duration_seconds
+                    <= validated_request.sampling.short_video_seconds
+                ):
+                    final_indices = initial_indices
+                else:
+                    scan_frames = self._materialize(
+                        validated_request,
+                        initial_indices,
+                        work_directory / "scan",
+                    )
+                    preliminary = self._run_all_prompts(
+                        validated_request, scan_frames
+                    )
+                    change_indices = _visibility_change_source_indices(
+                        preliminary, scan_frames
+                    )
+                    refined = tuple(
+                        self._refinement_sampler(
+                            validated_request.timeline,
+                            change_indices,
+                            validated_request.sampling,
+                        )
+                    )
+                    _validate_source_indices(
+                        validated_request, refined, allow_empty=True
+                    )
+                    final_indices = tuple(
+                        sorted(set(initial_indices) | set(refined))
+                    )
+                    del preliminary, scan_frames
+                self._retry_request = validated_request
+                self._retry_final_indices = final_indices
                 final_frames = self._materialize(
                     validated_request,
                     final_indices,
                     work_directory / "final",
                 )
 
-            prompt_runs = self._run_all_prompts(validated_request, final_frames)
+            masks_directory = _create_private_directory(staging / "masks")
+            output_directories.append(masks_directory)
+            prompt_runs = self._run_all_prompts(
+                validated_request,
+                final_frames,
+                masks_directory=masks_directory,
+                budget=budget,
+            )
             artifact = _build_artifact(
                 validated_request,
                 staging,
+                final_frames,
                 prompt_runs,
                 output_directories,
+                budget,
+                self._overlay_renderer,
             )
+            if self._sam_source_root is not None:
+                _verify_loaded_sam_modules(self._sam_source_root)
             self._metrics = {
                 "processed_frames": len(final_frames.frames),
+                "execution_chunk_frames": self.execution_chunk_frames,
                 "entity_prompts": len(validated_request.entities),
                 "track_count": len(artifact.tracks),
                 "peak_allocated_bytes": _peak_memory(self._torch),
             }
+            self._clear_retry_plan()
             completed = True
             return artifact
         except Exception as error:
             if _is_cuda_oom(self._torch, error):
                 _empty_cuda_cache(self._torch)
                 raise CvOutOfMemoryError(_OOM_FAILURE) from None
+            self._clear_retry_plan()
             raise CvProviderError(_INFERENCE_FAILURE) from None
         finally:
             if work_directory is not None:
@@ -291,6 +552,10 @@ class Sam31EvidenceProvider:
         """Return bounded metrics for the most recent completed request."""
         return dict(self._metrics)
 
+    def _clear_retry_plan(self) -> None:
+        self._retry_request = None
+        self._retry_final_indices = None
+
     def close(self) -> None:
         """Release predictor-owned process state once."""
         if self._closed:
@@ -298,12 +563,34 @@ class Sam31EvidenceProvider:
         self._closed = True
         predictor = self._predictor
         self._predictor = None
-        shutdown = getattr(predictor, "shutdown", None)
-        if callable(shutdown):
-            try:
+        cleanup_error: BaseException | None = None
+        try:
+            shutdown = getattr(predictor, "shutdown", None)
+            if callable(shutdown):
                 shutdown()
-            except Exception:
+        except BaseException as error:
+            cleanup_error = error
+        try:
+            if self._import_snapshot is not None:
+                _restore_sam_modules(self._import_snapshot)
+        except BaseException as error:
+            if cleanup_error is None:
+                cleanup_error = error
+        finally:
+            self._import_snapshot = None
+        try:
+            if self._runtime_directory is not None:
+                _remove_tree(self._runtime_directory)
+        except BaseException as error:
+            if cleanup_error is None:
+                cleanup_error = error
+        finally:
+            self._runtime_directory = None
+            self._sam_source_root = None
+        if cleanup_error is not None:
+            if isinstance(cleanup_error, Exception):
                 raise CvProviderError("Unable to close SAM3.1 runtime") from None
+            raise cleanup_error
 
     def _materialize(
         self,
@@ -324,10 +611,26 @@ class Sam31EvidenceProvider:
         self,
         request: CvEvidenceRequest,
         sampled: SampledFrameSet,
+        *,
+        masks_directory: Path | None = None,
+        budget: _ArtifactBudget | None = None,
     ) -> tuple[_PromptRun, ...]:
+        dimensions = _sampled_frame_dimensions(sampled)
         with _predictor_session(self._predictor, sampled) as session_id:
             return tuple(
-                self._run_prompt(request, sampled, session_id, entity)
+                self._run_prompt(
+                    request,
+                    sampled,
+                    session_id,
+                    entity,
+                    dimensions,
+                    mask_path=(
+                        masks_directory / f"{entity.entity_id}.npz"
+                        if masks_directory is not None
+                        else None
+                    ),
+                    budget=budget,
+                )
                 for entity in request.entities
             )
 
@@ -337,6 +640,10 @@ class Sam31EvidenceProvider:
         sampled: SampledFrameSet,
         session_id: str,
         entity: Any,
+        frame_dimensions: tuple[int, int],
+        *,
+        mask_path: Path | None,
+        budget: _ArtifactBudget | None,
     ) -> _PromptRun:
         self._predictor.handle_request(
             {"type": "reset_session", "session_id": session_id}
@@ -351,75 +658,102 @@ class Sam31EvidenceProvider:
             }
         )
         frame_count = len(sampled.frames)
-        chunk_size = self.execution_chunk_frames
         detections: list[_Detection] = []
         present: list[frozenset[int] | None] = [None] * frame_count
         mask_shape: tuple[int, int] | None = None
-        for start in range(0, frame_count, chunk_size):
-            count = min(chunk_size, frame_count - start)
-            stream_request = {
-                "type": "propagate_in_video",
-                "session_id": session_id,
-                "propagation_direction": "forward",
-                "start_frame_index": start,
-                "max_frame_num_to_track": count - 1,
-                "output_prob_thresh": request.thresholds.min_confidence,
-            }
+        writer = (
+            _MaskArchiveWriter(mask_path, budget)
+            if mask_path is not None and budget is not None
+            else None
+        )
+        stream_request = {
+            "type": "propagate_in_video",
+            "session_id": session_id,
+            "propagation_direction": "forward",
+            "start_frame_index": 0,
+            "max_frame_num_to_track": frame_count - 1,
+            "output_prob_thresh": request.thresholds.min_confidence,
+        }
+        try:
             stream = self._predictor.handle_stream_request(stream_request)
-            stream_failed = False
-            next_expected_index = start
-            try:
-                for response in stream:
-                    local_index, parsed, response_shape = _parse_frame_response(
-                        response,
-                        sampled,
-                        allowed_indices=range(start, start + count),
-                    )
-                    if local_index != next_expected_index:
-                        raise ValueError
-                    next_expected_index += 1
-                    if present[local_index] is not None:
-                        raise ValueError
-                    if mask_shape is None:
-                        mask_shape = response_shape
-                    elif mask_shape != response_shape:
-                        raise ValueError
-                    present[local_index] = frozenset(
-                        detection.object_id for detection in parsed
-                    )
+        except BaseException:
+            if writer is not None:
+                writer.abort()
+            raise
+        stream_failed = False
+        next_expected_index = 0
+        try:
+            for response in stream:
+                local_index, parsed, response_shape = _parse_frame_response(
+                    response,
+                    sampled,
+                    allowed_indices=range(frame_count),
+                    expected_dimensions=frame_dimensions,
+                    mask_writer=writer,
+                )
+                if local_index != next_expected_index:
+                    raise ValueError
+                next_expected_index += 1
+                if present[local_index] is not None:
+                    raise ValueError
+                if mask_shape is None:
+                    mask_shape = response_shape
+                elif mask_shape != response_shape:
+                    raise ValueError
+                present[local_index] = frozenset(
+                    detection.object_id for detection in parsed
+                )
+                if writer is not None:
                     detections.extend(parsed)
-            except BaseException:
-                stream_failed = True
-                raise
-            finally:
-                close_stream = getattr(stream, "close", None)
-                if callable(close_stream):
-                    try:
-                        close_stream()
-                    except Exception:
-                        if not stream_failed:
-                            raise
-            if next_expected_index != start + count:
+        except BaseException:
+            stream_failed = True
+            if writer is not None:
+                writer.abort()
+            raise
+        finally:
+            close_stream = getattr(stream, "close", None)
+            if callable(close_stream):
+                try:
+                    close_stream()
+                except BaseException:
+                    if not stream_failed:
+                        if writer is not None:
+                            writer.abort()
+                        raise
+        try:
+            if next_expected_index != frame_count:
                 raise ValueError
-        if any(value is None for value in present) or mask_shape is None:
-            raise ValueError
-        if len({
-            (detection.local_frame_index, detection.object_id)
-            for detection in detections
-        }) != len(detections):
-            raise ValueError
-        return _PromptRun(
-            entity_id=entity.entity_id,
-            detections=tuple(
+            if any(value is None for value in present) or mask_shape is None:
+                raise ValueError
+            if len({
+                (detection.local_frame_index, detection.object_id)
+                for detection in detections
+            }) != len(detections):
+                raise ValueError
+            ordered = tuple(
                 sorted(
                     detections,
                     key=lambda item: (item.local_frame_index, item.object_id),
                 )
-            ),
-            present_ids_by_frame=tuple(value for value in present if value is not None),
-            mask_height=mask_shape[0],
-            mask_width=mask_shape[1],
-        )
+            )
+            if writer is not None:
+                writer.finish(ordered, sampled)
+            return _PromptRun(
+                entity_id=entity.entity_id,
+                detections=ordered,
+                present_ids_by_frame=tuple(
+                    value for value in present if value is not None
+                ),
+                mask_height=mask_shape[0],
+                mask_width=mask_shape[1],
+                mask_relative=(
+                    f"masks/{entity.entity_id}.npz" if writer is not None else None
+                ),
+            )
+        except BaseException:
+            if writer is not None:
+                writer.abort()
+            raise
 
 
 def _empty_artifact(request: CvEvidenceRequest) -> CvEvidenceArtifact:
@@ -443,13 +777,37 @@ def _require_predictor_interface(predictor: Any) -> None:
         raise TypeError
 
 
+def _install_pinned_multiplex_init_compatibility(predictor: Any) -> None:
+    """Bridge the one known BasePredictor/multiplex init signature mismatch."""
+    model = getattr(predictor, "model", None)
+    init_state = getattr(model, "init_state", None)
+    if not callable(init_state):
+        return
+    try:
+        parameters = inspect.signature(init_state).parameters
+    except (TypeError, ValueError):
+        raise TypeError from None
+    if "offload_state_to_cpu" in parameters:
+        return
+
+    def compatible_init_state(*args: Any, **kwargs: Any) -> Any:
+        if "offload_state_to_cpu" in kwargs:
+            if kwargs["offload_state_to_cpu"] is not False:
+                raise ValueError
+            kwargs = dict(kwargs)
+            kwargs.pop("offload_state_to_cpu")
+        return init_state(*args, **kwargs)
+
+    setattr(model, "init_state", compatible_init_state)
+
+
 def _shutdown_predictor(predictor: Any) -> None:
-    shutdown = getattr(predictor, "shutdown", None)
-    if callable(shutdown):
-        try:
+    try:
+        shutdown = getattr(predictor, "shutdown", None)
+        if callable(shutdown):
             shutdown()
-        except Exception:
-            pass
+    except BaseException:
+        pass
 
 
 def _validated_repository(value: Path | str) -> Path:
@@ -461,6 +819,7 @@ def _validated_repository(value: Path | str) -> Path:
         resolved = raw.resolve(strict=True)
         if resolved != raw.absolute():
             raise ValueError
+        _validate_trusted_ancestry(resolved)
         package = resolved / "sam3" / "__init__.py"
         package_status = package.lstat()
         if stat.S_ISLNK(package_status.st_mode) or not stat.S_ISREG(
@@ -472,12 +831,26 @@ def _validated_repository(value: Path | str) -> Path:
         raise ValueError from None
 
 
-def _validated_checkpoint(
-    value: Path | str, expected_sha256: str
+def _private_runtime_directory() -> Path:
+    path = Path(tempfile.mkdtemp(prefix=".las-sam31-runtime-"))
+    path.chmod(0o700)
+    status = path.stat()
+    if status.st_uid != os.getuid() or stat.S_IMODE(status.st_mode) != 0o700:
+        _remove_tree(path)
+        raise ValueError
+    return path
+
+
+def _snapshot_local_asset(
+    value: Path | str,
+    destination: Path,
+    *,
+    expected_sha256: str | None = None,
 ) -> tuple[Path, str]:
-    if not isinstance(expected_sha256, str) or re.fullmatch(
-        r"[0-9a-f]{64}", expected_sha256
-    ) is None:
+    if expected_sha256 is not None and (
+        not isinstance(expected_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None
+    ):
         raise ValueError
     path = _local_path(value)
     nofollow = getattr(os, "O_NOFOLLOW", None)
@@ -486,39 +859,92 @@ def _validated_checkpoint(
     descriptor: int | None = None
     try:
         before = path.lstat()
-        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        if (
+            stat.S_ISLNK(before.st_mode)
+            or not stat.S_ISREG(before.st_mode)
+            or before.st_size <= 0
+            or before.st_nlink != 1
+            or before.st_uid not in {0, os.getuid()}
+            or stat.S_IMODE(before.st_mode) & 0o022
+        ):
             raise ValueError
         resolved = path.resolve(strict=True)
         if resolved != path.absolute():
             raise ValueError
+        _validate_trusted_ancestry(resolved.parent)
         descriptor = os.open(resolved, os.O_RDONLY | nofollow)
         opened = os.fstat(descriptor)
         identity = (opened.st_dev, opened.st_ino)
         if (
             not stat.S_ISREG(opened.st_mode)
             or opened.st_size <= 0
+            or opened.st_nlink != 1
             or identity != (before.st_dev, before.st_ino)
         ):
             raise ValueError
         digest = hashlib.sha256()
-        while payload := os.read(descriptor, _HASH_READ_BYTES):
-            digest.update(payload)
+        output_descriptor = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow,
+            0o600,
+        )
+        try:
+            while payload := os.read(descriptor, _HASH_READ_BYTES):
+                digest.update(payload)
+                view = memoryview(payload)
+                while view:
+                    written = os.write(output_descriptor, view)
+                    if written <= 0:
+                        raise OSError
+                    view = view[written:]
+            os.fsync(output_descriptor)
+        finally:
+            os.close(output_descriptor)
         after_open = os.fstat(descriptor)
         after_path = resolved.lstat()
+        actual_digest = digest.hexdigest()
         if (
             (after_open.st_dev, after_open.st_ino) != identity
             or (after_path.st_dev, after_path.st_ino) != identity
             or after_open.st_size != opened.st_size
             or after_open.st_mtime_ns != opened.st_mtime_ns
-            or digest.hexdigest() != expected_sha256
+            or after_path.st_size != opened.st_size
+            or after_path.st_mtime_ns != opened.st_mtime_ns
+            or (expected_sha256 is not None and actual_digest != expected_sha256)
         ):
             raise ValueError
-        return resolved, expected_sha256
+        copied = destination.stat()
+        if (
+            not stat.S_ISREG(copied.st_mode)
+            or copied.st_nlink != 1
+            or copied.st_uid != os.getuid()
+            or stat.S_IMODE(copied.st_mode) != 0o600
+            or copied.st_size != opened.st_size
+        ):
+            raise ValueError
+        return destination.resolve(strict=True), actual_digest
     except (OSError, RuntimeError, ValueError):
         raise ValueError from None
     finally:
         if descriptor is not None:
             os.close(descriptor)
+
+
+def _validate_trusted_ancestry(path: Path) -> None:
+    current = path
+    while True:
+        status = current.lstat()
+        mode = stat.S_IMODE(status.st_mode)
+        if (
+            stat.S_ISLNK(status.st_mode)
+            or not stat.S_ISDIR(status.st_mode)
+            or status.st_uid not in {0, os.getuid()}
+            or (mode & 0o022 and not (status.st_uid == 0 and mode & stat.S_ISVTX))
+        ):
+            raise ValueError
+        if current.parent == current:
+            break
+        current = current.parent
 
 
 def _local_path(value: Path | str) -> Path:
@@ -552,6 +978,125 @@ def _verify_repository_revision(repository: Path) -> None:
         raise ValueError
     if completed.stdout.strip() != _PINNED_REPOSITORY_REVISION:
         raise ValueError
+    status = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--",
+            "sam3",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        shell=False,
+    )
+    if not isinstance(status.stdout, str) or status.stdout:
+        raise ValueError
+
+
+def _snapshot_repository_source(repository: Path, destination: Path) -> Path:
+    tracked = _tracked_sam_paths(repository)
+    if "sam3/__init__.py" not in tracked or "sam3/model_builder.py" not in tracked:
+        raise ValueError
+    destination.mkdir(mode=0o700, exist_ok=False)
+    try:
+        for relative_name in tracked:
+            relative = Path(relative_name)
+            source = repository / relative
+            target = destination / relative
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            _copy_verified_source_file(source, target)
+        if tracked != _tracked_sam_paths(repository):
+            raise ValueError
+        for directory in sorted(
+            (path for path in destination.rglob("*") if path.is_dir()),
+            key=lambda path: len(path.parts),
+            reverse=True,
+        ):
+            directory.chmod(0o500)
+        destination.chmod(0o500)
+        return destination.resolve(strict=True)
+    except BaseException:
+        _remove_tree(destination)
+        raise
+
+
+def _tracked_sam_paths(repository: Path) -> tuple[str, ...]:
+    completed = subprocess.run(
+        ["git", "-C", str(repository), "ls-files", "-z", "--", "sam3"],
+        check=True,
+        capture_output=True,
+        text=True,
+        shell=False,
+    )
+    if not isinstance(completed.stdout, str) or not completed.stdout.endswith("\0"):
+        raise ValueError
+    names = tuple(item for item in completed.stdout.split("\0") if item)
+    if not names or names != tuple(sorted(set(names))):
+        raise ValueError
+    for name in names:
+        path = Path(name)
+        if (
+            path.is_absolute()
+            or path.parts[:1] != ("sam3",)
+            or any(part in {"", ".", ".."} for part in path.parts)
+        ):
+            raise ValueError
+    return names
+
+
+def _copy_verified_source_file(source: Path, destination: Path) -> None:
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise ValueError
+    before = source.lstat()
+    if (
+        stat.S_ISLNK(before.st_mode)
+        or not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+        or before.st_uid not in {0, os.getuid()}
+        or stat.S_IMODE(before.st_mode) & 0o022
+    ):
+        raise ValueError
+    source_descriptor = os.open(source, os.O_RDONLY | nofollow)
+    destination_descriptor: int | None = None
+    try:
+        opened = os.fstat(source_descriptor)
+        identity = opened.st_dev, opened.st_ino
+        if identity != (before.st_dev, before.st_ino):
+            raise ValueError
+        destination_descriptor = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow,
+            0o400,
+        )
+        while payload := os.read(source_descriptor, _HASH_READ_BYTES):
+            view = memoryview(payload)
+            while view:
+                written = os.write(destination_descriptor, view)
+                if written <= 0:
+                    raise OSError
+                view = view[written:]
+        os.fsync(destination_descriptor)
+        after_open = os.fstat(source_descriptor)
+        after_path = source.lstat()
+        if (
+            (after_open.st_dev, after_open.st_ino) != identity
+            or (after_path.st_dev, after_path.st_ino) != identity
+            or after_open.st_size != opened.st_size
+            or after_open.st_mtime_ns != opened.st_mtime_ns
+            or after_path.st_size != opened.st_size
+            or after_path.st_mtime_ns != opened.st_mtime_ns
+        ):
+            raise ValueError
+    finally:
+        if destination_descriptor is not None:
+            os.close(destination_descriptor)
+        os.close(source_descriptor)
 
 
 def _sam_module_snapshot() -> _SamModuleSnapshot:
@@ -573,11 +1118,11 @@ def _sam_module_snapshot() -> _SamModuleSnapshot:
 def _import_local_builder(
     repository: Path, snapshot: _SamModuleSnapshot
 ) -> Callable[..., Any]:
-    for module in snapshot.modules.values():
-        if not _module_is_beneath(module, repository):
-            raise ValueError
     original_path = list(sys.path)
     try:
+        for name in tuple(sys.modules):
+            if name == "sam3" or name.startswith("sam3."):
+                sys.modules.pop(name, None)
         sys.path.insert(0, str(repository))
         importlib.invalidate_caches()
         package = importlib.import_module("sam3")
@@ -592,7 +1137,7 @@ def _import_local_builder(
         if not callable(builder):
             raise ValueError
         return builder
-    except Exception:
+    except BaseException:
         _restore_sam_modules(snapshot)
         raise
     finally:
@@ -707,6 +1252,67 @@ def _validate_sampled_frames(
             raise ValueError
 
 
+def _sampled_frame_dimensions(sampled: SampledFrameSet) -> tuple[int, int]:
+    dimensions = tuple(_jpeg_dimensions(frame.path) for frame in sampled.frames)
+    if not dimensions or len(set(dimensions)) != 1:
+        raise ValueError
+    return dimensions[0]
+
+
+def _jpeg_dimensions(path: Path) -> tuple[int, int]:
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        with os.fdopen(descriptor, "rb") as source:
+            descriptor = -1
+            if source.read(2) != b"\xff\xd8":
+                raise ValueError
+            while True:
+                prefix = source.read(1)
+                if not prefix:
+                    raise ValueError
+                if prefix != b"\xff":
+                    continue
+                marker = source.read(1)
+                while marker == b"\xff":
+                    marker = source.read(1)
+                if not marker or marker in {b"\xd8", b"\x01"}:
+                    continue
+                if marker == b"\xd9":
+                    raise ValueError
+                length_payload = source.read(2)
+                if len(length_payload) != 2:
+                    raise ValueError
+                segment_length = struct.unpack(">H", length_payload)[0]
+                if segment_length < 2:
+                    raise ValueError
+                if marker[0] in {
+                    0xC0,
+                    0xC1,
+                    0xC2,
+                    0xC3,
+                    0xC5,
+                    0xC6,
+                    0xC7,
+                    0xC9,
+                    0xCA,
+                    0xCB,
+                    0xCD,
+                    0xCE,
+                    0xCF,
+                }:
+                    payload = source.read(segment_length - 2)
+                    if len(payload) < 5:
+                        raise ValueError
+                    height, width = struct.unpack(">HH", payload[1:5])
+                    if height <= 0 or width <= 0:
+                        raise ValueError
+                    return height, width
+                source.seek(segment_length - 2, os.SEEK_CUR)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 @contextmanager
 def _predictor_session(
     predictor: Any, sampled: SampledFrameSet
@@ -733,7 +1339,7 @@ def _predictor_session(
             predictor.handle_request(
                 {"type": "close_session", "session_id": session_id}
             )
-        except Exception:
+        except BaseException:
             if not body_failed:
                 raise
 
@@ -743,6 +1349,8 @@ def _parse_frame_response(
     sampled: SampledFrameSet,
     *,
     allowed_indices: range,
+    expected_dimensions: tuple[int, int],
+    mask_writer: _MaskArchiveWriter | None,
 ) -> tuple[int, tuple[_Detection, ...], tuple[int, int]]:
     if not isinstance(response, Mapping):
         raise TypeError
@@ -766,45 +1374,65 @@ def _parse_frame_response(
     )
     if any(name not in outputs for name in required):
         raise ValueError
-    ids_shape, object_ids = _array_values(outputs[required[0]], "integer")
-    probs_shape, probabilities = _array_values(outputs[required[1]], "float")
-    boxes_shape, boxes = _array_values(outputs[required[2]], "float")
-    masks_shape, masks = _array_values(outputs[required[3]], "boolean")
+    object_ids = outputs[required[0]]
+    probabilities = outputs[required[1]]
+    boxes = outputs[required[2]]
+    masks = outputs[required[3]]
+    ids_shape = _array_metadata(object_ids, "integer")
+    probs_shape = _array_metadata(probabilities, "float")
+    boxes_shape = _array_metadata(boxes, "float")
+    masks_shape = _array_metadata(masks, "boolean")
     count = ids_shape[0] if len(ids_shape) == 1 else -1
     if (
         ids_shape != (count,)
+        or count > _MAX_OBJECTS
         or probs_shape != (count,)
         or boxes_shape != (count, 4)
         or len(masks_shape) != 3
         or masks_shape[0] != count
         or masks_shape[1] <= 0
         or masks_shape[2] <= 0
+        or (masks_shape[1], masks_shape[2]) != expected_dimensions
     ):
         raise ValueError
-    _require_nested_shape(object_ids, ids_shape)
-    _require_nested_shape(probabilities, probs_shape)
-    _require_nested_shape(boxes, boxes_shape)
-    _require_nested_shape(masks, masks_shape)
-    parsed_ids = tuple(_strict_integer(value) for value in object_ids)
+    parsed_ids = tuple(
+        _strict_integer(_array_item(object_ids, offset)) for offset in range(count)
+    )
     if len(set(parsed_ids)) != len(parsed_ids):
         raise ValueError
     frame = sampled.frames[local_index]
     detections: list[_Detection] = []
-    for object_id, probability_value, box_value, mask_value in zip(
-        parsed_ids, probabilities, boxes, masks
-    ):
-        probability = _bounded_float(probability_value, lower=0.0, upper=1.0)
+    for object_offset in sorted(range(count), key=lambda offset: parsed_ids[offset]):
+        object_id = parsed_ids[object_offset]
+        probability = _bounded_float(
+            _array_item(probabilities, object_offset), lower=0.0, upper=1.0
+        )
         box = tuple(
-            _bounded_float(value, lower=0.0, upper=1.0) for value in box_value
+            _bounded_float(
+                _array_item(boxes, object_offset, coordinate),
+                lower=0.0,
+                upper=1.0,
+            )
+            for coordinate in range(4)
         )
         x, y, width, height = box
         if width <= 0 or height <= 0 or x + width > 1 or y + height > 1:
             raise ValueError
-        mask = tuple(
-            tuple(_strict_boolean(value) for value in row) for row in mask_value
-        )
-        if not any(value for row in mask for value in row):
-            raise ValueError
+        if mask_writer is None:
+            area_fraction, center_xy = _consume_mask_rows(
+                masks,
+                object_offset,
+                masks_shape[1],
+                masks_shape[2],
+            )
+            mask_index = -1
+        else:
+            mask_index, area_fraction, center_xy = mask_writer.write_mask(
+                masks,
+                object_offset,
+                masks_shape[1],
+                masks_shape[2],
+            )
         detections.append(
             _Detection(
                 local_frame_index=local_index,
@@ -813,17 +1441,18 @@ def _parse_frame_response(
                 object_id=object_id,
                 probability=probability,
                 box_xywh=(x, y, width, height),
-                mask=mask,
+                area_fraction=area_fraction,
+                center_xy=center_xy,
+                mask_index=mask_index,
             )
         )
     return local_index, tuple(detections), (masks_shape[1], masks_shape[2])
 
 
-def _array_values(value: Any, expected_kind: str) -> tuple[tuple[int, ...], Any]:
+def _array_metadata(value: Any, expected_kind: str) -> tuple[int, ...]:
     shape_value = getattr(value, "shape", None)
     dtype = getattr(value, "dtype", None)
-    convert = getattr(value, "tolist", None)
-    if not callable(convert) or not isinstance(shape_value, Sequence):
+    if not isinstance(shape_value, Sequence) or isinstance(shape_value, (str, bytes)):
         raise TypeError
     shape = tuple(_nonnegative_dimension(item) for item in shape_value)
     kind = getattr(dtype, "kind", None)
@@ -834,7 +1463,136 @@ def _array_values(value: Any, expected_kind: str) -> tuple[tuple[int, ...], Any]
     }[expected_kind]
     if kind not in accepted:
         raise TypeError
-    return shape, convert()
+    return shape
+
+
+def _array_item(value: Any, *indices: int) -> Any:
+    try:
+        item = value[indices if len(indices) > 1 else indices[0]]
+    except (IndexError, KeyError, TypeError):
+        try:
+            item = value
+            for index in indices:
+                item = item[index]
+        except (IndexError, KeyError, TypeError):
+            raise ValueError from None
+    scalar = getattr(item, "item", None)
+    item_shape = getattr(item, "shape", None)
+    if callable(scalar) and (item_shape is None or tuple(item_shape) == ()):
+        try:
+            item = scalar()
+        except (TypeError, ValueError):
+            raise ValueError from None
+    return item
+
+
+def _mask_row_bytes(
+    masks: Any, object_offset: int, row_index: int, width: int
+) -> bytes:
+    row = _array_item(masks, object_offset, row_index)
+    if isinstance(row, bytes):
+        payload = row
+    elif isinstance(row, (bytearray, memoryview)):
+        payload = bytes(row)
+    else:
+        convert = getattr(row, "tobytes", None)
+        if callable(convert):
+            try:
+                payload = convert(order="C")
+            except TypeError:
+                payload = convert()
+            if not isinstance(payload, bytes):
+                payload = bytes(payload)
+        else:
+            try:
+                if len(row) != width:
+                    raise ValueError
+                payload = bytes(
+                    1 if _strict_mask_boolean(row[column]) else 0
+                    for column in range(width)
+                )
+            except (IndexError, KeyError, TypeError):
+                raise ValueError from None
+    if len(payload) != width or any(value not in (0, 1) for value in payload):
+        raise ValueError
+    return payload
+
+
+def _strict_mask_boolean(value: Any) -> bool:
+    scalar = getattr(value, "item", None)
+    if callable(scalar):
+        value = scalar()
+    if not isinstance(value, bool):
+        raise TypeError
+    return value
+
+
+def _consume_mask_rows(
+    masks: Any, object_offset: int, height: int, width: int
+) -> tuple[float, tuple[float, float]]:
+    true_count = 0
+    weighted_columns = 0
+    weighted_rows = 0
+    for row_index in range(height):
+        row = _mask_row_bytes(masks, object_offset, row_index, width)
+        row_count = sum(row)
+        true_count += row_count
+        weighted_rows += row_index * row_count
+        weighted_columns += sum(
+            column for column, value in enumerate(row) if value
+        )
+    if true_count <= 0:
+        raise ValueError
+    pixels = height * width
+    return (
+        true_count / pixels,
+        (
+            (weighted_columns + (0.5 * true_count)) / true_count / width,
+            (weighted_rows + (0.5 * true_count)) / true_count / height,
+        ),
+    )
+
+
+def _npy_header(descriptor: str, shape: tuple[int, ...]) -> bytes:
+    shape_text = repr(shape)
+    header_text = (
+        "{'descr': "
+        + repr(descriptor)
+        + ", 'fortran_order': False, 'shape': "
+        + shape_text
+        + ", }"
+    )
+    prefix_length = 10
+    padding = (-((prefix_length + len(header_text) + 1) % 16)) % 16
+    header = (header_text + (" " * padding) + "\n").encode("latin1")
+    if len(header) > 65_535:
+        raise ValueError
+    return b"\x93NUMPY\x01\x00" + struct.pack("<H", len(header)) + header
+
+
+def _zip_info(name: str) -> zipfile.ZipInfo:
+    info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.create_system = 3
+    info.external_attr = 0o600 << 16
+    return info
+
+
+def _write_int64_npy(
+    archive: zipfile.ZipFile, name: str, values: tuple[int, ...]
+) -> None:
+    with archive.open(_zip_info(name), mode="w", force_zip64=True) as member:
+        member.write(_npy_header("<i8", (len(values),)))
+        buffer = bytearray()
+        for value in values:
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError
+            buffer.extend(struct.pack("<q", value))
+            if len(buffer) >= _HASH_READ_BYTES:
+                member.write(buffer)
+                buffer.clear()
+        if buffer:
+            member.write(buffer)
 
 
 def _nonnegative_dimension(value: Any) -> int:
@@ -846,17 +1604,6 @@ def _nonnegative_dimension(value: Any) -> int:
     return converted
 
 
-def _require_nested_shape(value: Any, shape: tuple[int, ...]) -> None:
-    if not shape:
-        if isinstance(value, (list, tuple)):
-            raise ValueError
-        return
-    if not isinstance(value, (list, tuple)) or len(value) != shape[0]:
-        raise ValueError
-    for item in value:
-        _require_nested_shape(item, shape[1:])
-
-
 def _strict_integer(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, Integral):
         raise TypeError
@@ -864,12 +1611,6 @@ def _strict_integer(value: Any) -> int:
     if converted < 0:
         raise ValueError
     return converted
-
-
-def _strict_boolean(value: Any) -> bool:
-    if not isinstance(value, bool):
-        raise TypeError
-    return value
 
 
 def _bounded_float(value: Any, *, lower: float, upper: float) -> float:
@@ -902,27 +1643,24 @@ def _visibility_change_source_indices(
 def _build_artifact(
     request: CvEvidenceRequest,
     staging: Path,
+    sampled: SampledFrameSet,
     prompt_runs: tuple[_PromptRun, ...],
     output_directories: list[Path],
+    budget: _ArtifactBudget,
+    overlay_renderer: Callable[..., None],
 ) -> CvEvidenceArtifact:
-    masks_directory = _create_private_directory(staging / "masks")
-    output_directories.append(masks_directory)
     artifact_files: list[ArtifactFile] = []
     tracks: list[CvTrack] = []
     for prompt_run in prompt_runs:
-        mask_relative = f"masks/{prompt_run.entity_id}.npz"
+        mask_relative = prompt_run.mask_relative
+        if mask_relative is None:
+            raise ValueError
         mask_path = staging / mask_relative
         ordered_detections = tuple(
             sorted(
                 prompt_run.detections,
                 key=lambda item: (item.local_frame_index, item.object_id),
             )
-        )
-        _write_mask_npz(
-            mask_path,
-            ordered_detections,
-            prompt_run.mask_height,
-            prompt_run.mask_width,
         )
         artifact_files.append(_artifact_file(staging, mask_path))
         object_ids = sorted({item.object_id for item in ordered_detections})
@@ -945,13 +1683,32 @@ def _build_artifact(
         overlays_directory = _create_private_directory(staging / "overlays")
         output_directories.append(overlays_directory)
         for entity_id, object_id, detection in overlays[:_MAX_OVERLAYS]:
+            prompt_run = next(
+                item for item in prompt_runs if item.entity_id == entity_id
+            )
+            if prompt_run.mask_relative is None or detection.mask_index < 0:
+                raise ValueError
+            budget.reserve(
+                (prompt_run.mask_height * prompt_run.mask_width * 3)
+                + _ZIP_ENTRY_ALLOWANCE,
+                file_count=1,
+            )
             relative = (
                 f"overlays/{entity_id}-{object_id}-"
                 f"{detection.source_frame_index:08d}.png"
             )
             overlay_path = staging / relative
-            _write_mask_png(overlay_path, detection.mask)
-            artifact_files.append(_artifact_file(staging, overlay_path))
+            x, y, width, height = detection.box_xywh
+            overlay_renderer(
+                frame_path=sampled.frames[detection.local_frame_index].path,
+                archive_path=staging / prompt_run.mask_relative,
+                mask_member=f"masks/{detection.mask_index:08d}.npy",
+                bbox_xyxy=(x, y, x + width, y + height),
+                destination=overlay_path,
+            )
+            overlay_file = _artifact_file(staging, overlay_path)
+            budget.record_file(overlay_file.size_bytes)
+            artifact_files.append(overlay_file)
 
     return CvEvidenceArtifact(
         schema_version="cv_evidence_v1",
@@ -968,14 +1725,6 @@ def _build_artifact(
 
 def _observation(detection: _Detection, mask_relative: str) -> TrackObservation:
     x, y, width, height = detection.box_xywh
-    true_pixels = [
-        (column, row)
-        for row, values in enumerate(detection.mask)
-        for column, present in enumerate(values)
-        if present
-    ]
-    mask_height = len(detection.mask)
-    mask_width = len(detection.mask[0])
     return TrackObservation(
         frame_index=detection.source_frame_index,
         timestamp_seconds=detection.timestamp_seconds,
@@ -983,11 +1732,8 @@ def _observation(detection: _Detection, mask_relative: str) -> TrackObservation:
         mask_ref=mask_relative,
         visible=True,
         confidence=detection.probability,
-        area_fraction=len(true_pixels) / (mask_height * mask_width),
-        center_xy=(
-            sum(column for column, _ in true_pixels) / len(true_pixels) / mask_width,
-            sum(row for _, row in true_pixels) / len(true_pixels) / mask_height,
-        ),
+        area_fraction=detection.area_fraction,
+        center_xy=detection.center_xy,
     )
 
 
@@ -1032,84 +1778,53 @@ def _create_private_directory(path: Path) -> Path:
     return path
 
 
-def _write_mask_npz(
-    path: Path,
-    detections: tuple[_Detection, ...],
-    height: int,
-    width: int,
+def _render_context_overlay(
+    *,
+    frame_path: Path,
+    archive_path: Path,
+    mask_member: str,
+    bbox_xyxy: tuple[float, float, float, float],
+    destination: Path,
 ) -> None:
-    raw = _npy_boolean_payload(
-        tuple(detection.mask for detection in detections), height, width
+    numpy = importlib.import_module("numpy")
+    cv2 = importlib.import_module("cv2")
+    with zipfile.ZipFile(archive_path) as archive:
+        mask = numpy.load(io.BytesIO(archive.read(mask_member)), allow_pickle=False)
+    image = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
+    if image is None or tuple(mask.shape) != tuple(image.shape[:2]):
+        raise ValueError
+    if getattr(mask.dtype, "kind", None) != "b":
+        raise TypeError
+    canvas = image.copy()
+    canvas[mask] = (
+        (canvas[mask].astype(numpy.float32) * 0.4)
+        + numpy.asarray((20, 20, 255), dtype=numpy.float32) * 0.6
+    ).astype(numpy.uint8)
+    height, width = image.shape[:2]
+    left, top, right, bottom = bbox_xyxy
+    cv2.rectangle(
+        canvas,
+        (max(0, round(left * width)), max(0, round(top * height))),
+        (min(width - 1, round(right * width)), min(height - 1, round(bottom * height))),
+        (0, 255, 255),
+        max(1, min(width, height) // 200),
     )
-    descriptor = os.open(
-        path,
-        os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-        0o600,
+    success, encoded = cv2.imencode(
+        ".png", canvas, [cv2.IMWRITE_PNG_COMPRESSION, 9]
     )
-    try:
-        with os.fdopen(descriptor, "w+b", closefd=False) as output:
-            with zipfile.ZipFile(
-                output,
-                mode="w",
-                compression=zipfile.ZIP_DEFLATED,
-                compresslevel=9,
-            ) as archive:
-                info = zipfile.ZipInfo("masks.npy", date_time=(1980, 1, 1, 0, 0, 0))
-                info.compress_type = zipfile.ZIP_DEFLATED
-                info.external_attr = 0o600 << 16
-                archive.writestr(info, raw, compress_type=zipfile.ZIP_DEFLATED)
-            output.flush()
-            os.fsync(output.fileno())
-    finally:
-        os.close(descriptor)
+    if not success:
+        raise ValueError
+    _write_exclusive_bytes(destination, memoryview(encoded))
 
 
-def _npy_boolean_payload(
-    masks: tuple[tuple[tuple[bool, ...], ...], ...],
-    height: int,
-    width: int,
-) -> bytes:
-    shape = (len(masks), height, width)
-    header_text = (
-        "{'descr': '|b1', 'fortran_order': False, "
-        f"'shape': {shape!r}, }}"
-    )
-    prefix_length = 6 + 2 + 2
-    padding = (-((prefix_length + len(header_text) + 1) % 16)) % 16
-    header = (header_text + (" " * padding) + "\n").encode("latin1")
-    data = bytes(
-        int(value)
-        for mask in masks
-        for row in mask
-        for value in row
-    )
-    return b"\x93NUMPY" + bytes((1, 0)) + struct.pack("<H", len(header)) + header + data
-
-
-def _write_mask_png(path: Path, mask: tuple[tuple[bool, ...], ...]) -> None:
-    height = len(mask)
-    width = len(mask[0])
-    rows = b"".join(
-        b"\x00"
-        + b"".join(
-            (b"\xff\x20\x20" if value else b"\x00\x00\x00")
-            for value in row
-        )
-        for row in mask
-    )
-    payload = (
-        b"\x89PNG\r\n\x1a\n"
-        + _png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
-        + _png_chunk(b"IDAT", zlib.compress(rows, level=9))
-        + _png_chunk(b"IEND", b"")
-    )
+def _write_exclusive_bytes(path: Path, payload: memoryview) -> None:
     descriptor = os.open(
         path,
         os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
         0o600,
     )
     try:
-        view = memoryview(payload)
+        view = payload
         while view:
             written = os.write(descriptor, view)
             if written <= 0:
@@ -1118,15 +1833,6 @@ def _write_mask_png(path: Path, mask: tuple[tuple[bool, ...], ...]) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
-
-
-def _png_chunk(kind: bytes, payload: bytes) -> bytes:
-    return (
-        struct.pack(">I", len(payload))
-        + kind
-        + payload
-        + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
-    )
 
 
 def _artifact_file(staging: Path, path: Path) -> ArtifactFile:
@@ -1190,6 +1896,12 @@ def _positive_integer(value: int, name: str) -> int:
 def _remove_tree(path: Path) -> None:
     try:
         if path.exists() and not path.is_symlink():
+            for directory in [path, *path.rglob("*")]:
+                try:
+                    if directory.is_dir() and not directory.is_symlink():
+                        directory.chmod(0o700)
+                except OSError:
+                    pass
             shutil.rmtree(path)
     except OSError:
         pass

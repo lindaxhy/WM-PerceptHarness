@@ -278,7 +278,10 @@ def _cv_worker_runtime(
                 settings.cv_repository_path,
                 settings.cv_checkpoint_path,
                 settings.cv_checkpoint_sha256,
+                bpe_path=settings.cv_bpe_path,
                 compile_model=settings.cv_compile_model,
+                max_artifact_bytes=settings.cv_cache_max_bytes,
+                max_artifact_files=settings.cv_cache_max_files,
             )
             _configure_execution_chunk_frames(
                 provider, settings.cv_execution_chunk_frames

@@ -100,6 +100,7 @@ def test_fake_provider_is_deterministic_and_writes_valid_artifact(
         assert hashlib.sha256(first_bytes).hexdigest() == artifact_file.sha256
     assert first_provider.request_metrics() == {
         "processed_frames": 3,
+        "execution_chunk_frames": 1,
         "entity_prompts": 2,
         "track_count": 2,
         "peak_allocated_bytes": 0,

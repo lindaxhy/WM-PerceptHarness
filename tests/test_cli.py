@@ -1511,7 +1511,12 @@ def test_cv_worker_sam31_sets_visibility_before_lazy_import_and_loads_once(
         settings.cv_checkpoint_path,
         settings.cv_checkpoint_sha256,
     )
-    assert loads[0][3] == {"compile_model": False}
+    assert loads[0][3] == {
+        "bpe_path": settings.cv_bpe_path,
+        "compile_model": False,
+        "max_artifact_bytes": settings.cv_cache_max_bytes,
+        "max_artifact_files": settings.cv_cache_max_files,
+    }
     assert len(constructed) == 1
     assert constructed[0][1].execution_chunk_frames == 8
     assert constructed[0][3] == "cv-sam31-3"

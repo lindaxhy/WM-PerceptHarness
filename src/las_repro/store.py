@@ -56,6 +56,7 @@ _JOB_METRIC_KEYS = frozenset(
         "output_tokens",
         "peak_allocated_bytes",
         "processed_frames",
+        "execution_chunk_frames",
         "entity_prompts",
         "track_count",
         "cache_hit",

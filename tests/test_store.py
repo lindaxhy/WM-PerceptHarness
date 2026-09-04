@@ -1283,6 +1283,7 @@ def test_completed_job_accepts_every_metric_with_strict_types(store):
         "output_tokens": 1,
         "peak_allocated_bytes": 2,
         "processed_frames": 3,
+        "execution_chunk_frames": 6,
         "entity_prompts": 4,
         "track_count": 5,
         "cache_hit": False,
