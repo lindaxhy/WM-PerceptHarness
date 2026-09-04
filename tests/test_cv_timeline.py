@@ -259,10 +259,10 @@ def test_overlapping_refinement_windows_do_not_exceed_max_fps() -> None:
     )
 
 
-def test_materialize_sampled_frames_uses_source_indices_and_returns_sam_mapping(
+def test_materialize_sampled_frames_uses_one_ffmpeg_call_for_multiple_source_indices(
     tmp_path: Path,
 ) -> None:
-    """Renumbering before extraction would associate SAM masks with wrong source PTS."""
+    """Per-frame decoding would turn a long selected sequence into quadratic work."""
     video = tmp_path / "source.mp4"
     video.write_bytes(b"video")
     destination = tmp_path / "sam-frames"
@@ -274,6 +274,7 @@ def test_materialize_sampled_frames_uses_source_indices_and_returns_sam_mapping(
         )
     )
     calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    jpeg_frames = (b"\xff\xd8zero\xff\xd9", b"\xff\xd8two\xff\xd9", b"\xff\xd8five\xff\xd9")
 
     def extract(*args: object, **kwargs: object) -> types.SimpleNamespace:
         calls.append((args, kwargs))
@@ -281,7 +282,7 @@ def test_materialize_sampled_frames_uses_source_indices_and_returns_sam_mapping(
         assert isinstance(command, list)
         output = command[-1]
         assert isinstance(output, str) and output.startswith("pipe:")
-        os.write(int(output.removeprefix("pipe:")), b"jpeg")
+        os.write(int(output.removeprefix("pipe:")), b"".join(jpeg_frames))
         return types.SimpleNamespace(stdout="")
 
     sampled = materialize_sampled_frames(
@@ -296,14 +297,12 @@ def test_materialize_sampled_frames_uses_source_indices_and_returns_sam_mapping(
         "000001.jpg",
         "000002.jpg",
     ]
-    assert len(calls) == 3
-    assert [arguments[0][12] for arguments, _ in calls] == [
-        "select='eq(n\\,0)'",
-        "select='eq(n\\,2)'",
-        "select='eq(n\\,5)'",
-    ]
-    assert all(arguments[0][0] == "ffmpeg" for arguments, _ in calls)
-    assert all(keywords["shell"] is False for _, keywords in calls)
+    assert [frame.path.read_bytes() for frame in sampled.frames] == list(jpeg_frames)
+    assert len(calls) == 1
+    arguments, keywords = calls[0]
+    assert arguments[0][0] == "ffmpeg"
+    assert "select='eq(n\\,0)+eq(n\\,2)+eq(n\\,5)'" in arguments[0]
+    assert keywords["shell"] is False
 
 
 def test_materialize_sampled_frames_rejects_missing_output_or_unknown_source_index(
@@ -355,7 +354,10 @@ def test_materialize_sampled_frames_pins_destination_during_swap_and_restore(
             raise OSError("FFmpeg did not receive a pinned output descriptor")
         os.replace(destination, held)
         destination.symlink_to(attacker, target_is_directory=True)
-        os.write(int(output.removeprefix("pipe:")), b"jpeg")
+        os.write(
+            int(output.removeprefix("pipe:")),
+            b"\xff\xd8first\xff\xd9\xff\xd8second\xff\xd9",
+        )
         destination.unlink()
         os.replace(held, destination)
         return types.SimpleNamespace(stdout="")

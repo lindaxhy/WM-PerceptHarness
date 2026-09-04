@@ -16,6 +16,13 @@ from typing import Callable
 from .contracts import FrameTimeline, FrameTimestamp, SamplingPolicy
 
 
+_JPEG_SOI = b"\xff\xd8"
+_JPEG_EOI = b"\xff\xd9"
+_MAX_MJPEG_STREAM_BYTES = 512 * 1024 * 1024
+_MAX_JPEG_FRAME_BYTES = 64 * 1024 * 1024
+_STREAM_READ_BYTES = 64 * 1024
+
+
 class TimelineError(RuntimeError):
     """A sanitized timeline or sampled-frame boundary failure."""
 
@@ -298,14 +305,12 @@ def materialize_sampled_frames(
             raise ValueError
         destination.mkdir(parents=True, exist_ok=False)
         destination_descriptor, destination_identity = _open_pinned_directory(destination)
-        for sam_index, source_index in enumerate(requested):
-            _extract_pinned_jpeg(
-                descriptor,
-                destination_descriptor,
-                source_index,
-                sam_index,
-                run,
-            )
+        _extract_pinned_jpegs(
+            descriptor,
+            destination_descriptor,
+            requested,
+            run,
+        )
         if _regular_file_identity(video_path) != source_identity:
             raise ValueError
         if _directory_identity(destination) != destination_identity:
@@ -343,20 +348,17 @@ def materialize_sampled_frames(
             os.close(descriptor)
 
 
-def _extract_pinned_jpeg(
+def _extract_pinned_jpegs(
     source_descriptor: int,
     destination_descriptor: int,
-    source_index: int,
-    sam_index: int,
+    source_indices: tuple[int, ...],
     run: Callable[..., object],
 ) -> None:
-    output_descriptor = os.open(
-        f"{sam_index:06d}.jpg",
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-        0o600,
-        dir_fd=destination_descriptor,
+    stream_name, stream_descriptor, stream_identity = _open_private_stream(
+        destination_descriptor
     )
     try:
+        expression = "+".join(f"eq(n\\,{index})" for index in source_indices)
         run(
             [
                 "ffmpeg",
@@ -371,9 +373,9 @@ def _extract_pinned_jpeg(
                 "-sn",
                 "-dn",
                 "-vf",
-                f"select='eq(n\\,{source_index})'",
+                f"select='{expression}'",
                 "-frames:v",
-                "1",
+                str(len(source_indices)),
                 "-fps_mode:v",
                 "passthrough",
                 "-c:v",
@@ -382,16 +384,122 @@ def _extract_pinned_jpeg(
                 "2",
                 "-f",
                 "image2pipe",
-                f"pipe:{output_descriptor}",
+                f"pipe:{stream_descriptor}",
             ],
             check=True,
             shell=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            pass_fds=(source_descriptor, output_descriptor),
+            pass_fds=(source_descriptor, stream_descriptor),
         )
-        if os.fstat(output_descriptor).st_size <= 0:
+        stream_size = os.fstat(stream_descriptor).st_size
+        if stream_size <= 0 or stream_size > _MAX_MJPEG_STREAM_BYTES:
             raise ValueError
+        os.lseek(stream_descriptor, 0, os.SEEK_SET)
+        _split_mjpeg_stream(
+            stream_descriptor,
+            destination_descriptor,
+            len(source_indices),
+        )
+    finally:
+        os.close(stream_descriptor)
+        _unlink_owned_stream(destination_descriptor, stream_name, stream_identity)
+
+
+def _open_private_stream(destination_descriptor: int) -> tuple[str, int, tuple[int, int]]:
+    for _ in range(16):
+        name = f".mjpeg-{os.urandom(16).hex()}.tmp"
+        try:
+            descriptor = os.open(
+                name,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=destination_descriptor,
+            )
+        except FileExistsError:
+            continue
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode):
+            os.close(descriptor)
+            raise ValueError
+        return name, descriptor, (status.st_dev, status.st_ino)
+    raise ValueError
+
+
+def _unlink_owned_stream(
+    destination_descriptor: int, name: str, identity: tuple[int, int]
+) -> None:
+    try:
+        status = os.stat(name, dir_fd=destination_descriptor, follow_symlinks=False)
+        if (
+            stat.S_ISREG(status.st_mode)
+            and not stat.S_ISLNK(status.st_mode)
+            and (status.st_dev, status.st_ino) == identity
+        ):
+            os.unlink(name, dir_fd=destination_descriptor)
+    except OSError:
+        pass
+
+
+def _split_mjpeg_stream(
+    stream_descriptor: int,
+    destination_descriptor: int,
+    expected_count: int,
+) -> None:
+    buffer = bytearray()
+    current = bytearray()
+    frame_count = 0
+    in_frame = False
+    while chunk := os.read(stream_descriptor, _STREAM_READ_BYTES):
+        buffer.extend(chunk)
+        while True:
+            if not in_frame:
+                if len(buffer) < len(_JPEG_SOI):
+                    break
+                if not buffer.startswith(_JPEG_SOI):
+                    raise ValueError
+                current = bytearray(_JPEG_SOI)
+                del buffer[: len(_JPEG_SOI)]
+                in_frame = True
+            marker = buffer.find(_JPEG_EOI)
+            if marker < 0:
+                trailing_marker = 1 if buffer.endswith(b"\xff") else 0
+                current.extend(buffer[:-trailing_marker] if trailing_marker else buffer)
+                if len(current) > _MAX_JPEG_FRAME_BYTES:
+                    raise ValueError
+                if trailing_marker:
+                    buffer[:] = buffer[-trailing_marker:]
+                else:
+                    buffer.clear()
+                break
+            current.extend(buffer[: marker + len(_JPEG_EOI)])
+            del buffer[: marker + len(_JPEG_EOI)]
+            if len(current) > _MAX_JPEG_FRAME_BYTES or frame_count >= expected_count:
+                raise ValueError
+            _write_pinned_jpeg(destination_descriptor, frame_count, current)
+            frame_count += 1
+            current.clear()
+            in_frame = False
+    if in_frame or buffer or frame_count != expected_count:
+        raise ValueError
+
+
+def _write_pinned_jpeg(
+    destination_descriptor: int, sam_index: int, data: bytearray
+) -> None:
+    output_descriptor = os.open(
+        f"{sam_index:06d}.jpg",
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o600,
+        dir_fd=destination_descriptor,
+    )
+    try:
+        view = memoryview(data)
+        while view:
+            written = os.write(output_descriptor, view)
+            if written <= 0:
+                raise OSError
+            view = view[written:]
     finally:
         os.close(output_descriptor)
 
