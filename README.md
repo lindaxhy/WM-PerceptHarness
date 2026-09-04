@@ -33,6 +33,7 @@ Use `python -m pip install -e '.[gpu]'` only on a compatible CUDA host.
 - [Architecture](docs/architecture/las-video-understanding-design.md)
 - [GPU acceptance](docs/reports/2026-09-02-gpu-acceptance.md)
 - [LAS/local implementation and annotation comparison](docs/reports/2026-09-03-las-vs-local-implementation-report.md)
+- [Five-demo synchronized comparison viewer](evaluation/viewer/README.md)
 
 ## Development
 

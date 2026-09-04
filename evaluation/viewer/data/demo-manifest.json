@@ -1,0 +1,46 @@
+{
+  "schema_version": "comparison_viewer_manifest_v1",
+  "reference_set_id": "las_official_english_2026-09-04",
+  "samples": [
+    {
+      "sample_id": "full_0001",
+      "duration_seconds": 10.933333333333334,
+      "media_path": "evaluation/viewer/media/full_0001.mp4",
+      "las_path": "evaluation/references/las_official_english_2026-09-04/references/full_0001.json",
+      "local_path": "evaluation/viewer/data/local/full_0001.json",
+      "caveat": ""
+    },
+    {
+      "sample_id": "full_0002",
+      "duration_seconds": 14.7,
+      "media_path": "evaluation/viewer/media/full_0002.mp4",
+      "las_path": "evaluation/references/las_official_english_2026-09-04/references/full_0002.json",
+      "local_path": "evaluation/viewer/data/local/full_0002.json",
+      "caveat": "LAS reference 使用完整 14.7 秒、441 帧的 720p 无音轨转码；本地结果使用冻结原视频。"
+    },
+    {
+      "sample_id": "full_0024",
+      "duration_seconds": 4.566666666666666,
+      "media_path": "evaluation/viewer/media/full_0024.mp4",
+      "las_path": "evaluation/references/las_official_english_2026-09-04/references/full_0024.json",
+      "local_path": "evaluation/viewer/data/local/full_0024.json",
+      "caveat": ""
+    },
+    {
+      "sample_id": "full_0021",
+      "duration_seconds": 7.3,
+      "media_path": "evaluation/viewer/media/full_0021.mp4",
+      "las_path": "evaluation/references/las_official_english_2026-09-04/references/full_0021.json",
+      "local_path": "evaluation/viewer/data/local/full_0021.json",
+      "caveat": "LAS 输出含 3 条 occlusions records，但没有对应的 occlusion semantic events。"
+    },
+    {
+      "sample_id": "full_0004",
+      "duration_seconds": 8.8,
+      "media_path": "evaluation/viewer/media/full_0004.mp4",
+      "las_path": "evaluation/references/las_official_english_2026-09-04/references/full_0004.json",
+      "local_path": "evaluation/viewer/data/local/full_0004.json",
+      "caveat": "LAS 遮挡记录仅对应 occluded events，缺少 occlusion_enter/exit。"
+    }
+  ]
+}
