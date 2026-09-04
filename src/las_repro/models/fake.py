@@ -95,6 +95,18 @@ class FakeVideoModel(VideoModel):
         if request.stage == "embodied_pass_a":
             return {
                 "task_description": "move the red container",
+                "entity_candidates": [
+                    {
+                        "name": "right hand",
+                        "aliases": ["hand"],
+                        "role": "actor",
+                    },
+                    {
+                        "name": "red container",
+                        "aliases": ["container"],
+                        "role": "manipulated_object",
+                    },
+                ],
                 "actions": _coarse_actions(request.span.start, request.span.end),
             }
         if request.stage == "embodied_pass_b":

@@ -66,6 +66,14 @@ _COARSE_TEMPORAL_CODES = (
     "ACTION_GAP",
     "ACTION_OVERLAP",
     "ACTION_END_MISMATCH_DURATION",
+    "EMPTY_ENTITY_CANDIDATES",
+)
+_COARSE_ENTITY_SCHEMA_CODES = (
+    "COARSE_PLAN_ENTITY_CANDIDATE_LIMIT",
+    "COARSE_PLAN_ENTITY_BLANK_STRING",
+    "COARSE_PLAN_ENTITY_ALIAS_DUPLICATE",
+    "COARSE_PLAN_ENTITY_ROLE_INVALID",
+    "COARSE_PLAN_ENTITY_EXTRA_FIELD",
 )
 _BOUNDARY_TEMPORAL_CODES = (
     "TASK_DESCRIPTION_MISMATCH",
@@ -477,6 +485,37 @@ def _pydantic_issue_codes(error: ValidationError, prefix: str) -> tuple[str, ...
     return tuple(codes or [f"{prefix}_SCHEMA_INVALID"])
 
 
+def _coarse_pydantic_issue_codes(error: ValidationError) -> tuple[str, ...]:
+    """Map entity failures to closed families without retaining raw model data."""
+    codes: list[str] = []
+    for issue in error.errors(
+        include_url=False,
+        include_context=False,
+        include_input=False,
+    ):
+        error_type = str(issue["type"])
+        location = issue.get("loc")
+        path = tuple(location) if isinstance(location, (tuple, list)) else ()
+        if path and path[0] == "entity_candidates":
+            if error_type == "too_long":
+                code = "COARSE_PLAN_ENTITY_CANDIDATE_LIMIT"
+            elif error_type == "entity_blank_string":
+                code = "COARSE_PLAN_ENTITY_BLANK_STRING"
+            elif error_type == "entity_alias_duplicate":
+                code = "COARSE_PLAN_ENTITY_ALIAS_DUPLICATE"
+            elif path[-1:] == ("role",):
+                code = "COARSE_PLAN_ENTITY_ROLE_INVALID"
+            elif error_type == "extra_forbidden" and len(path) > 1:
+                code = "COARSE_PLAN_ENTITY_EXTRA_FIELD"
+            else:
+                code = _pydantic_issue_codes_for_type(error_type, "COARSE_PLAN")
+        else:
+            code = _pydantic_issue_codes_for_type(error_type, "COARSE_PLAN")
+        if code not in codes:
+            codes.append(code)
+    return tuple(codes or ["COARSE_PLAN_SCHEMA_INVALID"])
+
+
 def _enrichment_pydantic_issue_codes(error: ValidationError) -> tuple[str, ...]:
     """Return closed enrichment diagnostics without retaining Pydantic locations."""
     codes: list[str] = []
@@ -524,7 +563,7 @@ def _validate_coarse_output(
         plan = _model_from_json(CoarsePlan, result)
     except ValidationError as error:
         raise DeclaredSchemaOutputError(
-            _pydantic_issue_codes(error, "COARSE_PLAN")
+            _coarse_pydantic_issue_codes(error)
         ) from None
     except (TypeError, ValueError, OverflowError, RecursionError):
         raise DeclaredSchemaOutputError(("COARSE_PLAN_SCHEMA_INVALID",)) from None
@@ -1097,7 +1136,9 @@ DEFAULT_OUTPUT_SCHEMAS.register(
 DEFAULT_OUTPUT_SCHEMAS.register(
     "CoarsePlan",
     _validate_coarse_output,
-    allowed_issue_codes=_schema_codes("COARSE_PLAN") + _COARSE_TEMPORAL_CODES,
+    allowed_issue_codes=_schema_codes("COARSE_PLAN")
+    + _COARSE_ENTITY_SCHEMA_CODES
+    + _COARSE_TEMPORAL_CODES,
     generic_issue_code="COARSE_PLAN_SCHEMA_INVALID",
 )
 DEFAULT_OUTPUT_SCHEMAS.register(

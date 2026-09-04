@@ -16,6 +16,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from ..cv.entities import normalize_entities
 from ..domain import InferenceJob, InferenceJobSpec, TaskRecord
 from ..media import TimeSpan, VideoMetadata, probe_video
 from ..models.base import VideoSession
@@ -167,6 +168,19 @@ class EmbodiedActionPipeline:
             metadata=metadata,
         )
         coarse = CoarsePlan.model_validate(coarse_data)
+        normalized_entities = normalize_entities(
+            coarse.entity_candidates,
+            limit=context.settings.cv_entity_limit,
+        )
+        warnings: list[dict[str, Any]] = [
+            {
+                "code": "CV_ENTITY_LIMIT_APPLIED",
+                "omitted_count": normalized_entities.omitted_count,
+                "limit": context.settings.cv_entity_limit,
+                "message": warning,
+            }
+            for warning in normalized_entities.warnings
+        ]
         max_fine_segment_seconds = _action_positive_finite(
             context.settings.max_fine_segment_seconds,
             "max_fine_segment_seconds",
@@ -220,7 +234,6 @@ class EmbodiedActionPipeline:
             metadata=metadata,
         )
         enrichment = EnrichmentResult.model_validate(enrichment_data)
-        warnings: list[dict[str, Any]] = []
         if boundary_normalization is not None:
             warnings.append(_boundary_normalization_warning(boundary_normalization))
         if enrichment_normalization is not None:

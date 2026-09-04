@@ -8,6 +8,9 @@ from enum import StrEnum
 from typing import Annotated, Iterable, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic_core import PydanticCustomError
+
+from ..cv.entities import EntityCandidate
 
 
 Timestamp: TypeAlias = Annotated[
@@ -144,7 +147,29 @@ class CoarseAction(SchemaModel):
 
 class CoarsePlan(SchemaModel):
     task_description: str
+    entity_candidates: Annotated[list[EntityCandidate], Field(max_length=64)]
     actions: list[CoarseAction]
+
+    @field_validator("entity_candidates")
+    @classmethod
+    def validate_entity_candidates(
+        cls, value: list[EntityCandidate]
+    ) -> list[EntityCandidate]:
+        for candidate in value:
+            if not candidate.name.strip() or any(
+                not alias.strip() for alias in candidate.aliases
+            ):
+                raise PydanticCustomError(
+                    "entity_blank_string",
+                    "entity names and aliases must not be blank",
+                )
+            alias_keys = [" ".join(alias.split()).casefold() for alias in candidate.aliases]
+            if len(alias_keys) != len(set(alias_keys)):
+                raise PydanticCustomError(
+                    "entity_alias_duplicate",
+                    "entity aliases must be unique after whitespace and case normalization",
+                )
+        return value
 
 
 class BoundaryPoint(SchemaModel):
@@ -263,7 +288,80 @@ def validate_coarse_plan(
                 ("actions", len(actions) - 1, "end"),
                 "last action must end at the video duration",
             )
+    if not plan.entity_candidates and any(
+        _action_mentions_concrete_target(action) for action in actions
+    ):
+        _issue(
+            issues,
+            "EMPTY_ENTITY_CANDIDATES",
+            ("entity_candidates",),
+            "target-bearing actions require at least one entity candidate",
+        )
     _raise_if_any(issues)
+
+
+_TARGET_BEARING_EVENT_TYPES = frozenset(
+    {
+        CoarseEventType.REACH_AND_GRASP,
+        CoarseEventType.LIFT,
+        CoarseEventType.TRANSPORT,
+        CoarseEventType.LOWER_AND_PLACE,
+        CoarseEventType.RELEASE,
+        CoarseEventType.SEARCH_OR_ADJUST,
+    }
+)
+_ACTOR_DESCRIPTION_PREFIXES = (
+    "left hand ",
+    "right hand ",
+    "both hands ",
+    "neither hand ",
+)
+_NONCONCRETE_TARGET_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "anything",
+        "around",
+        "at",
+        "for",
+        "from",
+        "inside",
+        "into",
+        "it",
+        "item",
+        "near",
+        "none",
+        "object",
+        "outside",
+        "something",
+        "that",
+        "the",
+        "them",
+        "thing",
+        "this",
+        "to",
+        "toward",
+        "towards",
+        "unknown",
+        "with",
+    }
+)
+
+
+def _action_mentions_concrete_target(action: CoarseAction) -> bool:
+    """Use a closed syntactic rule; never derive or return an entity name."""
+    if action.event_type not in _TARGET_BEARING_EVENT_TYPES:
+        return False
+    description = " ".join(action.description.casefold().split())
+    for prefix in _ACTOR_DESCRIPTION_PREFIXES:
+        if description.startswith(prefix):
+            description = description[len(prefix) :]
+            break
+    words = [word.strip(".,:;!?()[]{}") for word in description.split()]
+    target_suffix = words[1:] if len(words) > 1 else []
+    return any(
+        word and word not in _NONCONCRETE_TARGET_WORDS for word in target_suffix
+    )
 
 
 def validate_boundary_plan(

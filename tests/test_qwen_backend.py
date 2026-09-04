@@ -880,6 +880,90 @@ def test_worker_schema_gate_replaces_invalid_qwen_object_before_persistence(
     assert "unvalidated model value" not in json.dumps(persisted.result)
 
 
+def test_worker_schema_gate_replaces_invalid_qwen_entity_before_persistence(
+    tmp_path: Path,
+) -> None:
+    """Pass-A entity errors must persist only their closed repair family."""
+    from las_repro.domain import InferenceJobSpec, InferenceStatus
+    from las_repro.models.qwen3_vl import Qwen3VLModel
+    from las_repro.store import SQLiteTaskStore
+    from las_repro.workers import GPUWorker
+
+    private_alias = "private alias token"
+    raw = {
+        "task_description": "move the red container",
+        "entity_candidates": [
+            {
+                "name": "red container",
+                "aliases": [private_alias, f" {private_alias.upper()} "],
+                "role": "manipulated_object",
+            }
+        ],
+        "actions": [
+            {
+                "action_index": 0,
+                "start": 0.0,
+                "end": 1.0,
+                "description": "right hand moves red container",
+                "event_type": "transport",
+            }
+        ],
+    }
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"video")
+    store = SQLiteTaskStore(tmp_path / "tasks.sqlite3")
+    store.initialize()
+    task = store.create_task({"task_template": "embodied_action_captioning"})
+    [job] = store.create_inference_jobs(
+        task.task_id,
+        [
+            InferenceJobSpec(
+                stage="embodied_pass_a",
+                ordinal=0,
+                payload={
+                    "video_path": str(video.resolve()),
+                    "start": 0.0,
+                    "end": 1.0,
+                    "fps": 1.0,
+                    "prompt": "return coarse plan JSON",
+                    "schema_name": "CoarsePlan",
+                    "schema_context": {"duration": 1.0},
+                    "video_session_id": task.task_id,
+                },
+            )
+        ],
+    )
+    backend = Qwen3VLModel(
+        processor=_Processor(json.dumps(raw)),
+        model=_GeneratingModel(),
+        torch_module=_FakeTorch(),
+        process_vision_info=_VisionProcessor(),
+        device="cuda:1",
+        frame_extractor=_fake_frame_extractor,
+        video_probe=_fake_video_probe,
+    )
+
+    assert GPUWorker(
+        store,
+        backend,
+        worker_id="gpu-1",
+        device="cuda:1",
+        lease_seconds=10.0,
+    ).run_once()
+
+    persisted = store.get_inference_job(job.job_id)
+    assert persisted is not None
+    assert persisted.status is InferenceStatus.COMPLETED
+    assert persisted.result == {
+        "_schema_validation": {
+            "schema_name": "CoarsePlan",
+            "status": "invalid",
+            "issue_codes": ["COARSE_PLAN_ENTITY_ALIAS_DUPLICATE"],
+        }
+    }
+    assert private_alias not in json.dumps(persisted.result)
+
+
 def test_general_schema_gate_replaces_invalid_raw_evidence_before_persistence() -> None:
     from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
 
