@@ -897,8 +897,8 @@ def test_worker_schema_gate_aggregates_invalid_qwen_entity_before_persistence(
         "task_description": "move the red container",
         "entity_candidates": [
             {
-                "name": "  ",
-                "aliases": [private_alias, f" {private_alias.upper()} "],
+                "name": " \tUnKnOwN\n",
+                "aliases": ["  ", private_alias, f" {private_alias.upper()} "],
                 "role": private_role,
                 private_key: private_value,
             }
@@ -964,6 +964,7 @@ def test_worker_schema_gate_aggregates_invalid_qwen_entity_before_persistence(
             "status": "invalid",
             "issue_codes": [
                 "COARSE_PLAN_ENTITY_BLANK_STRING",
+                "COARSE_PLAN_ENTITY_UNKNOWN_NAME",
                 "COARSE_PLAN_ENTITY_ALIAS_DUPLICATE",
                 "COARSE_PLAN_ENTITY_ROLE_INVALID",
                 "COARSE_PLAN_ENTITY_EXTRA_FIELD",

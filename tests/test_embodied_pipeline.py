@@ -864,6 +864,7 @@ def test_pass_a_entity_repair_requires_a_full_candidate_reaudit(
         repair={
             "issue_codes": [
                 "COARSE_PLAN_ENTITY_BLANK_STRING",
+                "COARSE_PLAN_ENTITY_UNKNOWN_NAME",
                 "COARSE_PLAN_ENTITY_ALIAS_DUPLICATE",
             ]
         },
@@ -872,6 +873,34 @@ def test_pass_a_entity_repair_requires_a_full_candidate_reaudit(
     assert "re-audit every field of every entity candidate" in repair
     assert "rebuild the entire entity_candidates list" in repair
     assert "do not patch only one reported candidate or field" in repair
+    assert "COARSE_PLAN_ENTITY_UNKNOWN_NAME" in repair
+
+
+def test_pass_a_prompt_closes_targetless_descriptions_and_empty_entity_repair(
+    renderer: PromptRenderer,
+) -> None:
+    initial = renderer.pass_a(video_duration=2.0)
+    repair = renderer.pass_a(
+        video_duration=2.0,
+        repair={"issue_codes": ["EMPTY_ENTITY_CANDIDATES"]},
+    )
+    exact_rows = (
+        "- reach_and_grasp: <allowed subject> reaches for unknown",
+        "- lift: <allowed subject> lifts unknown",
+        "- transport: <allowed subject> moves unknown",
+        "- lower_and_place: <allowed subject> places unknown",
+        "- release: <allowed subject> releases unknown",
+        "- search_or_adjust: <allowed subject> adjusts unknown",
+    )
+
+    assert all(row in initial for row in exact_rows)
+    assert "unknown must be the final word" in initial
+    assert "Do not add any other word, modifier, or punctuation" in initial
+    assert "idle, retract, and unknown_action do not require" in initial
+    assert "name must not normalize to unknown" in initial
+    assert "add a visible, action-relevant entity candidate" in repair
+    assert "rewrite every target-bearing action to its exact unknown template" in repair
+    assert "Never fabricate an entity candidate" in repair
 
 
 @pytest.mark.parametrize(
@@ -2790,8 +2819,8 @@ def test_pass_a_compound_entity_failure_gets_one_complete_repair_envelope(
         "task_description": "move the red container",
         "entity_candidates": [
             {
-                "name": "  ",
-                "aliases": [private_alias, f" {private_alias.upper()} "],
+                "name": " \tUnKnOwN\n",
+                "aliases": ["  ", private_alias, f" {private_alias.upper()} "],
                 "role": private_role,
                 private_key: private_value,
             }
@@ -2822,6 +2851,7 @@ def test_pass_a_compound_entity_failure_gets_one_complete_repair_envelope(
     assert [job.ordinal for job in jobs] == [0, 1]
     expected_codes = [
         "COARSE_PLAN_ENTITY_BLANK_STRING",
+        "COARSE_PLAN_ENTITY_UNKNOWN_NAME",
         "COARSE_PLAN_ENTITY_ALIAS_DUPLICATE",
         "COARSE_PLAN_ENTITY_ROLE_INVALID",
         "COARSE_PLAN_ENTITY_EXTRA_FIELD",

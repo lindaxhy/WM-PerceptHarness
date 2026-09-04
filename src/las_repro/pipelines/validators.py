@@ -163,6 +163,11 @@ class CoarsePlan(SchemaModel):
                     "entity_blank_string",
                     "entity names and aliases must not be blank",
                 )
+            if " ".join(candidate.name.split()).casefold() == "unknown":
+                raise PydanticCustomError(
+                    "entity_unknown_name",
+                    "entity names must not normalize to unknown",
+                )
             alias_keys = [" ".join(alias.split()).casefold() for alias in candidate.aliases]
             if len(alias_keys) != len(set(alias_keys)):
                 raise PydanticCustomError(
@@ -289,7 +294,7 @@ def validate_coarse_plan(
                 "last action must end at the video duration",
             )
     if not plan.entity_candidates and any(
-        _action_mentions_concrete_target(action) for action in actions
+        _action_requires_entity_candidate(action) for action in actions
     ):
         _issue(
             issues,
@@ -300,269 +305,30 @@ def validate_coarse_plan(
     _raise_if_any(issues)
 
 
-_ACTOR_DESCRIPTION_PREFIXES = (
-    "left hand ",
-    "right hand ",
-    "both hands ",
-    "neither hand ",
+_ACTION_DESCRIPTION_SUBJECTS = (
+    "left hand",
+    "right hand",
+    "both hands",
+    "neither hand",
 )
-_TARGET_PLACEHOLDER_WORDS = frozenset(
-    {
-        "anything",
-        "it",
-        "item",
-        "none",
-        "object",
-        "something",
-        "that",
-        "them",
-        "thing",
-        "this",
-        "unknown",
-    }
-)
-_TARGET_FUNCTION_WORDS = frozenset(
-    {
-        "a",
-        "an",
-        "and",
-        "at",
-        "beside",
-        "for",
-        "from",
-        "inside",
-        "into",
-        "near",
-        "of",
-        "on",
-        "outside",
-        "the",
-        "to",
-        "toward",
-        "towards",
-        "with",
-    }
-)
-_TARGET_PARTICLE_DIRECTION_AND_MODIFIER_WORDS = frozenset(
-    {
-        "across",
-        "above",
-        "ahead",
-        "apart",
-        "around",
-        "aside",
-        "away",
-        "back",
-        "back-and-forth",
-        "backward",
-        "backwards",
-        "behind",
-        "below",
-        "clockwise",
-        "closer",
-        "counterclockwise",
-        "diagonally",
-        "down",
-        "down-and-up",
-        "downward",
-        "downwards",
-        "farther",
-        "forth",
-        "forward",
-        "forwards",
-        "front-to-back",
-        "horizontally",
-        "in",
-        "in-and-out",
-        "inward",
-        "inwards",
-        "left",
-        "left-to-right",
-        "leftward",
-        "leftwards",
-        "laterally",
-        "off",
-        "out",
-        "outward",
-        "outwards",
-        "over",
-        "right",
-        "right-to-left",
-        "rightward",
-        "rightwards",
-        "side",
-        "side-to-side",
-        "sideways",
-        "slightly",
-        "straight",
-        "through",
-        "together",
-        "under",
-        "up",
-        "up-and-down",
-        "upward",
-        "upwards",
-        "vertically",
-    }
-)
-_TARGET_MANNER_WORDS = frozenset(
-    {
-        "briefly",
-        "carefully",
-        "continuously",
-        "firmly",
-        "gently",
-        "gradually",
-        "loosely",
-        "quickly",
-        "repeatedly",
-        "slowly",
-        "smoothly",
-        "softly",
-        "steadily",
-        "very",
-    }
-)
-_TARGET_EVENT_ACTION_WORDS = {
-    CoarseEventType.REACH_AND_GRASP: frozenset(
-        {
-            "approach",
-            "approaches",
-            "approaching",
-            "contact",
-            "contacting",
-            "contacts",
-            "grab",
-            "grabbing",
-            "grabs",
-            "grasp",
-            "grasping",
-            "grasps",
-            "pick",
-            "picking",
-            "picks",
-            "reach",
-            "reaches",
-            "reaching",
-            "secure",
-            "secures",
-            "securing",
-            "take",
-            "takes",
-            "taking",
-        }
-    ),
-    CoarseEventType.LIFT: frozenset(
-        {
-            "lift",
-            "lifting",
-            "lifts",
-            "pick",
-            "picking",
-            "picks",
-            "raise",
-            "raises",
-            "raising",
-        }
-    ),
-    CoarseEventType.TRANSPORT: frozenset(
-        {
-            "carry",
-            "carries",
-            "carrying",
-            "move",
-            "moves",
-            "moving",
-            "pull",
-            "pulling",
-            "pulls",
-            "push",
-            "pushes",
-            "pushing",
-            "transfer",
-            "transfers",
-            "transferring",
-            "transport",
-            "transporting",
-            "transports",
-        }
-    ),
-    CoarseEventType.LOWER_AND_PLACE: frozenset(
-        {
-            "lower",
-            "lowering",
-            "lowers",
-            "place",
-            "places",
-            "placing",
-            "put",
-            "puts",
-            "putting",
-            "set",
-            "sets",
-            "setting",
-        }
-    ),
-    CoarseEventType.RELEASE: frozenset(
-        {
-            "drop",
-            "dropping",
-            "drops",
-            "go",
-            "let",
-            "lets",
-            "letting",
-            "release",
-            "releases",
-            "releasing",
-        }
-    ),
-    CoarseEventType.SEARCH_OR_ADJUST: frozenset(
-        {
-            "adjust",
-            "adjusting",
-            "adjusts",
-            "align",
-            "aligning",
-            "aligns",
-            "reposition",
-            "repositioning",
-            "repositions",
-            "search",
-            "searches",
-            "searching",
-        }
-    ),
+_TARGETLESS_ACTION_SUFFIX_BY_EVENT_TYPE = {
+    CoarseEventType.REACH_AND_GRASP: "reaches for unknown",
+    CoarseEventType.LIFT: "lifts unknown",
+    CoarseEventType.TRANSPORT: "moves unknown",
+    CoarseEventType.LOWER_AND_PLACE: "places unknown",
+    CoarseEventType.RELEASE: "releases unknown",
+    CoarseEventType.SEARCH_OR_ADJUST: "adjusts unknown",
 }
 
 
-def _action_mentions_concrete_target(action: CoarseAction) -> bool:
-    """Use a closed syntactic rule; never derive or return an entity name."""
-    action_words = _TARGET_EVENT_ACTION_WORDS.get(action.event_type)
-    if action_words is None:
+def _action_requires_entity_candidate(action: CoarseAction) -> bool:
+    """Accept only the event's exact targetless template; never infer a target."""
+    suffix = _TARGETLESS_ACTION_SUFFIX_BY_EVENT_TYPE.get(action.event_type)
+    if suffix is None:
         return False
-    description = " ".join(action.description.casefold().split())
-    for prefix in _ACTOR_DESCRIPTION_PREFIXES:
-        if description.startswith(prefix):
-            description = description[len(prefix) :]
-            break
-    words = [word.strip(".,:;!?()[]{}") for word in description.split()]
-    if (
-        len(words) > 1
-        and words[0] in _TARGET_MANNER_WORDS
-        and words[1] in action_words
-    ):
-        words = words[1:]
-    target_position_words = words[1:] if words else []
-    allowed_words = (
-        action_words
-        | _TARGET_PLACEHOLDER_WORDS
-        | _TARGET_FUNCTION_WORDS
-        | _TARGET_PARTICLE_DIRECTION_AND_MODIFIER_WORDS
-        | _TARGET_MANNER_WORDS
-    )
-    return any(
-        word and word not in allowed_words for word in target_position_words
+    return all(
+        action.description != f"{subject} {suffix}"
+        for subject in _ACTION_DESCRIPTION_SUBJECTS
     )
 
 

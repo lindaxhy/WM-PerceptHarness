@@ -71,6 +71,7 @@ _COARSE_TEMPORAL_CODES = (
 _COARSE_ENTITY_SCHEMA_CODES = (
     "COARSE_PLAN_ENTITY_CANDIDATE_LIMIT",
     "COARSE_PLAN_ENTITY_BLANK_STRING",
+    "COARSE_PLAN_ENTITY_UNKNOWN_NAME",
     "COARSE_PLAN_ENTITY_ALIAS_DUPLICATE",
     "COARSE_PLAN_ENTITY_ROLE_INVALID",
     "COARSE_PLAN_ENTITY_EXTRA_FIELD",
@@ -505,6 +506,8 @@ def _coarse_pydantic_issue_codes(error: ValidationError) -> tuple[str, ...]:
                 code = "COARSE_PLAN_ENTITY_CANDIDATE_LIMIT"
             elif error_type == "entity_blank_string":
                 code = "COARSE_PLAN_ENTITY_BLANK_STRING"
+            elif error_type == "entity_unknown_name":
+                code = "COARSE_PLAN_ENTITY_UNKNOWN_NAME"
             elif error_type == "entity_alias_duplicate":
                 code = "COARSE_PLAN_ENTITY_ALIAS_DUPLICATE"
             elif path[-1:] == ("role",):
@@ -542,6 +545,11 @@ def _raw_coarse_entity_issue_codes(snapshot: Mapping[str, Any]) -> tuple[str, ..
         aliases = candidate.get("aliases")
         if type(name) is str and not name.strip():
             found["COARSE_PLAN_ENTITY_BLANK_STRING"] = True
+        if (
+            type(name) is str
+            and " ".join(name.split()).casefold() == "unknown"
+        ):
+            found["COARSE_PLAN_ENTITY_UNKNOWN_NAME"] = True
         if type(aliases) is list:
             normalized_aliases: list[str] = []
             for alias in aliases:

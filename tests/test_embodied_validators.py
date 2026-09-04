@@ -99,6 +99,19 @@ def test_coarse_plan_requires_explicit_entity_candidates() -> None:
         CoarsePlan.model_validate(missing)
 
 
+@pytest.mark.parametrize("name", ["unknown", " UNKNOWN ", "\tUnKnOwN\n"])
+def test_coarse_plan_rejects_entity_names_discarded_as_unknown(
+    name: str,
+) -> None:
+    raw = _valid_entity_coarse_payload()
+    raw["entity_candidates"] = [
+        {"name": name, "aliases": [], "role": "manipulated_object"}
+    ]
+
+    with pytest.raises(ValidationError):
+        CoarsePlan.model_validate(raw)
+
+
 @pytest.mark.parametrize(
     ("entity_candidates", "expected_code"),
     [
@@ -120,6 +133,16 @@ def test_coarse_plan_requires_explicit_entity_candidates() -> None:
         (
             [{"name": "cup", "aliases": ["  "], "role": "other"}],
             "COARSE_PLAN_ENTITY_BLANK_STRING",
+        ),
+        (
+            [
+                {
+                    "name": " \tUnKnOwN\n",
+                    "aliases": [],
+                    "role": "manipulated_object",
+                }
+            ],
+            "COARSE_PLAN_ENTITY_UNKNOWN_NAME",
         ),
         (
             [
@@ -181,6 +204,7 @@ def test_coarse_entity_schema_families_have_closed_repair_codes(
             1,
             [
                 "COARSE_PLAN_ENTITY_BLANK_STRING",
+                "COARSE_PLAN_ENTITY_UNKNOWN_NAME",
                 "COARSE_PLAN_ENTITY_ALIAS_DUPLICATE",
                 "COARSE_PLAN_ENTITY_ROLE_INVALID",
                 "COARSE_PLAN_ENTITY_EXTRA_FIELD",
@@ -191,6 +215,7 @@ def test_coarse_entity_schema_families_have_closed_repair_codes(
             [
                 "COARSE_PLAN_ENTITY_CANDIDATE_LIMIT",
                 "COARSE_PLAN_ENTITY_BLANK_STRING",
+                "COARSE_PLAN_ENTITY_UNKNOWN_NAME",
                 "COARSE_PLAN_ENTITY_ALIAS_DUPLICATE",
                 "COARSE_PLAN_ENTITY_ROLE_INVALID",
                 "COARSE_PLAN_ENTITY_EXTRA_FIELD",
@@ -209,8 +234,8 @@ def test_coarse_entity_schema_gate_aggregates_all_discoverable_families_once(
     raw = _valid_entity_coarse_payload()
     raw["entity_candidates"] = [
         {
-            "name": "  ",
-            "aliases": [private_alias, f" {private_alias.upper()} "],
+            "name": " \tUnKnOwN\n",
+            "aliases": ["  ", private_alias, f" {private_alias.upper()} "],
             "role": private_role,
             private_key: private_value,
         }
@@ -288,34 +313,54 @@ def test_coarse_plan_requires_an_entity_for_each_concrete_target_event(
 
 
 @pytest.mark.parametrize(
+    ("event_type", "suffix"),
+    [
+        ("reach_and_grasp", "reaches for unknown"),
+        ("lift", "lifts unknown"),
+        ("transport", "moves unknown"),
+        ("lower_and_place", "places unknown"),
+        ("release", "releases unknown"),
+        ("search_or_adjust", "adjusts unknown"),
+    ],
+)
+@pytest.mark.parametrize(
+    "subject",
+    ["left hand", "right hand", "both hands", "neither hand"],
+)
+def test_empty_entities_allow_only_the_event_specific_exact_unknown_template(
+    event_type: str,
+    suffix: str,
+    subject: str,
+) -> None:
+    payload = {
+        "task_description": "perform an action without a concrete target",
+        "entity_candidates": [],
+        "actions": [
+            {
+                "action_index": 0,
+                "start": 0.0,
+                "end": 1.0,
+                "description": f"{subject} {suffix}",
+                "event_type": event_type,
+            }
+        ],
+    }
+
+    validate_coarse_plan(CoarsePlan.model_validate(payload), duration=1.0)
+
+
+@pytest.mark.parametrize(
     ("event_type", "description"),
     [
-        ("reach_and_grasp", "right hand picks it up"),
-        ("reach_and_grasp", "right hand reaches and grasps it"),
-        ("lift", "right hand picks it up"),
-        ("lift", "right hand lifts it upward"),
-        ("transport", "right hand moves it forward"),
-        ("transport", "right hand moves it to the side"),
-        ("transport", "right hand manipulates it"),
-        ("lower_and_place", "right hand places it down"),
-        ("lower_and_place", "right hand lowers it downwards"),
-        ("release", "right hand releases it"),
-        ("search_or_adjust", "right hand searches around for it"),
         ("idle", "neither hand waits beside red container"),
         ("retract", "right hand retracts from red container"),
         ("unknown_action", "right hand moves red container"),
-        ("transport", "right hand moves unknown"),
-        ("release", "right hand releases none"),
-        ("lift", "right hand lifts object"),
-        ("lower_and_place", "right hand places item"),
-        ("search_or_adjust", "right hand searches something"),
     ],
 )
-def test_empty_entities_allow_targetless_events_and_closed_placeholders(
+def test_empty_entities_do_not_restrict_non_target_bearing_events(
     event_type: str,
     description: str,
 ) -> None:
-    """Target detection is a closed syntactic rule and never entity inference."""
     payload = {
         "task_description": "perform a visible action",
         "entity_candidates": [],
@@ -333,74 +378,43 @@ def test_empty_entities_allow_targetless_events_and_closed_placeholders(
     validate_coarse_plan(CoarsePlan.model_validate(payload), duration=1.0)
 
 
-@pytest.mark.parametrize(
-    "modifier",
-    [
-        "upward",
-        "upwards",
-        "downward",
-        "downwards",
-        "side",
-        "sideways",
-        "leftward",
-        "leftwards",
-        "rightward",
-        "rightwards",
-        "inward",
-        "inwards",
-        "outward",
-        "outwards",
-        "ahead",
-        "behind",
-        "above",
-        "below",
-        "closer",
-        "farther",
-        "clockwise",
-        "counterclockwise",
-        "horizontally",
-        "vertically",
-        "diagonally",
-        "laterally",
-        "straight",
-        "slightly",
-        "apart",
-        "together",
-    ],
+_NONCANONICAL_TARGETLESS_DESCRIPTIONS = (
+    ("reach_and_grasp", "right hand reaches for it"),
+    ("lift", "right hand lifts object"),
+    ("transport", "right hand moves it"),
+    ("lower_and_place", "right hand places item"),
+    ("release", "right hand releases none"),
+    ("search_or_adjust", "right hand searches something"),
+    ("transport", "right hand moves it rapidly"),
+    ("transport", "right hand moves it cautiously"),
+    ("transport", "right hand moves it precisely"),
+    ("transport", "right hand moves it top-to-bottom"),
+    ("transport", "right hand moves it bottom-to-top"),
+    ("transport", "right hand moves it counter-clockwise"),
+    ("transport", "right hand privately moves it"),
+    ("transport", "right hand rapidly moves it"),
+    ("transport", "right hand moves it slowly"),
+    ("transport", "right hand moves it gently"),
+    ("transport", "right hand gently moves it"),
+    ("transport", "right hand moves unknown rapidly"),
+    ("transport", "right hand moves unknown."),
+    ("transport", "Right hand moves unknown"),
+    ("transport", "right  hand moves unknown"),
+    ("transport", "robot moves unknown"),
+    ("transport", "right hand lifts unknown"),
 )
-def test_empty_entities_allow_only_explicit_direction_and_modifier_words(
-    modifier: str,
-) -> None:
-    payload = {
-        "task_description": "move without a named target",
-        "entity_candidates": [],
-        "actions": [
-            {
-                "action_index": 0,
-                "start": 0.0,
-                "end": 1.0,
-                "description": f"right hand moves it {modifier}",
-                "event_type": "transport",
-            }
-        ],
-    }
-
-    validate_coarse_plan(CoarsePlan.model_validate(payload), duration=1.0)
 
 
 @pytest.mark.parametrize(
     ("event_type", "description"),
-    [
-        ("lift", "right hand lifts red container upward"),
-        ("lower_and_place", "right hand lowers red container downwards"),
-        ("transport", "right hand moves red container to the side"),
-    ],
+    _NONCANONICAL_TARGETLESS_DESCRIPTIONS,
 )
-def test_direction_words_do_not_hide_concrete_red_container_targets(
-    event_type: str, description: str
+def test_empty_entities_reject_every_noncanonical_target_bearing_description(
+    event_type: str,
+    description: str,
 ) -> None:
     payload = {
-        "task_description": "move the red container",
+        "task_description": "perform an action without a concrete target",
         "entity_candidates": [],
         "actions": [
             {
@@ -422,110 +436,18 @@ def test_direction_words_do_not_hide_concrete_red_container_targets(
 
 
 @pytest.mark.parametrize(
-    "description",
-    [
-        "right hand moves it slowly",
-        "right hand moves it gently",
-        "right hand moves it quickly",
-        "right hand moves it carefully",
-        "right hand moves it steadily",
-        "right hand moves it smoothly",
-        "right hand moves it gradually",
-        "right hand moves it briefly",
-        "right hand moves it continuously",
-        "right hand moves it repeatedly",
-        "right hand moves it firmly",
-        "right hand moves it softly",
-        "right hand moves it loosely",
-        "right hand moves it very slightly",
-        "right hand moves it back and forth",
-        "right hand moves it side-to-side",
-        "right hand moves it back-and-forth",
-        "right hand moves it front-to-back",
-        "right hand moves it left-to-right",
-        "right hand moves it right-to-left",
-        "right hand moves it up-and-down",
-        "right hand moves it down-and-up",
-        "right hand moves it in-and-out",
-        "right hand gently moves it",
-    ],
+    ("event_type", "description"),
+    _NONCANONICAL_TARGETLESS_DESCRIPTIONS,
 )
-def test_empty_entities_allow_only_literal_manner_and_hyphenated_direction_words(
+def test_nonempty_entities_do_not_apply_the_targetless_description_grammar(
+    event_type: str,
     description: str,
 ) -> None:
-    payload = {
-        "task_description": "move without a named target",
-        "entity_candidates": [],
-        "actions": [
-            {
-                "action_index": 0,
-                "start": 0.0,
-                "end": 1.0,
-                "description": description,
-                "event_type": "transport",
-            }
-        ],
-    }
+    payload = _valid_entity_coarse_payload()
+    payload["actions"][0]["event_type"] = event_type
+    payload["actions"][0]["description"] = description
 
-    validate_coarse_plan(CoarsePlan.model_validate(payload), duration=1.0)
-
-
-@pytest.mark.parametrize(
-    "description",
-    [
-        "right hand moves red container slowly",
-        "right hand moves red container gently",
-        "right hand moves red container back and forth",
-        "right hand moves red container side-to-side",
-        "right hand gently moves red container",
-    ],
-)
-def test_manner_words_do_not_hide_concrete_red_container_targets(
-    description: str,
-) -> None:
-    payload = {
-        "task_description": "move the red container",
-        "entity_candidates": [],
-        "actions": [
-            {
-                "action_index": 0,
-                "start": 0.0,
-                "end": 1.0,
-                "description": description,
-                "event_type": "transport",
-            }
-        ],
-    }
-
-    with pytest.raises(TemporalValidationError) as error:
-        validate_coarse_plan(CoarsePlan.model_validate(payload), duration=1.0)
-
-    assert [issue.code for issue in error.value.issues] == [
-        "EMPTY_ENTITY_CANDIDATES"
-    ]
-
-
-def test_unlisted_ly_token_is_not_ignored_as_a_generic_manner_word() -> None:
-    payload = {
-        "task_description": "move without a named target",
-        "entity_candidates": [],
-        "actions": [
-            {
-                "action_index": 0,
-                "start": 0.0,
-                "end": 1.0,
-                "description": "right hand moves it privately",
-                "event_type": "transport",
-            }
-        ],
-    }
-
-    with pytest.raises(TemporalValidationError) as error:
-        validate_coarse_plan(CoarsePlan.model_validate(payload), duration=1.0)
-
-    assert [issue.code for issue in error.value.issues] == [
-        "EMPTY_ENTITY_CANDIDATES"
-    ]
+    validate_coarse_plan(CoarsePlan.model_validate(payload), duration=2.0)
 
 
 def test_empty_entity_issue_contains_only_a_fixed_code_path_and_message() -> None:
