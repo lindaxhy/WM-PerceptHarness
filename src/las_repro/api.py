@@ -43,7 +43,7 @@ def create_app(settings: Settings, store: SQLiteTaskStore) -> FastAPI:
         dependencies=[Depends(require_bearer)],
     )
     def submit(submission: SubmitRequest) -> dict[str, Any] | JSONResponse:
-        if submission.data.model_name not in settings.model_registry:
+        if submission.data.model_name not in settings.allowed_model_aliases:
             return JSONResponse(
                 status_code=422,
                 content={"detail": "Request validation failed"},

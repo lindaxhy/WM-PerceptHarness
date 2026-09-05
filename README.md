@@ -9,7 +9,7 @@ temporal schemas, conservative repair, and deterministic JSONL export.
 
 ## What is shipped
 
-- Local, offline-capable Qwen3-VL inference; no Ark or remote model forwarding.
+- Local, offline-capable Qwen3-VL inference, with an explicit opt-in ARK semantic worker.
 - General video captioning, active-object detection, and embodied action timelines.
 - Persistent SQLite task/job coordination with leases and per-GPU workers.
 - Strict structured-output validation and auditable repair-only normalization.
@@ -120,6 +120,25 @@ Paste only that digest into `LAS_API_KEY_SHA256`. The `.env.example` fields are:
 | `LAS_MODEL_REGISTRY` | JSON alias-to-local-directory allowlist; never a remote model ID. |
 | `LAS_BACKEND` | `qwen3_vl` for production GPU workers. `run-fake` ignores it safely. |
 | `LAS_GPU_DEVICES` | Comma-separated device IDs a `gpu-worker` may claim. |
+| `LAS_ARK_API_KEY` | Server-owned ARK credential; never accepted from Submit payloads. |
+| `LAS_ARK_MODEL_REGISTRY` | JSON alias-to-remote-model allowlist, separate from local checkpoint paths. |
+| `LAS_ARK_PROXY` | Optional explicit HTTPS proxy; ambient proxy variables are ignored. |
+
+### Opt-in Doubao semantic worker
+
+To replace semantic-stage execution with Doubao, configure `LAS_BACKEND=ark`,
+`LAS_ARK_API_KEY`, and `LAS_ARK_MODEL_REGISTRY='{"doubao-pro":"doubao-seed-2-1-pro-260628"}'`
+in the dedicated worker environment, then submit with `model_name: "doubao-pro"` and launch:
+
+```console
+las-repro ark-worker --model-name doubao-pro --worker-id ark-0
+```
+
+The worker sends sampled JPEG frames and original-video timestamps to the ARK
+Responses endpoint. It sends no audio, local filenames, or caller credentials.
+Set `LAS_ARK_PROXY` when an explicit proxy is required. To roll back locally,
+submit the Qwen alias and run the existing `gpu-worker` processes with
+`LAS_BACKEND=qwen3_vl`; there is no silent fallback or model relabeling.
 | `LAS_MAX_MODEL_OUTPUT_CHARS` | Strict structured-output size limit. |
 | `LAS_SEGMENT_SECONDS`, `LAS_SEGMENT_OVERLAP_SECONDS` | General-video split and overlap. |
 | `LAS_MAX_FINE_SEGMENT_SECONDS` | Maximum embodied fine-segment duration. |

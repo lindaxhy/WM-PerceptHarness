@@ -100,10 +100,34 @@ def test_help_exposes_exact_process_roles_without_printing_secrets(tmp_path: Pat
         "coordinator",
         "gpu-worker",
         "cv-worker",
+        "ark-worker",
         "run-fake",
     ):
         assert command in completed.stdout
     _assert_secret_absent(completed)
+
+
+def test_ark_worker_constructs_remote_worker_and_closes_lifecycle(tmp_path, monkeypatch):
+    media_root = tmp_path / "media"; media_root.mkdir()
+    environment = _cli_environment(tmp_path, media_root)
+    environment.update({"LAS_BACKEND": "ark", "LAS_ARK_API_KEY": "ark-secret",
+                        "LAS_ARK_MODEL_REGISTRY": '{"doubao-pro":"doubao-seed-2-1-pro-260628"}'})
+    for key, value in environment.items():
+        if key.startswith("LAS_"): monkeypatch.setenv(key, value)
+    observed = {"model_close": 0, "worker_close": 0, "run": 0}
+    from las_repro.models.ark import ArkVideoModel
+    from las_repro import workers
+    class Model:
+        def close(self): observed["model_close"] += 1
+    class Worker:
+        def __init__(self, store, model, worker_id, device, **kwargs):
+            assert (worker_id, device, kwargs["model_name"]) == ("ark-0", "remote:ark", "doubao-pro")
+        def run_once(self): observed["run"] += 1
+        def close(self): observed["worker_close"] += 1
+    monkeypatch.setattr(ArkVideoModel, "__new__", lambda cls, **kwargs: Model())
+    monkeypatch.setattr(workers, "GPUWorker", Worker)
+    assert cli.main(["ark-worker", "--model-name", "doubao-pro", "--worker-id", "ark-0", "--once"]) == 0
+    assert observed == {"model_close": 1, "worker_close": 1, "run": 1}
 
 
 def test_distribution_registers_the_las_repro_console_script() -> None:

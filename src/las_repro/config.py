@@ -98,6 +98,13 @@ class Settings(BaseSettings):
     model_registry: dict[str, Path] = Field(
         default_factory=lambda: {"qwen3-vl-8b-instruct": Path("models/qwen3-vl-8b-instruct")}
     )
+    ark_api_key: SecretStr | None = None
+    ark_model_registry: dict[str, str] = Field(default_factory=dict)
+    ark_timeout_seconds: PositiveFinite = 180.0
+    ark_max_frames: PositiveInteger = 128
+    ark_max_request_bytes: PositiveInteger = 32 * 1024 * 1024
+    ark_max_output_chars: PositiveInteger = 1_000_000
+    ark_proxy: SecretStr | None = None
     backend: str = "qwen3_vl"
     api_key_sha256: str = ""
     api_host: str = "127.0.0.1"
@@ -141,6 +148,10 @@ class Settings(BaseSettings):
         """Expose the legacy GPU setting under its explicit 3+1 role name."""
         return self.gpu_devices
 
+    @property
+    def allowed_model_aliases(self) -> frozenset[str]:
+        return frozenset(self.model_registry) | frozenset(self.ark_model_registry)
+
     @field_validator("gpu_devices")
     @classmethod
     def validate_qwen_devices(cls, value: tuple[int, ...]) -> tuple[int, ...]:
@@ -170,6 +181,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_cv_configuration(self) -> Self:
+        if set(self.model_registry) & set(self.ark_model_registry):
+            raise ValueError("local and ARK model aliases must not overlap")
         if self.cv_device in self.gpu_devices:
             raise ValueError("Qwen and CV devices must be distinct")
         if self.cv_scan_fps > self.cv_max_fps:

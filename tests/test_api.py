@@ -57,6 +57,23 @@ def test_submit_never_persists_ark_secret(client, store, auth_header):
     assert "secret-ark-value" not in json.dumps(task.payload)
 
 
+def test_submit_accepts_configured_ark_alias_and_preserves_local_alias(store, auth_header):
+    settings = Settings(database_path=store.database_path,
+        api_key_sha256=hashlib.sha256(b"local-test-key").hexdigest(),
+        ark_model_registry={"doubao-pro": "doubao-seed-2-1-pro-260628"})
+    client = TestClient(create_app(settings, store))
+    for alias in ("doubao-pro", "qwen3-vl-8b-instruct"):
+        response = client.post("/api/v1/submit", headers=auth_header, json={
+            "operator_id": "las_video_understanding", "operator_version": "v1",
+            "data": {"video_url": "/allowed/demo.mp4", "task_template": "general_video_captioning", "model_name": alias}})
+        assert response.status_code == 200
+
+
+def test_overlapping_local_and_ark_aliases_are_rejected():
+    with pytest.raises(Exception):
+        Settings(ark_model_registry={"qwen3-vl-8b-instruct": "remote-id"})
+
+
 def test_application_exposes_only_the_two_post_api_routes(client):
     routes = {(route.path, frozenset(route.methods or ())) for route in client.app.routes}
 

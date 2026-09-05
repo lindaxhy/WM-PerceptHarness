@@ -86,6 +86,12 @@ def _parser() -> argparse.ArgumentParser:
     gpu_worker.add_argument("--once", action="store_true", help="claim at most one job")
     gpu_worker.set_defaults(command=_gpu_worker)
 
+    ark_worker = commands.add_parser("ark-worker", help="run one remote ARK semantic worker")
+    ark_worker.add_argument("--model-name", required=True)
+    ark_worker.add_argument("--worker-id")
+    ark_worker.add_argument("--once", action="store_true", help="claim at most one job")
+    ark_worker.set_defaults(command=_ark_worker)
+
     cv_worker = commands.add_parser(
         "cv-worker",
         help="run one isolated local computer-vision evidence provider",
@@ -213,6 +219,39 @@ def _gpu_worker(
                 worker.run_forever(stop)
         finally:
             worker.close()
+    return 0
+
+
+def _ark_worker(arguments: argparse.Namespace, settings: Settings, stop: threading.Event) -> int:
+    if settings.backend != "ark":
+        raise ValueError("ark-worker requires LAS_BACKEND=ark")
+    if arguments.model_name not in settings.ark_model_registry:
+        raise ValueError("ark-worker model is absent from LAS_ARK_MODEL_REGISTRY")
+    if settings.ark_api_key is None or not settings.ark_api_key.get_secret_value().strip():
+        raise ValueError("ark-worker credentials are not configured")
+    from .models.ark import ArkVideoModel
+    from .workers import GPUWorker
+    worker_id = arguments.worker_id or f"ark-{arguments.model_name}"
+    with _store(settings) as store:
+        model = ArkVideoModel(
+            api_key=settings.ark_api_key.get_secret_value(),
+            model_registry=settings.ark_model_registry,
+            timeout_seconds=settings.ark_timeout_seconds,
+            max_frames=settings.ark_max_frames,
+            max_request_bytes=settings.ark_max_request_bytes,
+            max_output_chars=settings.ark_max_output_chars,
+            proxy=settings.ark_proxy.get_secret_value() if settings.ark_proxy else None,
+        )
+        worker = None
+        try:
+            worker = GPUWorker(store, model, worker_id, "remote:ark",
+                               model_name=arguments.model_name,
+                               lease_seconds=settings.lease_seconds)
+            if arguments.once: worker.run_once()
+            else: worker.run_forever(stop)
+        finally:
+            if worker is not None: worker.close()
+            model.close()
     return 0
 
 
