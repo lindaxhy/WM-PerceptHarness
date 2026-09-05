@@ -12,8 +12,11 @@ address, temporary media URL, LAS task ID, or local absolute path.
 The original numbered sections below preserve the Tasks 1–9 checkpoint. The
 continuation has completed Tasks 10 and 11 with independent review, plus the
 Doubao backend and SAM runtime compatibility remediation. Task 12 completed its
-review/fix loop at `0a66c06`; Task 13 is being implemented, and Tasks 14–15 remain
-pending. Task 13 is not yet independently reviewed or accepted.
+review/fix loop at `0a66c06`; Task 13 completed independent review and its fix
+round at `220efa2`. Tasks 14–15 remain pending. Task 13 adds verified projection,
+variant selection and bounded overlay access; its actual five-demo data and
+acceptance publication remain Task 15 work. Focused verification passed 152
+Python viewer/artifact tests, 19 Node model tests and 121 API/export/hybrid tests.
 No integration PR or production-service deployment is claimed at this point.
 
 The user explicitly authorized Doubao remote semantic inference. The
