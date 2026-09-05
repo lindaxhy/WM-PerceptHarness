@@ -1915,6 +1915,60 @@ def test_run_fake_with_fake_cv_starts_one_worker_and_closes_provider_after_stop(
     assert provider_closes == 1
 
 
+def test_run_fake_closes_constructed_workers_when_cv_initialization_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from las_repro import media, workers
+    from las_repro.models import fake
+
+    close_calls: dict[str, int] = {}
+
+    class RecordingCoordinator:
+        def __init__(self, *_: Any, **__: Any) -> None:
+            pass
+
+    class RecordingGPUWorker:
+        def __init__(self, *_: Any, worker_id: str, **__: Any) -> None:
+            self.worker_id = worker_id
+            close_calls[worker_id] = 0
+
+        def run_forever(self, _: threading.Event) -> None:
+            raise AssertionError("worker must not start after CV initialization failure")
+
+        def close(self) -> None:
+            close_calls[self.worker_id] += 1
+
+    @contextmanager
+    def fail_cv_initialization(*_: Any, **__: Any):
+        raise RuntimeError("injected CV initialization failure")
+        yield
+
+    monkeypatch.setattr(workers, "Coordinator", RecordingCoordinator)
+    monkeypatch.setattr(workers, "GPUWorker", RecordingGPUWorker)
+    monkeypatch.setattr(fake, "FakeVideoModel", lambda: object())
+    monkeypatch.setattr(media, "MediaResolver", lambda *args, **kwargs: object())
+    monkeypatch.setattr(media, "TosAdapter", lambda *args, **kwargs: object())
+    monkeypatch.setattr(cli, "_pipeline_registry", lambda: object())
+    monkeypatch.setattr(cli, "_cv_worker_runtime", fail_cv_initialization)
+    settings = Settings(
+        database_path=tmp_path / "tasks.sqlite3",
+        work_root=tmp_path / "work",
+        cv_provider="fake",
+        cv_cache_root=tmp_path / "cv-cache",
+        model_registry={"model-a": tmp_path / "a", "model-b": tmp_path / "b"},
+    )
+
+    with pytest.raises(RuntimeError, match="injected CV initialization failure"):
+        cli._run_fake(
+            Namespace(once=True, host=None, port=None),
+            settings,
+            threading.Event(),
+        )
+
+    assert close_calls == {"fake-gpu-model-a": 1, "fake-gpu-model-b": 1}
+
+
 def test_run_fake_once_uses_main_signal_boundary_around_coordinator_claims(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

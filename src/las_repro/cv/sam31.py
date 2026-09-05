@@ -57,6 +57,7 @@ _ZIP_ENTRY_ALLOWANCE = 1024
 _MAX_GIT_TREE_BYTES = 16 * 1024 * 1024
 _MAX_GIT_SOURCE_FILES = 100_000
 _MAX_GIT_SOURCE_BYTES = 1024 * 1024 * 1024
+_BPE_REPOSITORY_PATH = "sam3/assets/bpe_simple_vocab_16e6.txt.gz"
 # Pinned sam3_multiplex_base.py uses this score for removed objects.
 _REMOVED_OBJECT_SCORE = -10000.0
 _NETWORK_PREFIX = re.compile(
@@ -328,6 +329,9 @@ class Sam31EvidenceProvider:
                 raise ValueError
             repository = _validated_repository(repository_path)
             _verify_repository_revision(repository)
+            pinned_bpe_object_id = _pinned_blob_object_id(
+                repository, _BPE_REPOSITORY_PATH
+            )
             runtime_directory = _private_runtime_directory()
             checkpoint, digest = _snapshot_local_asset(
                 checkpoint_path,
@@ -337,11 +341,9 @@ class Sam31EvidenceProvider:
             bpe = _snapshot_local_asset(
                 bpe_path
                 if bpe_path is not None
-                else repository
-                / "sam3"
-                / "assets"
-                / "bpe_simple_vocab_16e6.txt.gz",
+                else repository / _BPE_REPOSITORY_PATH,
                 runtime_directory / "bpe_simple_vocab_16e6.txt.gz",
+                expected_git_object_id=pinned_bpe_object_id,
             )[0]
             imported_snapshot = _sam_module_snapshot()
             if any(
@@ -895,10 +897,16 @@ def _snapshot_local_asset(
     destination: Path,
     *,
     expected_sha256: str | None = None,
+    expected_git_object_id: str | None = None,
 ) -> tuple[Path, str]:
     if expected_sha256 is not None and (
         not isinstance(expected_sha256, str)
         or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None
+    ):
+        raise ValueError
+    if expected_git_object_id is not None and (
+        not isinstance(expected_git_object_id, str)
+        or re.fullmatch(r"[0-9a-f]{40}", expected_git_object_id) is None
     ):
         raise ValueError
     path = _local_path(value)
@@ -932,6 +940,8 @@ def _snapshot_local_asset(
         ):
             raise ValueError
         digest = hashlib.sha256()
+        git_digest = hashlib.sha1()
+        git_digest.update(f"blob {opened.st_size}\0".encode("ascii"))
         output_descriptor = os.open(
             destination,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow,
@@ -940,6 +950,7 @@ def _snapshot_local_asset(
         try:
             while payload := os.read(descriptor, _HASH_READ_BYTES):
                 digest.update(payload)
+                git_digest.update(payload)
                 view = memoryview(payload)
                 while view:
                     written = os.write(output_descriptor, view)
@@ -960,6 +971,10 @@ def _snapshot_local_asset(
             or after_path.st_size != opened.st_size
             or after_path.st_mtime_ns != opened.st_mtime_ns
             or (expected_sha256 is not None and actual_digest != expected_sha256)
+            or (
+                expected_git_object_id is not None
+                and git_digest.hexdigest() != expected_git_object_id
+            )
         ):
             raise ValueError
         copied = destination.stat()
@@ -1043,6 +1058,35 @@ def _verify_repository_revision(repository: Path) -> None:
     )
     if not isinstance(status.stdout, str) or status.stdout:
         raise ValueError
+
+
+def _pinned_blob_object_id(repository: Path, path: str) -> str:
+    if (
+        not isinstance(path, str)
+        or not path.startswith("sam3/")
+        or "\x00" in path
+        or any(part in {"", ".", ".."} for part in Path(path).parts)
+    ):
+        raise ValueError
+    completed = subprocess.run(
+        _git_command(
+            repository,
+            "rev-parse",
+            "--verify",
+            f"{_PINNED_REPOSITORY_REVISION}:{path}",
+        ),
+        check=True,
+        capture_output=True,
+        text=True,
+        shell=False,
+        env=_git_environment(),
+    )
+    if (
+        not isinstance(completed.stdout, str)
+        or re.fullmatch(r"[0-9a-f]{40}\n?", completed.stdout) is None
+    ):
+        raise ValueError
+    return completed.stdout.strip()
 
 
 def _snapshot_repository_source(repository: Path, destination: Path) -> Path:

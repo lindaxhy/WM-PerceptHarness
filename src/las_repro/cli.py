@@ -420,47 +420,50 @@ def _run_fake(
                 _pipeline_registry(),
                 worker_id="fake-coordinator",
             )
-            workers = [
-                GPUWorker(
-                    store,
-                    FakeVideoModel(),
-                    worker_id=f"fake-gpu-{model_name}",
-                    device=f"fake:{index}",
-                    model_name=model_name,
-                    lease_seconds=settings.lease_seconds,
-                )
-                for index, model_name in enumerate(sorted(settings.model_registry))
-            ]
-            worker_stops = [threading.Event() for _ in workers]
-            worker_threads = [
-                _worker_thread(
-                    f"las-fake-gpu-{index}",
-                    worker.run_forever,
-                    worker_stop,
-                )
-                for index, (worker, worker_stop) in enumerate(
-                    zip(workers, worker_stops, strict=True)
-                )
-            ]
-            if settings.cv_provider == "fake":
-                cv_worker = cv_resources.enter_context(
-                    _cv_worker_runtime(
+            workers = []
+            with ExitStack() as worker_construction:
+                for index, model_name in enumerate(sorted(settings.model_registry)):
+                    worker = GPUWorker(
                         store,
-                        settings,
-                        provider_name="fake",
-                        physical_device=settings.cv_device,
-                        worker_id="fake-cv",
+                        FakeVideoModel(),
+                        worker_id=f"fake-gpu-{model_name}",
+                        device=f"fake:{index}",
+                        model_name=model_name,
+                        lease_seconds=settings.lease_seconds,
                     )
-                )
-                cv_stop = threading.Event()
-                worker_stops.append(cv_stop)
-                worker_threads.append(
+                    workers.append(worker)
+                    worker_construction.callback(worker.close)
+                worker_stops = [threading.Event() for _ in workers]
+                worker_threads = [
                     _worker_thread(
-                        "las-fake-cv",
-                        lambda role_stop: _run_cv_forever(cv_worker, role_stop),
-                        cv_stop,
+                        f"las-fake-gpu-{index}",
+                        worker.run_forever,
+                        worker_stop,
                     )
-                )
+                    for index, (worker, worker_stop) in enumerate(
+                        zip(workers, worker_stops, strict=True)
+                    )
+                ]
+                if settings.cv_provider == "fake":
+                    cv_worker = cv_resources.enter_context(
+                        _cv_worker_runtime(
+                            store,
+                            settings,
+                            provider_name="fake",
+                            physical_device=settings.cv_device,
+                            worker_id="fake-cv",
+                        )
+                    )
+                    cv_stop = threading.Event()
+                    worker_stops.append(cv_stop)
+                    worker_threads.append(
+                        _worker_thread(
+                            "las-fake-cv",
+                            lambda role_stop: _run_cv_forever(cv_worker, role_stop),
+                            cv_stop,
+                        )
+                    )
+                worker_construction.pop_all()
             try:
                 for worker_thread in worker_threads:
                     worker_thread.start()

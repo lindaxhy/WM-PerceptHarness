@@ -108,6 +108,13 @@ and validated manifests, never mask paths. Video/checkpoint/model identity,
 entities, sampling, and thresholds participate in cache identity. Quarantine
 cache state after any pin or evidence-setting change.
 
+The BPE vocabulary must be byte-identical to
+`sam3/assets/bpe_simple_vocab_16e6.txt.gz` in the immutable pinned SAM revision.
+The runtime copies the configured local file into private storage and verifies
+that copy against the pinned Git blob before constructing the predictor. An
+identical relocated copy is accepted; modified bytes and mutable-worktree
+substitutions are rejected.
+
 Occlusion-candidate discovery uses a fixed positive-overlap rule. At a candidate
 evidence frame, another track is eligible only when the maximum of bounding-box
 IoU, target-box covered fraction, and other-box covered fraction is strictly

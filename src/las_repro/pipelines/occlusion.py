@@ -219,9 +219,7 @@ def project_occlusion_events(
         # caller's provider-independent track boundary.
         source_tracks = [candidate.target_track_id]
         source_tracks.extend(
-            item.track_id
-            for item in candidate.possible_occluders
-            if item.entity_id == decision.occluder_entity_id
+            item.track_id for item in candidate.possible_occluders
         )
         source_tracks = list(dict.fromkeys(source_tracks))
         keyframe_ids = [PurePosixPath(reference).stem for reference in candidate.overlay_refs]

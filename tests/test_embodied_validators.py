@@ -1527,27 +1527,28 @@ def test_models_reject_negative_timestamps_even_inside_comparison_tolerance(
     negative_time: float,
 ):
     """Timestamp domain errors are schema errors, not tolerant topology differences."""
-    with pytest.raises(ValidationError):
-        CoarsePlan.model_validate(
+    cases = (
+        (
+            CoarsePlan,
             {
                 "task_description": "move container",
                 "entity_candidates": _entity_candidates(),
                 "actions": [
                     {
                         "action_index": 0,
-                        "start": negative_time,
+                        "start": 0.0,
                         "end": 1.0,
                         "description": "move container",
                         "event_type": "transport",
                     }
                 ],
-            }
-        )
-    with pytest.raises(ValidationError):
-        BoundaryPlan.model_validate(
+            },
+            ("actions", 0, "start"),
+        ),
+        (
+            BoundaryPlan,
             {
                 "task_description": "move container",
-                "entity_candidates": _entity_candidates(),
                 "actions": [
                     {
                         "action_index": 0,
@@ -1558,7 +1559,7 @@ def test_models_reject_negative_timestamps_even_inside_comparison_tolerance(
                         "boundary_points": [
                             {
                                 "boundary_id": "start",
-                                "time": negative_time,
+                                "time": 0.0,
                                 "event_type": "action_start",
                                 "visual_evidence": "hand is visible",
                             }
@@ -1566,59 +1567,11 @@ def test_models_reject_negative_timestamps_even_inside_comparison_tolerance(
                         "fine_segments": [],
                     }
                 ],
-            }
-        )
-    with pytest.raises(ValidationError):
-        BoundaryPlan.model_validate(
-            {
-                "task_description": "move container",
-                "actions": [
-                    {
-                        "action_index": 0,
-                        "start": 0.0,
-                        "end": 1.0,
-                        "description": "move container",
-                        "event_type": "transport",
-                        "boundary_points": [],
-                        "fine_segments": [
-                            {
-                                "segment_index": 0,
-                                "start": negative_time,
-                                "end": 1.0,
-                                "description": "move container",
-                                "event_type": "transport_continue",
-                                "start_boundary_id": "start",
-                                "end_boundary_id": "end",
-                            }
-                        ],
-                    }
-                ],
-            }
-        )
-
-
-@pytest.mark.parametrize("negative_time", [-1e-9, -0.01])
-def test_models_reject_negative_timestamp_ends_even_inside_comparison_tolerance(
-    negative_time: float,
-):
-    """End fields share the same nonnegative time domain as start fields."""
-    with pytest.raises(ValidationError):
-        CoarsePlan.model_validate(
-            {
-                "task_description": "move container",
-                "actions": [
-                    {
-                        "action_index": 0,
-                        "start": 0.0,
-                        "end": negative_time,
-                        "description": "move container",
-                        "event_type": "transport",
-                    }
-                ],
-            }
-        )
-    with pytest.raises(ValidationError):
-        BoundaryPlan.model_validate(
+            },
+            ("actions", 0, "boundary_points", 0, "time"),
+        ),
+        (
+            BoundaryPlan,
             {
                 "task_description": "move container",
                 "actions": [
@@ -1633,7 +1586,7 @@ def test_models_reject_negative_timestamp_ends_even_inside_comparison_tolerance(
                             {
                                 "segment_index": 0,
                                 "start": 0.0,
-                                "end": negative_time,
+                                "end": 1.0,
                                 "description": "move container",
                                 "event_type": "transport_continue",
                                 "start_boundary_id": "start",
@@ -1642,8 +1595,84 @@ def test_models_reject_negative_timestamp_ends_even_inside_comparison_tolerance(
                         ],
                     }
                 ],
-            }
-        )
+            },
+            ("actions", 0, "fine_segments", 0, "start"),
+        ),
+    )
+    for model, legal, path in cases:
+        model.model_validate(legal)
+        invalid = copy.deepcopy(legal)
+        cursor: Any = invalid
+        for part in path[:-1]:
+            cursor = cursor[part]
+        cursor[path[-1]] = negative_time
+        with pytest.raises(ValidationError) as error:
+            model.model_validate(invalid)
+        assert [item["loc"] for item in error.value.errors()] == [path]
+
+
+@pytest.mark.parametrize("negative_time", [-1e-9, -0.01])
+def test_models_reject_negative_timestamp_ends_even_inside_comparison_tolerance(
+    negative_time: float,
+):
+    """End fields share the same nonnegative time domain as start fields."""
+    cases = (
+        (
+            CoarsePlan,
+            {
+                "task_description": "move container",
+                "entity_candidates": _entity_candidates(),
+                "actions": [
+                    {
+                        "action_index": 0,
+                        "start": 0.0,
+                        "end": 1.0,
+                        "description": "move container",
+                        "event_type": "transport",
+                    }
+                ],
+            },
+            ("actions", 0, "end"),
+        ),
+        (
+            BoundaryPlan,
+            {
+                "task_description": "move container",
+                "actions": [
+                    {
+                        "action_index": 0,
+                        "start": 0.0,
+                        "end": 1.0,
+                        "description": "move container",
+                        "event_type": "transport",
+                        "boundary_points": [],
+                        "fine_segments": [
+                            {
+                                "segment_index": 0,
+                                "start": 0.0,
+                                "end": 1.0,
+                                "description": "move container",
+                                "event_type": "transport_continue",
+                                "start_boundary_id": "start",
+                                "end_boundary_id": "end",
+                            }
+                        ],
+                    }
+                ],
+            },
+            ("actions", 0, "fine_segments", 0, "end"),
+        ),
+    )
+    for model, legal, path in cases:
+        model.model_validate(legal)
+        invalid = copy.deepcopy(legal)
+        cursor: Any = invalid
+        for part in path[:-1]:
+            cursor = cursor[part]
+        cursor[path[-1]] = negative_time
+        with pytest.raises(ValidationError) as error:
+            model.model_validate(invalid)
+        assert [item["loc"] for item in error.value.errors()] == [path]
 
 
 def test_coarse_plan_reports_all_coverage_index_and_duration_issues():

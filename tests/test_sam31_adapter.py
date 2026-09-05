@@ -2242,6 +2242,10 @@ def successful_git_run(
         calls.append((command, kwargs))
         if "status" in command:
             return SimpleNamespace(stdout="")
+        if command[-1].endswith(":sam3/assets/bpe_simple_vocab_16e6.txt.gz"):
+            payload = b"local bpe fixture"
+            digest = hashlib.sha1(f"blob {len(payload)}\0".encode() + payload)
+            return SimpleNamespace(stdout=digest.hexdigest() + "\n")
         if "ls-files" in command:
             repository = Path(command[2])
             tracked = sorted(
@@ -2849,6 +2853,15 @@ def test_load_verifies_local_revision_and_hash_then_calls_official_builder(
             "--",
             "sam3",
         ],
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(repository.resolve()),
+            "rev-parse",
+            "--verify",
+            PINNED_REVISION + ":sam3/assets/bpe_simple_vocab_16e6.txt.gz",
+        ],
     ]
     for _, kwargs in git_calls:
         environment = kwargs["env"]
@@ -2891,6 +2904,59 @@ def test_load_verifies_local_revision_and_hash_then_calls_official_builder(
     provider.close()
     assert not checkpoint_argument.exists()
     assert not bpe_argument.exists()
+
+
+@pytest.mark.parametrize(
+    "external_bytes", [b"local bpe fixture", b"locel bpe fixture"]
+)
+def test_explicit_bpe_must_match_the_pinned_repository_blob(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_torch: SimpleNamespace,
+    external_bytes: bytes,
+) -> None:
+    repository, checkpoint, digest = local_runtime_assets(tmp_path)
+    pin_runtime_repository(monkeypatch, repository)
+    install_fake_torch_module(monkeypatch, fake_torch)
+    relocated = tmp_path / "relocated-bpe.txt.gz"
+    relocated.write_bytes(external_bytes)
+    factory_calls = 0
+    real_mkdtemp = SAM31_MODULE.tempfile.mkdtemp
+
+    def private_runtime(*, prefix: str) -> str:
+        return real_mkdtemp(prefix=prefix, dir=tmp_path)
+
+    def factory(**_: Any) -> PredictorDouble:
+        nonlocal factory_calls
+        factory_calls += 1
+        return PredictorDouble()
+
+    monkeypatch.setattr(SAM31_MODULE.tempfile, "mkdtemp", private_runtime)
+
+    if external_bytes == b"local bpe fixture":
+        provider = Sam31EvidenceProvider.load(
+            repository,
+            checkpoint,
+            digest,
+            bpe_path=relocated,
+            predictor_factory=factory,
+        )
+        assert factory_calls == 1
+        provider.close()
+    else:
+        with pytest.raises(
+            CvProviderError, match="^Unable to load local SAM3.1 runtime$"
+        ):
+            Sam31EvidenceProvider.load(
+                repository,
+                checkpoint,
+                digest,
+                bpe_path=relocated,
+                predictor_factory=factory,
+            )
+        assert factory_calls == 0
+
+    assert list(tmp_path.glob(".las-sam31-runtime-*")) == []
 
 
 @pytest.mark.parametrize(

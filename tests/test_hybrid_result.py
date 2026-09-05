@@ -237,7 +237,10 @@ def test_public_validation_rejects_internally_forged_metadata(
         hybrid_result.validate_hybrid_result(result)
 
 
-def test_positive_occlusion_is_a_checked_projection_of_real_candidates():
+@pytest.mark.parametrize("semantic_occluder", ["unknown", "flicker_target"])
+def test_positive_occlusion_is_a_checked_projection_of_real_candidates(
+    semantic_occluder,
+):
     from test_cv_summary import _candidate_artifact
 
     from las_repro.cv.contracts import EvidenceThresholds
@@ -263,9 +266,7 @@ def test_positive_occlusion_is_a_checked_projection_of_real_candidates():
                 "candidate_id": candidate.candidate_id,
                 "classification": "occlusion" if positive else "unknown",
                 "target_entity_id": candidate.target_entity_id,
-                "occluder_entity_id": candidate.possible_occluder_entity_ids[0]
-                if positive
-                else "unknown",
+                "occluder_entity_id": semantic_occluder if positive else "unknown",
                 "visual_evidence": "target visibly hidden behind board"
                 if positive
                 else "insufficient evidence",
@@ -318,6 +319,39 @@ def test_positive_occlusion_is_a_checked_projection_of_real_candidates():
         "occlusion_candidates": bundle.candidates,
     }
     hybrid_result.validate_hybrid_result(result, **context)
+    event = result["annotation_branches"]["occlusion"]["events"][0]
+    assert event["occluder_entity_id"] == semantic_occluder
+    assert event["source_track_ids"] == [
+        "behind_target_1",
+        "board_1",
+        "flicker_target_1",
+        "partial_target_1",
+        "permanent_target_1",
+        "stable_target_1",
+    ]
+    from las_repro.evaluation.viewer_projection import project_hybrid_viewer_data
+
+    viewer = project_hybrid_viewer_data(
+        "candidate-context",
+        1.0,
+        result,
+        source_sha256="c" * 64,
+        overlay_references=[
+            {
+                "keyframe_id": "board-1-00000001",
+                "track_id": "board_1",
+                "frame_index": 1,
+                "timestamp_seconds": 0.1,
+                "path": "evaluation/viewer/data/hybrid/overlays/" + "d" * 64 + ".png",
+                "sha256": "d" * 64,
+                "size_bytes": 1,
+            }
+        ],
+    )
+    assert viewer["layers"]["occlusion_events"]["events"][0][
+        "occluder_entity_id"
+    ] == semantic_occluder
+    assert viewer["provenance"]["overlays"][0]["track_id"] == "board_1"
     empty = copy.deepcopy(result)
     empty["annotation_branches"]["occlusion"].update(decisions=[], events=[])
     with pytest.raises(ValueError):
@@ -326,9 +360,9 @@ def test_positive_occlusion_is_a_checked_projection_of_real_candidates():
     empty["warnings"].append({"code": "OCCLUSION_UNAVAILABLE"})
     empty["performance"]["degradation_count"] = 2
     hybrid_result.validate_hybrid_result(empty, **context)
-    result["annotation_branches"]["occlusion"]["events"][0]["source_track_ids"] = [
-        "foreign"
-    ]
+    result["annotation_branches"]["occlusion"]["events"][0][
+        "source_keyframe_ids"
+    ] = ["foreign"]
     hybrid_result.validate_hybrid_result(result)
     with pytest.raises(ValueError):
         hybrid_result.validate_hybrid_result(result, **context)

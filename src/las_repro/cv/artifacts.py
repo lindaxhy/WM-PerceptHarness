@@ -692,13 +692,18 @@ class CvArtifactStore:
             descriptor = self._open_directory_descriptor(
                 name, dir_fd=self._root_descriptor
             )
-        status = os.fstat(descriptor)
-        effective_uid = os.geteuid() if hasattr(os, "geteuid") else status.st_uid
-        if status.st_uid != effective_uid or status.st_mode & 0o077:
+        try:
+            status = os.fstat(descriptor)
+            effective_uid = (
+                os.geteuid() if hasattr(os, "geteuid") else status.st_uid
+            )
+            if status.st_uid != effective_uid or status.st_mode & 0o077:
+                raise CvArtifactError("unsafe CV artifact directory")
+            if observed_missing:
+                os.fsync(self._root_descriptor)
+        except BaseException:
             os.close(descriptor)
-            raise CvArtifactError("unsafe CV artifact directory")
-        if observed_missing:
-            os.fsync(self._root_descriptor)
+            raise
         return descriptor
 
     @staticmethod
@@ -1270,16 +1275,21 @@ class CvArtifactStore:
                     child_descriptor = self._open_directory_descriptor(
                         entry.name, dir_fd=parent_descriptor
                     )
-                    opened = os.fstat(child_descriptor)
-                    if (opened.st_dev, opened.st_ino) != (
-                        status.st_dev,
-                        status.st_ino,
-                    ):
+                    child_entries: os.ScandirIterator[str] | None = None
+                    try:
+                        opened = os.fstat(child_descriptor)
+                        if (opened.st_dev, opened.st_ino) != (
+                            status.st_dev,
+                            status.st_ino,
+                        ):
+                            raise ValueError
+                        child_entries = os.scandir(child_descriptor)
+                        stack.append((relative, child_descriptor, child_entries))
+                    except BaseException:
+                        if child_entries is not None:
+                            child_entries.close()
                         os.close(child_descriptor)
-                        raise ValueError
-                    stack.append(
-                        (relative, child_descriptor, os.scandir(child_descriptor))
-                    )
+                        raise
         finally:
             if root_descriptor >= 0:
                 os.close(root_descriptor)

@@ -1594,6 +1594,72 @@ def test_directory_open_closes_descriptor_when_fstat_fails(tmp_path, monkeypatch
         real_fstat(opened_descriptors[0])
 
 
+def test_prefix_open_closes_descriptor_when_root_fsync_fails(
+    tmp_path, cv_request, monkeypatch
+):
+    store = CvArtifactStore(tmp_path / "cv-cache")
+    key = cv_cache_key(cv_request)
+    opened_prefixes = []
+    real_open_directory = store._open_directory_descriptor
+    real_fsync = os.fsync
+    real_fstat = os.fstat
+
+    def track_prefix(path, *, dir_fd=None):
+        descriptor = real_open_directory(path, dir_fd=dir_fd)
+        if dir_fd == store._root_descriptor:
+            opened_prefixes.append(descriptor)
+        return descriptor
+
+    def fail_root_fsync(descriptor):
+        if descriptor == store._root_descriptor:
+            raise OSError("injected root fsync failure")
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(store, "_open_directory_descriptor", track_prefix)
+    monkeypatch.setattr(os, "fsync", fail_root_fsync)
+
+    with pytest.raises(OSError, match="injected root fsync failure"):
+        store._open_prefix(key, create=True)
+
+    assert len(opened_prefixes) == 1
+    with pytest.raises(OSError):
+        real_fstat(opened_prefixes[0])
+
+
+def test_tree_walk_closes_child_descriptor_when_scandir_setup_fails(
+    tmp_path, monkeypatch
+):
+    store = CvArtifactStore(tmp_path / "cv-cache")
+    scan_root = tmp_path / "scan-root"
+    child = scan_root / "child"
+    child.mkdir(parents=True)
+    child_descriptors = []
+    real_open_directory = store._open_directory_descriptor
+    real_scandir = os.scandir
+    real_fstat = os.fstat
+
+    def track_child(path, *, dir_fd=None):
+        descriptor = real_open_directory(path, dir_fd=dir_fd)
+        if dir_fd is not None:
+            child_descriptors.append(descriptor)
+        return descriptor
+
+    def fail_child_scandir(path):
+        if path in child_descriptors:
+            raise OSError("injected child scandir failure")
+        return real_scandir(path)
+
+    monkeypatch.setattr(store, "_open_directory_descriptor", track_child)
+    monkeypatch.setattr(os, "scandir", fail_child_scandir)
+
+    with pytest.raises(OSError, match="injected child scandir failure"):
+        list(store._walk_tree_relative(scan_root))
+
+    assert len(child_descriptors) == 1
+    with pytest.raises(OSError):
+        real_fstat(child_descriptors[0])
+
+
 def test_concurrent_cache_root_creators_reopen_validate_and_fsync_winner(
     tmp_path, monkeypatch
 ):
