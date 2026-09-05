@@ -16,6 +16,7 @@ from las_repro.pipelines.hybrid_result import (
     validate_hybrid_result,
 )
 from las_repro.pipelines.scene_semantics import unavailable_scene_semantics
+from las_repro.security import redact
 from las_repro.store import SQLiteTaskStore
 
 
@@ -594,6 +595,40 @@ def test_poll_preserves_valid_hybrid_result_with_null_provider_metrics(
 
     assert response.status_code == 200
     assert response.json()["data"] == stored_snapshot
+    assert store.get_task(task_id).result == stored_snapshot
+
+
+def test_poll_fail_closes_when_hybrid_validator_raises_attribute_error(
+    client, store, auth_header
+):
+    original = _hybrid_result(available=True)
+    original["cv_evidence"] = None
+    stored_snapshot = copy.deepcopy(original)
+    task_id = _complete_result(store, original)
+
+    response = _poll(client, auth_header, task_id)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "metadata": {
+            "task_id": task_id,
+            "task_status": "COMPLETED",
+            "business_code": "0",
+            "error_msg": "",
+            "warnings": [],
+            "progress": None,
+        },
+        "data": {
+            **redact(stored_snapshot),
+        },
+    }
+    data = response.json()["data"]
+    assert data["annotation_branches"]["action_events"][0]["source_keyframe_ids"] == "***"
+    assert data["locations"][0]["source_keyframe_ids"] == "***"
+    assert data["performance"]["stages"][0]["provider_metrics"] == {
+        "input_tokens": "***",
+        "output_tokens": "***",
+    }
     assert store.get_task(task_id).result == stored_snapshot
 
 

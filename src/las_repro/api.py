@@ -118,7 +118,7 @@ def _public_completed_result(original: Any) -> Any:
         return public
     try:
         validate_hybrid_result(original)
-    except (ValueError, TypeError, KeyError):
+    except (ValueError, TypeError, KeyError, AttributeError):
         return public
 
     original_branches = original["annotation_branches"]
