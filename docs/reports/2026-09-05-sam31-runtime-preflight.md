@@ -35,9 +35,38 @@ install did not include. Upstream pkg_resources and timm deprecation warnings
 remain visible. The host's unrelated globally installed packages have reported
 dependency conflicts; full inference must still verify the actual SAM path.
 
-This is provisioning evidence only. It does not establish successful CUDA
-checkpoint loading, valid track/artifact generation, memory stability, or the
-five-demo acceptance gates. Those remain required before final delivery.
+## Real CUDA preflight
+
+The pinned provider loaded on physical GPU 3 in 26.307 seconds and closed
+successfully. The other three GPUs remained idle. The initial real-video probe
+then exposed three adapter/runtime compatibility issues:
+
+- Host FFmpeg 4.4.2 does not recognize `-fps_mode:v`. The dedicated SAM
+  environment now supplies imageio-ffmpeg 0.6.0's FFmpeg 7.0.2-static. Exact
+  extraction of the source's 137 frames succeeds; system FFprobe still supplies
+  the original PTS.
+- The upstream builder defaults to FlashAttention 3, but `flash_attn_interface`
+  is not installed. Its supported `use_fa3=False` path works with existing Torch.
+- The adapter passed the last frame index as `max_frame_num_to_track`. The
+  pinned tracker's inclusive bound and detector's exclusive chunk bound then
+  produced an empty feature tensor for the last frame. Passing the frame count
+  resolves that mismatch without modifying upstream code.
+
+Separately, rounded FFprobe timestamps make nominal 30 fps appear as
+30.000002205882517 fps. The existing exact sampler selects only 92 of 137 source
+frames. This has a deterministic local reproduction and remains to be corrected
+using bounded timestamp comparison precision, not by rewriting observed PTS.
+
+A diagnostic run on frozen `full_0024` using the baseline `ba1f46f` wheel and
+the two explicit attention/count overrides succeeded in 46.010 seconds:
+two entity prompts, one track, 92 observations, 15,700,532,224 bytes peak Torch
+allocation, artifact publication and digest-checked cache reload successful.
+Source SHA-256 is
+`a7a696bcdd835c083b27ca3705d13a2f22e069ebec9038581354fed39e6fbbe8`.
+This demonstrates actual checkpoint inference and artifact generation; it is
+not production-adapter acceptance because of the diagnostic overrides and
+incomplete sampling. The formal remediation, corrected 137-frame run, memory
+stability checks, and five-demo acceptance gates remain required.
 
 Sources: [ModelScope model](https://www.modelscope.cn/models/facebook/sam3.1),
 [ModelScope file metadata](https://www.modelscope.cn/api/v1/models/facebook/sam3.1/repo/files?Revision=616acbee0b9ed4177f1f389e3c13594a0a1f6398&Recursive=true),
