@@ -28,8 +28,13 @@ branch, one repair and no degradation. Its stored canonical result validates,
 but Poll's generic sensitive-name redaction corrupts keyframe provenance and
 numeric usage. The original transport response is preserved; the bounded
 [Poll contract repair](../superpowers/plans/2026-09-05-poll-hybrid-provenance.md)
-is in progress before re-polling that same task. No inference resubmission is
-needed for this repair; full Task 15 acceptance remains incomplete.
+was implemented at `5f7a5d0`; review found two boundary cases. The valid null
+metrics case was fixed at `1046cf3` and independently re-reviewed, with 163
+covering tests passing. Malformed CV containers can also raise `AttributeError`,
+which the plan's explicit exception tuple omits. A user decision on extending
+that fail-closed tuple is pending; no repaired package has been deployed yet.
+No inference resubmission is needed for this repair; full Task 15 acceptance
+remains incomplete.
 Task 13 adds verified projection,
 variant selection and bounded overlay access; its actual five-demo data and
 acceptance publication remain Task 15 work. Focused verification passed 152

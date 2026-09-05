@@ -74,9 +74,14 @@ generic redactor replaced `source_keyframe_ids` and numeric token usage. The
 original response is preserved privately (SHA-256
 `cbb2c8814c10ac562c2136622f2da4e670fbf9b25b3574f8249e918461e3041c`).
 The resumable driver stopped before submitting sample two. A bounded API-only
-contract repair is undergoing implementation and independent review; the same
-completed task will be re-polled without repeating inference. This is not yet
-a valid exported control run or five-demo acceptance.
+contract repair was implemented at `5f7a5d0` (1,657 tests passed, 85.75%
+branch-enabled combined coverage). Independent review found a valid null-metrics
+case, fixed and re-reviewed at `1046cf3` (163 covering tests passed), plus a
+malformed-container `AttributeError` not covered by the prescribed exception
+tuple. Extending that tuple awaits the user's plan decision. No repaired package
+has been installed; the same completed task will be re-polled without repeating
+inference once review is closed. This is not yet a valid exported control run
+or five-demo acceptance.
 
 ## Remaining acceptance
 
