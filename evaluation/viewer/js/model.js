@@ -220,7 +220,10 @@ function exact(value, keys, optional = []) {
 
 function safeText(value, limit = 4096) {
   if (typeof value !== "string" || !value.trim() || value.length > limit ||
-      /[{}\[\]\\/\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(value) || /\.(npz|npy|mask)\b/i.test(value)) {
+      /[{}\[\]\\/\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(value) || /\.(npz|npy|mask)\b/i.test(value) ||
+      (value.toLowerCase().includes("mask") &&
+        value.split(/\r\n|[\n\r\u0085\u2028\u2029]/)
+          .filter(line => /^\s*[01](?:\s*,\s*[01])+\s*$/.test(line)).length >= 2)) {
     throw new Error("INVALID_HYBRID_TEXT");
   }
   return value;

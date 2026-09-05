@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import shutil
 import stat
 from copy import deepcopy
 from pathlib import Path
@@ -286,9 +287,8 @@ def test_hybrid_export_rejects_output_symlink_and_broad_target(hybrid_export_cas
         export_hybrid_dataset(**kwargs)
 
 
-def test_hybrid_cli_exports_new_variant_without_rewriting_frozen_local(
-    hybrid_export_case, monkeypatch
-):
+@pytest.fixture
+def hybrid_cli_case(hybrid_export_case, monkeypatch):
     from las_repro.evaluation import las_alignment as las
     from scripts import build_comparison_viewer_data as exporter
 
@@ -334,10 +334,54 @@ def test_hybrid_cli_exports_new_variant_without_rewriting_frozen_local(
         "--mapping",
         str(kwargs["mapping_path"]),
     ]
+    return exporter, args, kwargs, local, manifest_path, manifest
+
+
+def test_hybrid_cli_exports_new_variant_without_rewriting_frozen_local(hybrid_cli_case):
+    exporter, args, kwargs, local, manifest_path, manifest = hybrid_cli_case
     assert exporter.main(args) == 0
     assert sorted(path.name for path in local.iterdir()) == ["sentinel"]
     assert json.loads(manifest_path.read_bytes()) == manifest
     assert len(list(kwargs["output_dir"].glob("full_*.json"))) == 5
+
+
+@pytest.mark.parametrize(
+    ("option", "relationship"),
+    [
+        (option, relationship)
+        for option in ("--input-dir", "--output-dir")
+        for relationship in ("equal", "ancestor", "descendant")
+    ]
+    + [("--manifest", "ancestor")],
+)
+def test_hybrid_cli_rejects_overlap_with_legacy_paths_and_preserves_bytes(
+    hybrid_cli_case, option, relationship
+):
+    exporter, args, kwargs, _, _, _ = hybrid_cli_case
+    target = kwargs["output_dir"]
+    index = args.index(option) + 1
+    original = Path(args[index])
+    if option == "--manifest":
+        protected = target / "demo-manifest.json"
+        protected.parent.mkdir(parents=True)
+        shutil.copyfile(original, protected)
+    else:
+        protected = {
+            "equal": target,
+            "ancestor": target / "frozen",
+            "descendant": target.parent,
+        }[relationship]
+        shutil.copytree(original, protected, dirs_exist_ok=True)
+    args[index] = str(protected)
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "sentinel").write_bytes(b"previous hybrid output")
+    before = {
+        path: path.read_bytes() for path in target.parent.rglob("*") if path.is_file()
+    }
+    with pytest.raises(exporter.ViewerDataError):
+        exporter.main(args)
+    assert {path: path.read_bytes() for path in before} == before
+    assert not (target / "variant-manifest.json").exists()
 
 
 def _write_json(path: Path, value: object) -> None:

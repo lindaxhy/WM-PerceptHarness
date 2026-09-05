@@ -420,6 +420,7 @@ def export_hybrid_dataset(
     variant_id: str = "doubao_sam31",
     review_path: Path | None = None,
     include_fine_segments: bool = False,
+    protected_paths: Sequence[Path] = (),
 ) -> dict[str, Any]:
     """Authenticate and publish a complete five-demo variant, not a raw task dump.
 
@@ -445,6 +446,7 @@ def export_hybrid_dataset(
             reference_manifest,
             mapping_path,
             repository_root / "evaluation/viewer/data/local",
+            *protected_paths,
         ]
         if artifact_root is not None:
             protected.append(artifact_root)
@@ -722,6 +724,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             variant_id=arguments.hybrid_variant,
             review_path=arguments.review,
             include_fine_segments=arguments.include_fine_segments,
+            protected_paths=(
+                arguments.input_dir,
+                arguments.output_dir,
+                arguments.manifest,
+            ),
         )
         return 0
     for sample_id, payload in outputs.items():

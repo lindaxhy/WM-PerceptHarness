@@ -133,6 +133,19 @@ test("hybrid parser rejects invalid identity, intervals, raw masks, paths and pr
   }
 });
 
+test("hybrid parser rejects textual binary masks but retains ordinary mask discussion", () => {
+  for (const separator of ["\n", "\r\n", "\r", "\u0085", "\u2028", "\u2029"]) {
+    const data = hybridFixture();
+    data.layers.action_events.events[0].description = ["MASK", " 0, 1,0 ", "1,0, 1"].join(separator);
+    assert.throws(() => normalizeHybrid(data, 1, "full_0001"), /INVALID_HYBRID_TEXT/);
+  }
+  for (const description of ["Hand lifts a mask", "mask\n0,1\nVisible hand", "mask\n10,11\n11,10"]) {
+    const data = hybridFixture();
+    data.layers.action_events.events[0].description = description;
+    assert.equal(normalizeHybrid(data, 1, "full_0001").grouped[0].description, description);
+  }
+});
+
 function manifestFixture(version = 2) {
   const sample = { sample_id: "full_0001", duration_seconds: 1, media_path: "evaluation/media/s.mp4",
     las_path: "evaluation/reference/s.json", caveat: "" };
