@@ -22,8 +22,14 @@ The subsequent unmodified final-wheel GPU smoke passed on physical GPU 3:
 137 frames and observations, 55.689 seconds, digest-checked reload, and all
 GPUs idle after exit. The
 [in-progress acceptance report](2026-09-04-sam31-gpu-acceptance.md) records
-immutable identities. The isolated Doubao-only five-demo run has started;
-the full Task 15 acceptance remains incomplete.
+immutable identities. The isolated Doubao-only five-demo run completed its
+first sample in 155.554 seconds, with nine action events, an available scene
+branch, one repair and no degradation. Its stored canonical result validates,
+but Poll's generic sensitive-name redaction corrupts keyframe provenance and
+numeric usage. The original transport response is preserved; the bounded
+[Poll contract repair](../superpowers/plans/2026-09-05-poll-hybrid-provenance.md)
+is in progress before re-polling that same task. No inference resubmission is
+needed for this repair; full Task 15 acceptance remains incomplete.
 Task 13 adds verified projection,
 variant selection and bounded overlay access; its actual five-demo data and
 acceptance publication remain Task 15 work. Focused verification passed 152

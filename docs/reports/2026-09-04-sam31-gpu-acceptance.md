@@ -61,6 +61,23 @@ This proves the bounded runtime/tool path, not occlusion accuracy.
   action Event F1@0.3 is 6/44 (0.13636), and occlusion Event F1@0.3 is 0/13.
   Historical missing stage timings and checkpoint revision remain unknown.
 
+## First cold control and transport failure
+
+The first Doubao-only cold sample, `full_0001`, completed in 155.554 seconds.
+All five inference jobs completed; the result contains nine action events, an
+available scene branch, one repair and no degradation. Read-only canonical
+validation of the stored result passed. Its canonical SHA-256 is
+`6fc9ecb6eeaa42fadf359be486c6e082e6c9fecd1306ec3c0de43eea9924fc58`.
+
+The actual authenticated Poll response failed the same validator because the
+generic redactor replaced `source_keyframe_ids` and numeric token usage. The
+original response is preserved privately (SHA-256
+`cbb2c8814c10ac562c2136622f2da4e670fbf9b25b3574f8249e918461e3041c`).
+The resumable driver stopped before submitting sample two. A bounded API-only
+contract repair is undergoing implementation and independent review; the same
+completed task will be re-polled without repeating inference. This is not yet
+a valid exported control run or five-demo acceptance.
+
 ## Remaining acceptance
 
 The isolated authenticated loopback service is running the Doubao-only control
