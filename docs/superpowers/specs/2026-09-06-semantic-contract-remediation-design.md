@@ -2,7 +2,9 @@
 
 Date: 2026-09-06
 
-Status: scope approved in conversation; written-spec review pending.
+Status: written spec approved by the user; implementation authorized.
+The user additionally requested default execution for routine work within the
+confirmed goal, without repeated plan/implementation confirmation prompts.
 Baseline: `d46dfd86e735d676cc03cc7f0554e0a754c680cb`.
 
 ## Objective and evidence
@@ -126,5 +128,5 @@ independent review is still pending; it did not produce completed checks.
 - [x] Present scope and obtain conversational approval.
 - [x] Write this spec and check scope, consistency and explicit exclusions.
 - [x] No visual companion needed: this is a textual contract decision.
-- [ ] User reviews this written spec.
+- [x] User reviews this written spec.
 - [ ] Write the implementation plan, then execute TDD and independent review.
