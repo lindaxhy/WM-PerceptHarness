@@ -62,6 +62,7 @@ Create owner-controlled state first. Keep source media separate from the
 database/cache trees and prevent media writers from writing their parents.
 
 ```bash
+set -euo pipefail
 install -d -m 0700 /srv/las/data /srv/las/work /srv/las/cv-cache /srv/las/run /srv/las/log
 install -d -m 0750 /srv/las/media
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1
@@ -80,7 +81,19 @@ export LAS_CV_CHECKPOINT_SHA256="$SAM_CHECKPOINT_SHA256"
 export LAS_CV_CACHE_ROOT=/srv/las/cv-cache
 export SAM_FFMPEG_BIN="$(/srv/las/venvs/sam31/bin/python -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')"
 test -x "$SAM_FFMPEG_BIN"
-"$SAM_FFMPEG_BIN" -version | head -1 | grep 'ffmpeg version 7.0.2-static'
+export SAM_RUNTIME_BIN=/srv/las/sam-runtime-bin
+install -d -m 0700 "$SAM_RUNTIME_BIN"
+test -O "$SAM_RUNTIME_BIN"
+test "$(stat -c %a "$SAM_RUNTIME_BIN")" = 700
+if test -L "$SAM_RUNTIME_BIN/ffmpeg"; then
+  test "$(readlink -f "$SAM_RUNTIME_BIN/ffmpeg")" = "$(readlink -f "$SAM_FFMPEG_BIN")"
+else
+  test ! -e "$SAM_RUNTIME_BIN/ffmpeg"
+  ln -s "$SAM_FFMPEG_BIN" "$SAM_RUNTIME_BIN/ffmpeg"
+fi
+test "$(PATH="$SAM_RUNTIME_BIN:/usr/bin" command -v ffmpeg)" = "$SAM_RUNTIME_BIN/ffmpeg"
+SAM_FFMPEG_VERSION="$(PATH="$SAM_RUNTIME_BIN:/usr/bin" ffmpeg -version)"
+case "$SAM_FFMPEG_VERSION" in 'ffmpeg version 7.0.2-static'*) ;; *) exit 1 ;; esac
 /srv/las/venvs/ark/bin/las-repro init-db
 ```
 
@@ -107,7 +120,7 @@ closes provider/store on failure. Stdout is one canonical sanitized JSON record.
 export SMOKE_VIDEO=/srv/las/media/acceptance/full_0024.mp4
 cd "$HARNESS_SOURCE"
 test -f "$HARNESS_SOURCE/scripts/sam31_smoke.py"
-PATH="$(dirname "$SAM_FFMPEG_BIN"):/srv/las/venvs/sam31/bin:/usr/bin" \
+PATH="$SAM_RUNTIME_BIN:/srv/las/venvs/sam31/bin:/usr/bin" \
   /srv/las/venvs/sam31/bin/python "$HARNESS_SOURCE/scripts/sam31_smoke.py" \
   --repository "$SAM_SOURCE" --checkpoint "$SAM_CHECKPOINT" \
   --checkpoint-sha256 "$SAM_CHECKPOINT_SHA256" --video "$SMOKE_VIDEO" \
@@ -131,7 +144,7 @@ commands deliberately fail earlier if the ARK secret or API-key hash is absent:
 nohup /srv/las/venvs/ark/bin/las-repro api > /srv/las/log/api.log 2>&1 & echo $! > /srv/las/run/api.pid
 nohup /srv/las/venvs/ark/bin/las-repro coordinator --worker-id coordinator-0 > /srv/las/log/coordinator.log 2>&1 & echo $! > /srv/las/run/coordinator.pid
 nohup /srv/las/venvs/ark/bin/las-repro ark-worker --model-name doubao-pro --worker-id ark-0 > /srv/las/log/ark-0.log 2>&1 & echo $! > /srv/las/run/ark-0.pid
-PATH="$(dirname "$SAM_FFMPEG_BIN"):/srv/las/venvs/sam31/bin:/usr/bin" nohup /srv/las/venvs/sam31/bin/las-repro cv-worker --provider sam31 --device 3 --worker-id cv-sam31-3 > /srv/las/log/cv-sam31-3.log 2>&1 & echo $! > /srv/las/run/cv-sam31-3.pid
+PATH="$SAM_RUNTIME_BIN:/srv/las/venvs/sam31/bin:/usr/bin" nohup /srv/las/venvs/sam31/bin/las-repro cv-worker --provider sam31 --device 3 --worker-id cv-sam31-3 > /srv/las/log/cv-sam31-3.log 2>&1 & echo $! > /srv/las/run/cv-sam31-3.pid
 ```
 
 Stop cleanly and verify GPU 3 is idle:

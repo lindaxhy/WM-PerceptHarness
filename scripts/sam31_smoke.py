@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
 import os
@@ -104,9 +105,18 @@ def _suppress_runtime_stdout() -> Iterator[None]:
             with redirect_stdout(sink):
                 yield
         finally:
-            sink.flush()
-            os.dup2(saved_stdout, 1)
-            os.close(saved_stdout)
+            flush_result: int | None = None
+            try:
+                sink.flush()
+                libc = ctypes.CDLL(None)
+                libc.fflush.argtypes = [ctypes.c_void_p]
+                libc.fflush.restype = ctypes.c_int
+                flush_result = libc.fflush(None)
+            finally:
+                os.dup2(saved_stdout, 1)
+                os.close(saved_stdout)
+            if flush_result != 0:
+                raise OSError
 
 
 def _regular_file(path: Path, category: str) -> tuple[Path, tuple[int, int]]:

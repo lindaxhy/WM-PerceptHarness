@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import importlib.util
 import json
@@ -258,6 +259,31 @@ def test_smoke_suppresses_python_native_and_subprocess_output_on_success(
     assert SECRET_PROMPT not in captured.out
     assert SECRET_TOKEN not in captured.out
     assert "/private/source/path" not in captured.out
+
+
+def test_smoke_flushes_buffered_native_stdout_before_restoring_fd(
+    tmp_path: Path, capfd
+) -> None:
+    module = _load_script()
+    arguments, _digest, _video, _cache = _fixture_paths(tmp_path)
+    libc = ctypes.CDLL(None)
+    libc.printf.argtypes = [ctypes.c_char_p]
+    libc.printf.restype = ctypes.c_int
+    libc.fflush.argtypes = [ctypes.c_void_p]
+    libc.fflush.restype = ctypes.c_int
+
+    class BufferedNativeProvider(RecordingProvider):
+        def analyze(self, request, staging_dir):
+            assert libc.printf(b"BUFFERED_NATIVE_SENTINEL") > 0
+            return super().analyze(request, staging_dir)
+
+    provider = BufferedNativeProvider()
+
+    assert module.main(arguments, dependencies=_dependencies(module, provider)) == 0
+    assert libc.fflush(None) == 0
+    captured = capfd.readouterr()
+    assert captured.out.count("\n") == 1
+    assert "BUFFERED_NATIVE_SENTINEL" not in captured.out
 
 
 def test_smoke_sanitizes_noisy_analyze_failure_and_closes_provider(
