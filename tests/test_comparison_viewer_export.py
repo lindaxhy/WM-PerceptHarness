@@ -772,6 +772,11 @@ def test_repository_viewer_data_is_complete() -> None:
     } == expected
 
     result_hashes = comparison["local_artifact"]["result_sha256"]
+    qwen_metadata = json.loads((repository / (
+        "evaluation/results/sam31_2026-09-04/attempt2-cold/qwen-metadata.json"
+    )).read_bytes())
+    assert qwen_metadata["model_identity"] == "qwen3-vl-8b-instruct"
+    qwen_sources = {row["sample_id"]: row for row in qwen_metadata["samples"]}
     for item in manifest["samples"]:
         assert not Path(item["las_path"]).is_absolute()
         las_path = repository / item["las_path"]
@@ -780,6 +785,10 @@ def test_repository_viewer_data_is_complete() -> None:
         variants = {row["id"]: row for row in item["local_variants"]}
         assert len(item["local_variants"]) == len(variants) == 3
         assert set(variants) == {"qwen_only", "doubao_only", "doubao_sam31"}
+        assert variants["qwen_only"]["model_identity"] == qwen_metadata["model_identity"]
+        assert variants["qwen_only"]["source_result_sha256"] == (
+            qwen_sources[item["sample_id"]]["result_sha256"]
+        ) == result_hashes[item["sample_id"]]
         for variant in variants.values():
             path = Path(variant["path"])
             assert not path.is_absolute() and ".." not in path.parts

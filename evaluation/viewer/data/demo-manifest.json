@@ -12,6 +12,7 @@
         {
           "id": "qwen_only",
           "label": "Qwen-only",
+          "model_identity": "qwen3-vl-8b-instruct",
           "path": "evaluation/viewer/data/local/full_0001.json",
           "format": "comparison_viewer_local_v1",
           "sha256": "43d7767221dd6f1d1cc89c2c49b4d48aa1f78fdc9cc7ad409c3b03c94c5e10f5",
@@ -49,6 +50,7 @@
         {
           "id": "qwen_only",
           "label": "Qwen-only",
+          "model_identity": "qwen3-vl-8b-instruct",
           "path": "evaluation/viewer/data/local/full_0002.json",
           "format": "comparison_viewer_local_v1",
           "sha256": "4a24733588c56f189503a665fe618fef5cf66ee2e75e619fedbc868f4d2be464",
@@ -86,6 +88,7 @@
         {
           "id": "qwen_only",
           "label": "Qwen-only",
+          "model_identity": "qwen3-vl-8b-instruct",
           "path": "evaluation/viewer/data/local/full_0024.json",
           "format": "comparison_viewer_local_v1",
           "sha256": "f64b924b4efe2d3e59c755dfb9fd524e073cdefc37e788b6c90459e03f835ce5",
@@ -123,6 +126,7 @@
         {
           "id": "qwen_only",
           "label": "Qwen-only",
+          "model_identity": "qwen3-vl-8b-instruct",
           "path": "evaluation/viewer/data/local/full_0021.json",
           "format": "comparison_viewer_local_v1",
           "sha256": "301bdcaa1de89d74cd9b556efcf88946580de73b9f723faee6faa7fe0ae22472",
@@ -160,6 +164,7 @@
         {
           "id": "qwen_only",
           "label": "Qwen-only",
+          "model_identity": "qwen3-vl-8b-instruct",
           "path": "evaluation/viewer/data/local/full_0004.json",
           "format": "comparison_viewer_local_v1",
           "sha256": "cea81d8c4b3e037c63533a5a83c770e0d7234cc716a1d8e0ee81840f8544133f",
