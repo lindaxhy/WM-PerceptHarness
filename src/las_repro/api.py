@@ -10,11 +10,17 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from .config import Settings
-from .contracts import PollRequest, PollResponse, ResponseMetadata, SubmitRequest, SubmitResponse
+from .contracts import (
+    PollRequest,
+    PollResponse,
+    ResponseMetadata,
+    SubmitRequest,
+    SubmitResponse,
+)
 from .domain import InferenceStatus, TaskRecord, TaskStatus
+from .pipelines.hybrid_result import validate_hybrid_result
 from .security import redact, verify_bearer
 from .store import SQLiteTaskStore
-
 
 _TASK_NOT_FOUND = "TASK_NOT_FOUND"
 _OPERATOR_MISMATCH = "OPERATOR_MISMATCH"
@@ -93,13 +99,73 @@ def create_app(settings: Settings, store: SQLiteTaskStore) -> FastAPI:
             progress=_progress(task, store),
         )
         if task.status is TaskStatus.COMPLETED:
-            return PollResponse(metadata=metadata, data=redact(task.result or {}))
+            return PollResponse(
+                metadata=metadata,
+                data=_public_completed_result(task.result or {}),
+            )
         if task.status is TaskStatus.FAILED:
             metadata.business_code = _TASK_FAILED
             metadata.error_msg = _failure_summary(task.error)
         return PollResponse(metadata=metadata)
 
     return app
+
+
+def _public_completed_result(original: Any) -> Any:
+    """Preserve schema-owned hybrid metadata after whole-result validation."""
+    public = redact(original)
+    if not isinstance(original, dict) or "annotation_branches" not in original:
+        return public
+    try:
+        validate_hybrid_result(original)
+    except (ValueError, TypeError, KeyError):
+        return public
+
+    original_branches = original["annotation_branches"]
+    public_branches = public["annotation_branches"]
+    for branch_path in (
+        ("action_events",),
+        ("occlusion", "events"),
+        ("scene_facts", "events"),
+    ):
+        original_rows = original_branches
+        public_rows = public_branches
+        for key in branch_path:
+            original_rows = original_rows[key]
+            public_rows = public_rows[key]
+        for original_row, public_row in zip(original_rows, public_rows):
+            public_row["source_keyframe_ids"] = list(
+                original_row["source_keyframe_ids"]
+            )
+
+    for key in ("locations", "relations"):
+        for original_row, public_row in zip(original[key], public[key]):
+            public_row["source_keyframe_ids"] = list(
+                original_row["source_keyframe_ids"]
+            )
+        for original_row, public_row in zip(
+            original_branches["scene_facts"][key],
+            public_branches["scene_facts"][key],
+        ):
+            public_row["source_keyframe_ids"] = list(
+                original_row["source_keyframe_ids"]
+            )
+
+    if original["cv_evidence"]["status"] == "available":
+        public["cv_evidence"]["artifact_key"] = original["cv_evidence"][
+            "artifact_key"
+        ]
+    for original_stage, public_stage in zip(
+        original["performance"]["stages"], public["performance"]["stages"]
+    ):
+        if "provider_metrics" not in original_stage:
+            continue
+        for key in ("input_tokens", "output_tokens"):
+            if key in original_stage["provider_metrics"]:
+                public_stage["provider_metrics"][key] = original_stage[
+                    "provider_metrics"
+                ][key]
+    return public
 
 
 def _business_error(task_id: str, status_code: int, business_code: str, error_msg: str) -> JSONResponse:

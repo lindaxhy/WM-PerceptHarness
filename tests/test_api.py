@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import uuid
@@ -9,6 +10,12 @@ from fastapi.testclient import TestClient
 
 from las_repro.api import create_app
 from las_repro.config import Settings
+from las_repro.export import iter_action_captions
+from las_repro.pipelines.hybrid_result import (
+    build_hybrid_result,
+    validate_hybrid_result,
+)
+from las_repro.pipelines.scene_semantics import unavailable_scene_semantics
 from las_repro.store import SQLiteTaskStore
 
 
@@ -355,6 +362,272 @@ def test_poll_returns_completed_result_at_top_level(client, store, auth_header):
             "progress": None,
         },
         "data": {"summary": "done"},
+    }
+
+
+def _complete_result(store, result):
+    task = store.create_task({"video_url": "/allowed/demo.mp4"})
+    claimed = store.claim_task("coordinator", lease_seconds=10, now=1.0)
+    assert claimed is not None
+    store.complete_task(
+        task.task_id,
+        result,
+        worker_id="coordinator",
+        attempt=claimed.attempt,
+        now=2.0,
+    )
+    return task.task_id
+
+
+def _poll(client, auth_header, task_id):
+    return client.post(
+        "/api/v1/poll",
+        headers=auth_header,
+        json={
+            "operator_id": "las_long_video_understand",
+            "operator_version": "v1",
+            "task_id": task_id,
+        },
+    )
+
+
+def _hybrid_result(*, available):
+    segments = [
+        {
+            "action_index": 0,
+            "segment_index": 0,
+            "start": 0.0,
+            "end": 1.0,
+            "event_type": "approach",
+            "start_boundary_id": "a0-start",
+            "end_boundary_id": "a0-end",
+            "actor": "right_gripper",
+            "actor_state": "reaching",
+            "skill": "reach",
+            "target": "cup",
+            "visual_motion_state": "active",
+            "description": "right hand reaches for the cup",
+            "confidence": 0.8,
+        }
+    ]
+    stage = {
+        "stage": "pass_a",
+        "model_stage": "embodied_pass_a",
+        "queue_seconds": 0.1,
+        "wall_seconds": 0.3,
+        "inference_seconds": 0.2,
+        "attempt_count": 1,
+        "worker_id": "cpu-0",
+        "cache_hit": False,
+        "provider_metrics": {"input_tokens": 12, "output_tokens": 7},
+    }
+    performance = {
+        "stages": [stage],
+        "total_seconds": 0.3,
+        "repair_count": 0,
+        "degradation_count": 0 if available else 1,
+    }
+    if not available:
+        stage["provider_metrics"].pop("output_tokens")
+        return build_hybrid_result(
+            task_description="move cup",
+            segments=segments,
+            scene=unavailable_scene_semantics(),
+            scene_status="unavailable",
+            cv_evidence={"status": "disabled"},
+            warnings=[{"code": "SCENE_SEMANTICS_UNAVAILABLE"}],
+            performance=performance,
+        )
+
+    scene = unavailable_scene_semantics()
+    scene.update(
+        objects=[{"object_id": "cup", "name": "cup", "description": "a cup"}],
+        semantic_events=[
+            {
+                "event_index": 0,
+                "start": 0.0,
+                "end": 1.0,
+                "event_type": "move",
+                "actor": "right_hand",
+                "target_object_id": "cup",
+                "description": "cup moves",
+                "confidence": 0.8,
+            }
+        ],
+        locations=[
+            {
+                "object_id": "cup",
+                "location": "center",
+                "start": 0.0,
+                "end": 1.0,
+                "visual_evidence": "cup visible in center",
+                "confidence": 0.8,
+                "branch": "scene",
+                "model_stage": "scene_semantics",
+                "evidence_mode": "hybrid",
+                "source_track_ids": ["cup_1"],
+                "source_keyframe_ids": ["frame-000"],
+                "source_segment_indices": [0],
+                "repair_history": ["initial"],
+                "review_status": "not_required",
+            }
+        ],
+        relations=[
+            {
+                "subject_object_id": "cup",
+                "object_object_id": "cup",
+                "relation": "unknown",
+                "start": 0.0,
+                "end": 1.0,
+                "visual_evidence": "cup position is unchanged",
+                "confidence": 0.8,
+                "branch": "scene",
+                "model_stage": "scene_semantics",
+                "evidence_mode": "hybrid",
+                "source_track_ids": ["cup_1"],
+                "source_keyframe_ids": ["frame-000"],
+                "source_segment_indices": [0],
+                "repair_history": ["initial"],
+                "review_status": "not_required",
+            }
+        ],
+    )
+    occlusion = {
+        "status": "available",
+        "decisions": [
+            {
+                "candidate_id": "occ_aaaaaaaaaaaa_0000",
+                "classification": "occlusion",
+                "target_entity_id": "cup",
+                "occluder_entity_id": "hand",
+                "events": [{"event_type": "occluded", "start": 0.2, "end": 0.4}],
+                "visual_evidence": "cup is briefly hidden",
+                "confidence": 0.8,
+            }
+        ],
+        "events": [
+            {
+                "event_index": 0,
+                "start": 0.2,
+                "end": 0.4,
+                "event_type": "occluded",
+                "target_entity_id": "cup",
+                "occluder_entity_id": "hand",
+                "description": "cup is briefly hidden",
+                "confidence": 0.8,
+                "source_candidate_id": "occ_aaaaaaaaaaaa_0000",
+                "branch": "occlusion",
+                "model_stage": "occlusion_semantics",
+                "evidence_mode": "hybrid",
+                "source_track_ids": ["cup_1"],
+                "source_keyframe_ids": ["frame-000"],
+                "source_segment_indices": [0],
+                "repair_history": ["initial"],
+                "review_status": "unreviewed",
+            }
+        ],
+    }
+    result = build_hybrid_result(
+        task_description="move cup",
+        segments=segments,
+        scene=scene,
+        scene_status="available",
+        cv_evidence={
+            "status": "available",
+            "artifact_key": "a" * 64,
+            "manifest_sha256": "b" * 64,
+            "cache_hit": False,
+        },
+        warnings=[],
+        performance=performance,
+        occlusion=occlusion,
+    )
+    for event in (
+        result["annotation_branches"]["action_events"]
+        + result["annotation_branches"]["scene_facts"]["events"]
+    ):
+        event.update(
+            source_track_ids=["cup_1"],
+            source_keyframe_ids=["frame-000"],
+            evidence_mode="hybrid",
+        )
+    return result
+
+
+@pytest.mark.parametrize("available", [False, True], ids=["disabled-cv", "available-cv"])
+def test_poll_preserves_validated_hybrid_provenance_and_usage(
+    client, store, auth_header, available
+):
+    original = _hybrid_result(available=available)
+    validate_hybrid_result(original)
+    stored_snapshot = copy.deepcopy(original)
+    task_id = _complete_result(store, original)
+
+    response = _poll(client, auth_header, task_id)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["metadata"] == {
+        "task_id": task_id,
+        "task_status": "COMPLETED",
+        "business_code": "0",
+        "error_msg": "",
+        "warnings": [],
+        "progress": None,
+    }
+    validate_hybrid_result(body["data"])
+    assert body["data"] == stored_snapshot
+    assert store.get_task(task_id).result == stored_snapshot
+    assert len(list(iter_action_captions("poll", body["data"], source_fps=10.0))) == 1
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda result: result["annotation_branches"]["action_events"][0].update(
+            source_keyframe_ids="frame-000"
+        ),
+        lambda result: result["performance"]["stages"][0]["provider_metrics"].update(
+            input_tokens="12"
+        ),
+    ],
+)
+def test_poll_does_not_restore_fields_from_invalid_hybrid_results(
+    client, store, auth_header, mutation
+):
+    original = _hybrid_result(available=True)
+    mutation(original)
+    with pytest.raises((ValueError, TypeError, KeyError)):
+        validate_hybrid_result(original)
+    task_id = _complete_result(store, original)
+
+    data = _poll(client, auth_header, task_id).json()["data"]
+
+    assert data["annotation_branches"]["action_events"][0]["source_keyframe_ids"] == "***"
+    assert data["performance"]["stages"][0]["provider_metrics"]["input_tokens"] == "***"
+
+
+def test_poll_does_not_restore_sensitive_names_at_unapproved_paths(
+    client, store, auth_header
+):
+    original = _hybrid_result(available=True)
+    original["unapproved"] = {
+        "source_keyframe_ids": ["frame-000"],
+        "artifact_key": "harmless-placeholder",
+        "input_tokens": 12,
+        "output_tokens": 7,
+        "credential_password": "placeholder-value",
+    }
+    task_id = _complete_result(store, original)
+
+    data = _poll(client, auth_header, task_id).json()["data"]
+
+    assert data["unapproved"] == {
+        "source_keyframe_ids": "***",
+        "artifact_key": "***",
+        "input_tokens": "***",
+        "output_tokens": "***",
+        "credential_password": "***",
     }
 
 
