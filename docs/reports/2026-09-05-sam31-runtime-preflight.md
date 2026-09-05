@@ -69,10 +69,20 @@ Source SHA-256 is
 This demonstrates actual checkpoint inference and artifact generation; it is
 not production-adapter acceptance because of the diagnostic overrides and
 incomplete sampling. The production adapter now passes `use_fa3=False` and the
-sampled-frame count to the pinned builder/tracker boundary. A fresh immutable-wheel
-real-GPU run with all 137 original index/PTS mappings remains controller-owned and
-has not yet been accepted. The formal corrected run, memory
-stability checks, and five-demo acceptance gates remain required.
+sampled-frame count to the pinned builder/tracker boundary.
+
+A fresh immutable wheel built from `d6692fa` (wheel SHA-256
+`96f00cb72fdd71c2a19cb66a90cd61f63bfd4ffcb68e8308ba30191a32361ff2`)
+then passed the corrected real-GPU preflight with both diagnostic overrides
+disabled. It processed all 137 source frames with the exact original timeline,
+produced 137 observations from one track and two prompts, and successfully
+published and digest-checked the artifact through cache reload. Runtime was
+56.921 seconds and peak Torch allocation was 16,419,964,928 bytes. GPUs 0–2
+remained at 1 MiB, GPU 3 reached 17,246 MiB during inference, and all four
+returned to 1 MiB after provider close. The preflight cache was fresh and
+isolated from the earlier 92-frame diagnostic. This accepts the bounded runtime
+remediation; whole-pipeline Task 14/15 memory-stability and five-demo gates remain
+pending.
 
 Sources: [ModelScope model](https://www.modelscope.cn/models/facebook/sam3.1),
 [ModelScope file metadata](https://www.modelscope.cn/api/v1/models/facebook/sam3.1/repo/files?Revision=616acbee0b9ed4177f1f389e3c13594a0a1f6398&Recursive=true),

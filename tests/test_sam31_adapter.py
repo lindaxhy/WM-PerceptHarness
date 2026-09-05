@@ -828,6 +828,20 @@ def test_adapter_rejects_invalid_or_duplicate_indices(
     assert predictor.requests[-1]["type"] == "close_session"
 
 
+def test_adapter_rejects_out_of_range_observation_before_publication(
+    tmp_path: Path, fake_torch: SimpleNamespace
+) -> None:
+    request = make_request(tmp_path, entities=(make_request(tmp_path).entities[0],))
+    predictor = PredictorDouble(lambda *_: [frame_output(request.frame_count)])
+    provider = make_provider(predictor, fake_torch, MaterializerDouble())
+
+    with pytest.raises(CvProviderError, match="^SAM3.1 CV evidence inference failed$"):
+        provider.analyze(request, tmp_path / "staging")
+
+    assert predictor.requests[-1]["type"] == "close_session"
+    assert not (tmp_path / "staging" / "masks").exists()
+
+
 def test_adapter_rejects_unstable_local_to_source_mapping(
     tmp_path: Path, fake_torch: SimpleNamespace
 ) -> None:
@@ -863,15 +877,44 @@ def test_adapter_rejects_undeclared_files_in_numbered_frame_directory(
 
 
 @pytest.mark.parametrize("frame_count", [1, 5, 32])
-def test_adapter_uses_sample_count_for_one_uninterrupted_stream_per_prompt(
+def test_adapter_matches_pinned_tracker_and_detector_propagation_bounds(
     tmp_path: Path, fake_torch: SimpleNamespace, frame_count: int
 ) -> None:
+    class PinnedBoundaryPredictor(PredictorDouble):
+        detector_batch_size = 16
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.detector_chunks: list[tuple[tuple[int, ...], ...]] = []
+
+        def handle_stream_request(self, stream_request: dict[str, Any]):
+            self.stream_requests.append(dict(stream_request))
+            session_number = int(stream_request["session_id"].rsplit("-", 1)[1])
+            num_frames = len(self.resource_files[session_number])
+            start = stream_request["start_frame_index"]
+            count = stream_request["max_frame_num_to_track"]
+            tracker_end = min(start + count, num_frames - 1)
+            detector_valid_end = start + count
+            chunks: list[tuple[int, ...]] = []
+            for chunk_start in range(start, tracker_end + 1, self.detector_batch_size):
+                chunk_end = min(
+                    chunk_start + self.detector_batch_size, detector_valid_end
+                )
+                chunks.append(tuple(range(chunk_start, chunk_end)))
+            self.detector_chunks.append(tuple(chunks))
+            consumed = tuple(index for chunk in chunks for index in chunk)
+            expected = tuple(range(start, tracker_end + 1))
+            if consumed != expected:
+                raise RuntimeError("empty final feature batch")
+            for index in consumed:
+                yield frame_output(index)
+
     request = make_request(
         tmp_path,
         duration_seconds=max(0.001, (frame_count - 1) / 30),
         timestamps=tuple(index / 30 for index in range(frame_count)),
     )
-    predictor = PredictorDouble()
+    predictor = PinnedBoundaryPredictor()
     materializer = MaterializerDouble()
     provider = make_provider(
         predictor,
@@ -887,6 +930,10 @@ def test_adapter_uses_sample_count_for_one_uninterrupted_stream_per_prompt(
         for item in predictor.stream_requests
     ]
     assert per_prompt == [(0, frame_count), (0, frame_count)]
+    assert [
+        tuple(index for chunk in prompt_chunks for index in chunk)
+        for prompt_chunks in predictor.detector_chunks
+    ] == [tuple(range(frame_count)), tuple(range(frame_count))]
     assert materializer.calls[0][1] == tuple(range(frame_count))
     assert [item.frame_index for item in artifact.tracks[0].observations] == list(
         range(frame_count)
