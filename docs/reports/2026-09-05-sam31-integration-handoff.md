@@ -17,7 +17,13 @@ round at `220efa2`. Task 14 completed review and two fix rounds at `761c242`;
 its smoke tool validates local inputs, uses actual media duration and exact PTS,
 suppresses upstream stdout, and reloads published artifacts. Its deployment
 guide binds the compatible FFmpeg command for both smoke and workers. Task 15
-is next; real final-wheel GPU and five-demo acceptance remain unproven.
+is in progress; full five-demo acceptance remains unproven.
+The subsequent unmodified final-wheel GPU smoke passed on physical GPU 3:
+137 frames and observations, 55.689 seconds, digest-checked reload, and all
+GPUs idle after exit. The
+[in-progress acceptance report](2026-09-04-sam31-gpu-acceptance.md) records
+immutable identities. The isolated Doubao-only five-demo run has started;
+the full Task 15 acceptance remains incomplete.
 Task 13 adds verified projection,
 variant selection and bounded overlay access; its actual five-demo data and
 acceptance publication remain Task 15 work. Focused verification passed 152
