@@ -79,6 +79,37 @@ def _candidate() -> OcclusionCandidate:
     )
 
 
+def _second_candidate() -> OcclusionCandidate:
+    values = dict(
+        target_entity_id="pear",
+        target_track_id="pear_1",
+        possible_occluders=(
+            OccluderProvenance(
+                entity_id="board", track_id="board_1", supporting_frames=(6, 7)
+            ),
+        ),
+        possible_occluder_entity_ids=("board",),
+        allowed_start_times=(2.3,),
+        allowed_end_times=(2.8,),
+        last_visible_frame=5,
+        first_revisible_frame=8,
+        edge_departure=False,
+        low_confidence=False,
+        overlay_refs=("overlays/pear_1_000005.png",),
+        observation_support_complete=True,
+        relation_support_complete=True,
+        overlay_support_complete=True,
+        support_complete=True,
+        source_search_complete=True,
+    )
+    provisional = OcclusionCandidate.model_construct(
+        candidate_id="occ_000000000000_0002", **values
+    )
+    return OcclusionCandidate(
+        candidate_id=_candidate_identity(provisional, 2), **values
+    )
+
+
 def _positive_raw(candidate: OcclusionCandidate) -> dict[str, object]:
     return {
         "decisions": [
@@ -219,6 +250,31 @@ def test_occlusion_decisions_reject_injected_references_and_times(mutation, expe
     assert expected_code in {issue.code for issue in error.value.issues}
 
 
+def test_occlusion_decisions_preserve_trusted_candidate_order():
+    first = _candidate()
+    second = _second_candidate()
+    first_raw = _positive_raw(first)["decisions"][0]
+    second_raw = {
+        "candidate_id": second.candidate_id,
+        "classification": "unknown",
+        "target_entity_id": second.target_entity_id,
+        "occluder_entity_id": "unknown",
+        "events": [],
+        "visual_evidence": "visible evidence is insufficient",
+        "confidence": 0.2,
+    }
+    parsed = OcclusionDecisionSet.model_validate(
+        {"decisions": [second_raw, first_raw]}
+    )
+
+    with pytest.raises(TemporalValidationError) as error:
+        validate_occlusion_decisions(parsed, (first, second), duration=3.0)
+
+    assert "OCCLUSION_CANDIDATE_ORDER" in {
+        issue.code for issue in error.value.issues
+    }
+
+
 @pytest.mark.parametrize("classification", ["out_of_frame", "detector_loss", "unknown"])
 def test_non_occlusion_classifications_cannot_emit_positive_events(classification):
     candidate = _candidate()
@@ -353,6 +409,8 @@ def test_occlusion_prompt_rejects_unvalidated_summary_and_entity_mappings():
         json.dumps({"mask": [[1, 0], [0, 1]]}),
         "/tmp/private.npy",
         "masks/private.npz",
+        "The mask is private.npy and shows the target.",
+        "mask pixels:\n1,0\n0,1",
     ],
 )
 def test_schema_rejects_mask_or_path_content_before_persistence(evidence):

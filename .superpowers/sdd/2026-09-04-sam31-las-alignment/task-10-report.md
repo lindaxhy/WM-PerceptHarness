@@ -124,3 +124,36 @@ Output:
 ```
 
 The warnings remain the existing Starlette/httpx and AnyIO deprecations.
+
+## Review Fix Round 2
+
+### Changes
+
+- Extended the closed `visual_evidence` grammar to reject raw-mask artifact filenames embedded anywhere in prose, not only at the end of the field.
+- Added recognition and rejection of labeled binary CSV mask matrices while leaving ordinary natural-language evidence unchanged.
+- Added an explicit two-candidate regression that reverses otherwise valid decisions and asserts the closed `OCCLUSION_CANDIDATE_ORDER` code.
+
+### RED Evidence
+
+```text
+.venv/bin/python -m pytest tests/test_occlusion_semantics.py -k 'preserve_trusted_candidate_order or mask_or_path' -q
+2 failed, 4 passed, 20 deselected
+```
+
+The failures were the embedded `private.npy` sentence and `mask pixels:\n1,0\n0,1`; both previously passed the sanitizer. The candidate-order case already exercised the intended validator branch.
+
+### GREEN Evidence
+
+```text
+.venv/bin/python -m pytest tests/test_occlusion_semantics.py -q
+26 passed in 0.12s
+```
+
+Full suite:
+
+```text
+.venv/bin/python -m pytest -q
+1459 passed, 2 warnings in 23.77s
+```
+
+The warnings remain the existing Starlette/httpx and AnyIO deprecations.

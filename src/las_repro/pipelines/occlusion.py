@@ -86,6 +86,27 @@ class OcclusionDecisionSet(StrictModel):
 
 _PROHIBITED_EVIDENCE_STRUCTURE = re.compile(r"[{}\[\]\\/]")
 _RAW_MASK_SUFFIXES = (".mask", ".npy", ".npz")
+_RAW_MASK_FILENAME = re.compile(
+    r"(?i)(?<![a-z0-9_.-])[a-z0-9_.-]+\.(?:mask|npy|npz)(?![a-z0-9_])"
+)
+_BINARY_MASK_ROW = re.compile(r"\s*[01](?:\s*,\s*[01])+\s*")
+
+
+def _has_prohibited_evidence_content(value: str) -> bool:
+    if (
+        _PROHIBITED_EVIDENCE_STRUCTURE.search(value)
+        or _RAW_MASK_FILENAME.search(value)
+        or value.casefold().rstrip().endswith(_RAW_MASK_SUFFIXES)
+        or any(
+            ord(character) < 32 and character not in "\t\n\r"
+            for character in value
+        )
+    ):
+        return True
+    lines = value.splitlines()
+    return "mask" in value.casefold() and sum(
+        _BINARY_MASK_ROW.fullmatch(line) is not None for line in lines
+    ) >= 2
 
 
 def validate_occlusion_decisions(
@@ -126,13 +147,7 @@ def validate_occlusion_decisions(
             issues.append(TemporalIssue("OCCLUSION_TARGET_MISMATCH", path + ("target_entity_id",), "decision target must match its candidate"))
         if decision.occluder_entity_id != "unknown" and decision.occluder_entity_id not in candidate.possible_occluder_entity_ids:
             issues.append(TemporalIssue("OCCLUSION_OCCLUDER_NOT_PROPOSED", path + ("occluder_entity_id",), "occluder must be proposed by trusted evidence or unknown"))
-        if (
-            _PROHIBITED_EVIDENCE_STRUCTURE.search(decision.visual_evidence)
-            or decision.visual_evidence.casefold().rstrip().endswith(
-                _RAW_MASK_SUFFIXES
-            )
-            or any(ord(character) < 32 and character not in "\t\n\r" for character in decision.visual_evidence)
-        ):
+        if _has_prohibited_evidence_content(decision.visual_evidence):
             issues.append(
                 TemporalIssue(
                     "OCCLUSION_EVIDENCE_PROHIBITED_CONTENT",
