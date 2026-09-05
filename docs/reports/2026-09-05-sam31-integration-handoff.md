@@ -13,7 +13,12 @@ The original numbered sections below preserve the Tasks 1–9 checkpoint. The
 continuation has completed Tasks 10 and 11 with independent review, plus the
 Doubao backend and SAM runtime compatibility remediation. Task 12 completed its
 review/fix loop at `0a66c06`; Task 13 completed independent review and its fix
-round at `220efa2`. Tasks 14–15 remain pending. Task 13 adds verified projection,
+round at `220efa2`. Task 14 completed review and two fix rounds at `761c242`;
+its smoke tool validates local inputs, uses actual media duration and exact PTS,
+suppresses upstream stdout, and reloads published artifacts. Its deployment
+guide binds the compatible FFmpeg command for both smoke and workers. Task 15
+is next; real final-wheel GPU and five-demo acceptance remain unproven.
+Task 13 adds verified projection,
 variant selection and bounded overlay access; its actual five-demo data and
 acceptance publication remain Task 15 work. Focused verification passed 152
 Python viewer/artifact tests, 19 Node model tests and 121 API/export/hybrid tests.
