@@ -43,7 +43,7 @@ export WHEELHOUSE=/srv/las/releases/wheelhouse
 export HARNESS_SOURCE=/srv/las/releases/wm-percept-harness
 python3.12 -m venv /srv/las/venvs/sam31
 /srv/las/venvs/sam31/bin/python -m pip install --no-index --find-links "$WHEELHOUSE" "$LAS_WHEEL"
-/srv/las/venvs/sam31/bin/python -m pip install --no-index --find-links "$WHEELHOUSE" 'torch>=2.7' numpy==1.26.4 ftfy==6.1.1 iopath==0.1.10 pycocotools==2.0.11
+/srv/las/venvs/sam31/bin/python -m pip install --no-index --find-links "$WHEELHOUSE" 'torch>=2.7' numpy==1.26.4 ftfy==6.1.1 iopath==0.1.10 pycocotools==2.0.11 imageio-ffmpeg==0.6.0
 /srv/las/venvs/sam31/bin/python -m pip install --no-index --find-links "$WHEELHOUSE" --no-deps -e "$SAM_SOURCE"
 /srv/las/venvs/sam31/bin/python -m pip check
 ```
@@ -78,6 +78,9 @@ export LAS_CV_REPOSITORY_PATH="$SAM_SOURCE" LAS_CV_CHECKPOINT_PATH="$SAM_CHECKPO
 export LAS_CV_BPE_PATH="$SAM_SOURCE/sam3/assets/bpe_simple_vocab_16e6.txt.gz"
 export LAS_CV_CHECKPOINT_SHA256="$SAM_CHECKPOINT_SHA256"
 export LAS_CV_CACHE_ROOT=/srv/las/cv-cache
+export SAM_FFMPEG_BIN="$(/srv/las/venvs/sam31/bin/python -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')"
+test -x "$SAM_FFMPEG_BIN"
+"$SAM_FFMPEG_BIN" -version | head -1 | grep 'ffmpeg version 7.0.2-static'
 /srv/las/venvs/ark/bin/las-repro init-db
 ```
 
@@ -104,7 +107,7 @@ closes provider/store on failure. Stdout is one canonical sanitized JSON record.
 export SMOKE_VIDEO=/srv/las/media/acceptance/full_0024.mp4
 cd "$HARNESS_SOURCE"
 test -f "$HARNESS_SOURCE/scripts/sam31_smoke.py"
-PATH=/srv/las/venvs/sam31/bin:/srv/las/tools/imageio-ffmpeg/bin:/usr/bin \
+PATH="$(dirname "$SAM_FFMPEG_BIN"):/srv/las/venvs/sam31/bin:/usr/bin" \
   /srv/las/venvs/sam31/bin/python "$HARNESS_SOURCE/scripts/sam31_smoke.py" \
   --repository "$SAM_SOURCE" --checkpoint "$SAM_CHECKPOINT" \
   --checkpoint-sha256 "$SAM_CHECKPOINT_SHA256" --video "$SMOKE_VIDEO" \
@@ -128,7 +131,7 @@ commands deliberately fail earlier if the ARK secret or API-key hash is absent:
 nohup /srv/las/venvs/ark/bin/las-repro api > /srv/las/log/api.log 2>&1 & echo $! > /srv/las/run/api.pid
 nohup /srv/las/venvs/ark/bin/las-repro coordinator --worker-id coordinator-0 > /srv/las/log/coordinator.log 2>&1 & echo $! > /srv/las/run/coordinator.pid
 nohup /srv/las/venvs/ark/bin/las-repro ark-worker --model-name doubao-pro --worker-id ark-0 > /srv/las/log/ark-0.log 2>&1 & echo $! > /srv/las/run/ark-0.pid
-nohup /srv/las/venvs/sam31/bin/las-repro cv-worker --provider sam31 --device 3 --worker-id cv-sam31-3 > /srv/las/log/cv-sam31-3.log 2>&1 & echo $! > /srv/las/run/cv-sam31-3.pid
+PATH="$(dirname "$SAM_FFMPEG_BIN"):/srv/las/venvs/sam31/bin:/usr/bin" nohup /srv/las/venvs/sam31/bin/las-repro cv-worker --provider sam31 --device 3 --worker-id cv-sam31-3 > /srv/las/log/cv-sam31-3.log 2>&1 & echo $! > /srv/las/run/cv-sam31-3.pid
 ```
 
 Stop cleanly and verify GPU 3 is idle:

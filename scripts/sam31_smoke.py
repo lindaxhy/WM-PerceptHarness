@@ -8,8 +8,10 @@ import hashlib
 import json
 import os
 import stat
+import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +26,7 @@ from las_repro.cv.contracts import (
     SamplingPolicy,
 )
 from las_repro.cv.timeline import probe_frame_timeline
+from las_repro.media import probe_video
 
 PINNED_REPOSITORY_REVISION = "660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7"
 PHYSICAL_CV_DEVICE = 3
@@ -37,11 +40,13 @@ class SmokeDependencies:
         *,
         load_provider: Callable[..., Any],
         probe_timeline: Callable[[Path], FrameTimeline],
+        probe_duration: Callable[[Path], float],
         probe_gpu: Callable[[], tuple[str, int]],
         monotonic: Callable[[], float],
     ) -> None:
         self.load_provider = load_provider
         self.probe_timeline = probe_timeline
+        self.probe_duration = probe_duration
         self.probe_gpu = probe_gpu
         self.monotonic = monotonic
 
@@ -64,6 +69,7 @@ def _probe_gpu() -> tuple[str, int]:
 DEFAULT_DEPENDENCIES = SmokeDependencies(
     load_provider=_load_provider,
     probe_timeline=probe_frame_timeline,
+    probe_duration=lambda path: probe_video(path).duration,
     probe_gpu=_probe_gpu,
     monotonic=time.monotonic,
 )
@@ -85,6 +91,22 @@ def _parser() -> argparse.ArgumentParser:
 
 def _canonical_record(record: dict[str, object]) -> None:
     print(json.dumps(record, sort_keys=True, separators=(",", ":")))
+
+
+@contextmanager
+def _suppress_runtime_stdout() -> Iterator[None]:
+    """Discard Python, native-extension, and child-process stdout."""
+    with open(os.devnull, "w", encoding="utf-8") as sink:
+        saved_stdout = os.dup(1)
+        try:
+            sys.stdout.flush()
+            os.dup2(sink.fileno(), 1)
+            with redirect_stdout(sink):
+                yield
+        finally:
+            sink.flush()
+            os.dup2(saved_stdout, 1)
+            os.close(saved_stdout)
 
 
 def _regular_file(path: Path, category: str) -> tuple[Path, tuple[int, int]]:
@@ -145,10 +167,12 @@ def _sha256(path: Path, category: str) -> str:
 
 
 def _request(
-    video: Path, timeline: FrameTimeline, checkpoint_sha256: str
+    video: Path,
+    timeline: FrameTimeline,
+    duration_seconds: float,
+    checkpoint_sha256: str,
 ) -> CvEvidenceRequest:
-    duration = timeline.frames[-1].timestamp_seconds
-    if duration <= 0.0:
+    if duration_seconds <= 0.0:
         raise ValueError("video")
     return CvEvidenceRequest(
         schema_version="cv_request_v1",
@@ -156,7 +180,7 @@ def _request(
         model_identity="sam3.1",
         video_path=video,
         video_sha256=_sha256(video, "video"),
-        duration_seconds=duration,
+        duration_seconds=duration_seconds,
         frame_count=len(timeline.frames),
         checkpoint_sha256=checkpoint_sha256,
         timeline=timeline,
@@ -214,7 +238,8 @@ def _run(
         if logical_index != 0 or not gpu_name:
             raise RuntimeError
         timeline = dependencies.probe_timeline(video)
-        request = _request(video, timeline, expected_digest)
+        duration_seconds = dependencies.probe_duration(video)
+        request = _request(video, timeline, duration_seconds, expected_digest)
         provider = dependencies.load_provider(
             repository_path=repository,
             checkpoint_path=checkpoint,
@@ -263,7 +288,8 @@ def main(
 ) -> int:
     arguments = _parser().parse_args(argv)
     try:
-        record = _run(arguments, dependencies)
+        with _suppress_runtime_stdout():
+            record = _run(arguments, dependencies)
     except ValueError as error:
         category = str(error)
         if category not in {"artifact", "checkpoint", "device", "repository", "video"}:

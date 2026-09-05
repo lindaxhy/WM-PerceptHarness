@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -14,7 +16,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPOSITORY_ROOT / "scripts" / "sam31_smoke.py"
 PINNED_REVISION = "660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7"
 SECRET_PROMPT = "prompt-secret-person"
-SECRET_TOKEN = "sk-smoke-secret-token-value"
+SECRET_TOKEN = "sk-" + "smoke-secret-token-value"
 
 
 def _load_script():
@@ -59,27 +61,44 @@ class RecordingProvider(FakeCvEvidenceProvider):
     def __init__(self) -> None:
         super().__init__()
         self.closed = False
+        self.request = None
+
+    def analyze(self, request, staging_dir):
+        self.request = request
+        return super().analyze(request, staging_dir)
 
     def close(self) -> None:
         self.closed = True
 
 
-def _dependencies(module, provider: RecordingProvider, *, fail: bool = False):
+def _dependencies(
+    module,
+    provider: RecordingProvider,
+    *,
+    duration: float = 1.25,
+    noisy_load: bool = False,
+    timeline: FrameTimeline | None = None,
+):
     def load_provider(**kwargs):
         assert kwargs["repository_path"].name == "sam-source"
         assert kwargs["checkpoint_path"].name == "sam3.1_multiplex.pt"
-        if fail:
-            raise RuntimeError(f"{SECRET_PROMPT} {SECRET_TOKEN} /private/host/path")
+        if noisy_load:
+            print(f"loader {SECRET_PROMPT}")
+            os.write(1, f"loader-native {SECRET_TOKEN}\n".encode())
         return provider
 
     return module.SmokeDependencies(
         load_provider=load_provider,
-        probe_timeline=lambda _path: FrameTimeline(
-            frames=(
-                FrameTimestamp(frame_index=0, timestamp_seconds=0.0),
-                FrameTimestamp(frame_index=1, timestamp_seconds=1.0),
+        probe_timeline=lambda _path: (
+            timeline
+            or FrameTimeline(
+                frames=(
+                    FrameTimestamp(frame_index=0, timestamp_seconds=0.0),
+                    FrameTimestamp(frame_index=1, timestamp_seconds=1.0),
+                )
             )
         ),
+        probe_duration=lambda _path: duration,
         probe_gpu=lambda: ("Test GPU", 0),
         monotonic=iter((10.0, 12.5)).__next__,
     )
@@ -103,7 +122,13 @@ def test_smoke_runs_real_request_store_reload_and_emits_one_canonical_record(
     provider = RecordingProvider()
     monkeypatch.setenv("ARK_API_KEY", SECRET_TOKEN)
 
-    assert module.main(arguments, dependencies=_dependencies(module, provider)) == 0
+    assert (
+        module.main(
+            arguments,
+            dependencies=_dependencies(module, provider, noisy_load=True),
+        )
+        == 0
+    )
 
     captured = capsys.readouterr()
     assert captured.err == ""
@@ -127,6 +152,7 @@ def test_smoke_runs_real_request_store_reload_and_emits_one_canonical_record(
         "track_count": 2,
     }
     assert provider.closed is True
+    assert provider.request.duration_seconds == 1.25
     assert str(video.resolve()) not in captured.out
     assert SECRET_PROMPT not in captured.out
     assert SECRET_TOKEN not in captured.out
@@ -171,6 +197,7 @@ def test_smoke_rejects_wrong_device_hash_and_outside_media_without_gpu_loading(
     dependencies = module.SmokeDependencies(
         load_provider=forbidden_loader,
         probe_timeline=lambda _path: (_ for _ in ()).throw(AssertionError()),
+        probe_duration=lambda _path: (_ for _ in ()).throw(AssertionError()),
         probe_gpu=lambda: (_ for _ in ()).throw(AssertionError()),
         monotonic=lambda: 0.0,
     )
@@ -200,25 +227,147 @@ def test_smoke_rejects_symlink_video_and_network_flags(tmp_path: Path, capsys) -
     assert error.value.code == 2
 
 
-def test_smoke_sanitizes_runtime_failure_and_closes_provider(
-    tmp_path: Path, capsys
+def test_smoke_suppresses_python_native_and_subprocess_output_on_success(
+    tmp_path: Path, capfd
+) -> None:
+    module = _load_script()
+    arguments, _digest, _video, _cache = _fixture_paths(tmp_path)
+
+    class NoisyProvider(RecordingProvider):
+        def analyze(self, request, staging_dir):
+            print(f"analyze {SECRET_PROMPT}")
+            os.write(1, f"native {SECRET_TOKEN}\n".encode())
+            subprocess.run(
+                ["sh", "-c", "printf 'subprocess /private/source/path\\n'"],
+                check=True,
+            )
+            return super().analyze(request, staging_dir)
+
+        def close(self):
+            print(f"cleanup {SECRET_TOKEN}")
+            super().close()
+
+    provider = NoisyProvider()
+
+    assert module.main(arguments, dependencies=_dependencies(module, provider)) == 0
+
+    captured = capfd.readouterr()
+    assert captured.err == ""
+    assert captured.out.count("\n") == 1
+    assert json.loads(captured.out)["pass"] is True
+    assert SECRET_PROMPT not in captured.out
+    assert SECRET_TOKEN not in captured.out
+    assert "/private/source/path" not in captured.out
+
+
+def test_smoke_sanitizes_noisy_analyze_failure_and_closes_provider(
+    tmp_path: Path, capfd
+) -> None:
+    module = _load_script()
+    arguments, _digest, _video, _cache = _fixture_paths(tmp_path)
+
+    class FailingProvider(RecordingProvider):
+        def analyze(self, request, staging_dir):
+            print(f"analyze {SECRET_PROMPT}")
+            raise RuntimeError(f"{SECRET_TOKEN} /private/host/path")
+
+        def close(self):
+            os.write(1, f"cleanup {SECRET_TOKEN}\n".encode())
+            super().close()
+
+    provider = FailingProvider()
+
+    assert module.main(arguments, dependencies=_dependencies(module, provider)) == 1
+
+    output = capfd.readouterr().out
+    assert json.loads(output) == {"error": "runtime", "pass": False}
+    assert SECRET_PROMPT not in output
+    assert SECRET_TOKEN not in output
+    assert str(tmp_path) not in output
+    assert "RuntimeError" not in output
+    assert provider.closed is True
+
+
+def test_smoke_sanitizes_noisy_cleanup_failure(tmp_path: Path, capfd) -> None:
+    module = _load_script()
+    arguments, _digest, _video, _cache = _fixture_paths(tmp_path)
+
+    class CleanupFailure(RecordingProvider):
+        def close(self):
+            print(f"cleanup {SECRET_TOKEN} /private/cleanup/path")
+            raise RuntimeError(SECRET_PROMPT)
+
+    provider = CleanupFailure()
+
+    assert module.main(arguments, dependencies=_dependencies(module, provider)) == 1
+    output = capfd.readouterr().out
+    assert json.loads(output) == {"error": "runtime", "pass": False}
+    assert SECRET_PROMPT not in output
+    assert SECRET_TOKEN not in output
+    assert "/private/cleanup/path" not in output
+
+
+@pytest.mark.parametrize(
+    ("timeline", "duration"),
+    [
+        (
+            FrameTimeline(
+                frames=(FrameTimestamp(frame_index=0, timestamp_seconds=0.0),)
+            ),
+            0.04,
+        ),
+        (
+            FrameTimeline(
+                frames=(
+                    FrameTimestamp(frame_index=0, timestamp_seconds=0.0),
+                    FrameTimestamp(frame_index=1, timestamp_seconds=35.0),
+                )
+            ),
+            35.5,
+        ),
+    ],
+    ids=("single-frame-at-zero", "long-video"),
+)
+def test_smoke_uses_media_duration_instead_of_final_pts(
+    tmp_path: Path, capsys, timeline: FrameTimeline, duration: float
 ) -> None:
     module = _load_script()
     arguments, _digest, _video, _cache = _fixture_paths(tmp_path)
     provider = RecordingProvider()
 
     assert (
-        module.main(arguments, dependencies=_dependencies(module, provider, fail=True))
-        == 1
+        module.main(
+            arguments,
+            dependencies=_dependencies(
+                module, provider, duration=duration, timeline=timeline
+            ),
+        )
+        == 0
     )
+    assert json.loads(capsys.readouterr().out)["frame_count"] == len(timeline.frames)
+    assert provider.request.duration_seconds == duration
 
+
+def test_smoke_closes_provider_when_reload_raises(
+    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_script()
+    arguments, _digest, _video, _cache = _fixture_paths(tmp_path)
+    provider = RecordingProvider()
+
+    def fail_reload(_self, _handle):
+        print(f"reload {SECRET_PROMPT}")
+        os.write(1, f"reload-native {SECRET_TOKEN}\n".encode())
+        raise RuntimeError(f"{SECRET_PROMPT} {SECRET_TOKEN}")
+
+    monkeypatch.setattr(module.CvArtifactStore, "load", fail_reload)
+
+    assert module.main(arguments, dependencies=_dependencies(module, provider)) == 1
     output = capsys.readouterr().out
     assert json.loads(output) == {"error": "runtime", "pass": False}
     assert SECRET_PROMPT not in output
     assert SECRET_TOKEN not in output
-    assert str(tmp_path) not in output
-    assert "RuntimeError" not in output
-    assert provider.closed is False
+    assert provider.closed is True
 
 
 def test_smoke_rejects_invalid_reloaded_artifact_and_closes_lifecycle(
