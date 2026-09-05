@@ -1,0 +1,10 @@
+{
+  "schema_version": "las_alignment_mapping_v1",
+  "policy": "Frozen taxonomy mapping; exact normalized labels only; unknown labels are not comparable. No fuzzy or sample-specific aliases.",
+  "action": {"move":"motion","transport":"motion","lift":"motion","place":"motion","push":"motion","pull":"motion","rotate":"motion","autonomous motion":"motion","approach":"reach","touch":"contact","pick":"grasp"},
+  "actor": {"left gripper":"left hand","right gripper":"right hand","both grippers":"both hands"},
+  "target": {},
+  "state": {},
+  "result": {},
+  "unknown_labels": ["unknown","none",""]
+}
