@@ -24,6 +24,7 @@ from ..pipelines.base import PipelineContext, SafePipelineError
 from ..store import SQLiteTaskStore
 from ..workers import InferenceJobFailed, JobWaitTimeout, wait_for_jobs
 from .output_validation import DEFAULT_OUTPUT_SCHEMAS, NormalizedSchemaOutput
+from .occlusion import OcclusionDecisionSet
 from .scene_semantics import (
     SceneSemantics,
     trusted_target_skeleton,
@@ -56,6 +57,7 @@ _PROMPT_FILES = {
     "embodied_pass_b": "embodied_pass_b.txt",
     "embodied_enrichment": "embodied_enrichment.txt",
     "scene_semantics": "scene_semantics.txt",
+    "occlusion_semantics": "occlusion_semantics.txt",
 }
 _MARKER = re.compile(r"\{\{(?P<name>[A-Z][A-Z0-9_]*)\}\}")
 _MAX_BOUNDARY_SLOTS_PER_ACTION = 10_000
@@ -273,7 +275,7 @@ class EmbodiedActionPipeline:
                 affinity_anchor=pass_a_job,
                 metadata=metadata,
             )
-        except TemporalValidationError:
+        except (TemporalValidationError, EmbodiedActionPipelineError):
             scene_data = unavailable_scene_semantics()
             warnings.append({"code": "SCENE_SEMANTICS_UNAVAILABLE"})
         scene = SceneSemantics.model_validate(scene_data)
@@ -374,6 +376,61 @@ class EmbodiedActionPipeline:
             repair = {"issue_codes": list(issue_codes)}
 
         raise AssertionError("embodied validation repair loop did not terminate")
+
+    def adjudicate_occlusions(
+        self,
+        task: TaskRecord,
+        context: PipelineContext,
+        media_path: Path,
+        span: TimeSpan,
+        fps: float,
+        *,
+        candidates: Sequence[Any],
+        normalized_entities: Any,
+        evidence_summary: Mapping[str, Any] | BaseModel,
+        frame_pts: Sequence[float],
+        affinity_anchor: InferenceJob | None,
+        metadata: VideoMetadata,
+    ) -> tuple[OcclusionDecisionSet, tuple[str, ...]]:
+        """Run the isolated occlusion branch, degrading it conservatively."""
+        candidate_tuple = tuple(candidates)
+        if not candidate_tuple:
+            return OcclusionDecisionSet(decisions=()), ("initial",)
+        try:
+            data, completed, _ = self._run_validated_stage(
+                task,
+                context,
+                media_path,
+                span,
+                fps,
+                stage="occlusion_semantics",
+                schema_name="OcclusionDecisionSet",
+                schema_context={
+                    "duration": span.end,
+                    "candidates": [
+                        candidate.model_dump(mode="json")
+                        for candidate in candidate_tuple
+                    ],
+                },
+                render_prompt=lambda repair: self._renderer.occlusion_semantics(
+                    candidate_tuple,
+                    normalized_entities,
+                    evidence_summary,
+                    video_duration=span.end,
+                    frame_pts=frame_pts,
+                    repair=repair,
+                ),
+                affinity_anchor=affinity_anchor,
+                metadata=metadata,
+            )
+        except TemporalValidationError:
+            return OcclusionDecisionSet(decisions=()), ("initial", "repair")
+        history = (
+            ("initial", "repair")
+            if getattr(completed, "ordinal", 0) == 1
+            else ("initial",)
+        )
+        return OcclusionDecisionSet.model_validate(data), history
 
 
 class PromptRenderer:
@@ -563,6 +620,70 @@ class PromptRenderer:
             },
         )
 
+    def occlusion_semantics(
+        self,
+        candidates: Sequence[Any],
+        entities: Any,
+        evidence_summary: Mapping[str, Any] | BaseModel,
+        *,
+        video_duration: Any,
+        frame_pts: Sequence[float],
+        repair: Mapping[str, Any] | None = None,
+    ) -> str:
+        """Render trusted occlusion skeletons and bounded CV evidence as data."""
+        if isinstance(candidates, (str, bytes, bytearray)) or not isinstance(
+            candidates, Sequence
+        ):
+            raise PromptRenderError("occlusion candidates must be a sequence")
+        candidate_data = []
+        for candidate in candidates:
+            prompt_record = getattr(candidate, "prompt_record", None)
+            if not callable(prompt_record):
+                raise PromptRenderError("occlusion candidates must be trusted records")
+            candidate_data.append(prompt_record())
+        entity_values = getattr(entities, "entities", entities)
+        if isinstance(entity_values, (str, bytes, bytearray)) or not isinstance(
+            entity_values, Sequence
+        ):
+            raise PromptRenderError("entities must be a sequence of JSON records")
+        entity_data = [
+            item.model_dump(mode="json") if isinstance(item, BaseModel) else item
+            for item in entity_values
+        ]
+        if any(not isinstance(item, Mapping) for item in entity_data):
+            raise PromptRenderError("entities must be JSON records")
+        summary_data = (
+            evidence_summary.prompt_record()
+            if callable(getattr(evidence_summary, "prompt_record", None))
+            else evidence_summary.model_dump(mode="json")
+            if isinstance(evidence_summary, BaseModel)
+            else evidence_summary
+        )
+        if not isinstance(summary_data, Mapping):
+            raise PromptRenderError("evidence summary must be a JSON record")
+        if isinstance(frame_pts, (str, bytes, bytearray)) or not isinstance(
+            frame_pts, Sequence
+        ):
+            raise PromptRenderError("frame_pts must be a sequence")
+        pts = list(frame_pts)
+        if any(not _finite_nonnegative(value) for value in pts) or pts != sorted(
+            set(pts)
+        ):
+            raise PromptRenderError("frame_pts must be unique ordered finite timestamps")
+        if repair is not None and set(repair) != {"issue_codes"}:
+            raise PromptRenderError("occlusion repair data may contain only issue codes")
+        return self.render(
+            "occlusion_semantics",
+            {
+                "VIDEO_DURATION_SECONDS_JSON": _prompt_video_duration(video_duration),
+                "FRAME_PTS_JSON": pts,
+                "OCCLUSION_CANDIDATES_JSON": candidate_data,
+                "NORMALIZED_ENTITIES_JSON": entity_data,
+                "CV_EVIDENCE_SUMMARY_JSON": summary_data,
+                "VALIDATION_REPAIR_JSON": repair,
+            },
+        )
+
 
 class EmbodiedActiveObjectsPipeline:
     """Run complete-video active-object inference with one schema repair."""
@@ -683,6 +804,15 @@ def _naming_hint_data(prompt_context: str | None) -> dict[str, str] | None:
 
 def _prompt_video_duration(value: Any) -> float:
     return _prompt_positive_finite(value, "video_duration")
+
+
+def _finite_nonnegative(value: Any) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, Real)
+        and math.isfinite(float(value))
+        and float(value) >= 0
+    )
 
 
 def _prompt_positive_finite(value: Any, name: str) -> float:
@@ -1194,6 +1324,7 @@ def _stage_label(stage: str) -> str:
             "embodied_pass_b": "embodied pass B",
             "embodied_enrichment": "embodied enrichment",
             "scene_semantics": "scene semantics",
+            "occlusion_semantics": "occlusion semantics",
         }[stage]
     except KeyError:
         raise EmbodiedActionPipelineError("embodied stage is invalid") from None

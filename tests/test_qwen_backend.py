@@ -1054,6 +1054,12 @@ def test_general_summary_schema_gate_canonicalizes_and_checks_exact_timeline() -
     }
 
 
+def test_occlusion_semantics_has_a_finite_generation_budget() -> None:
+    from las_repro.models.qwen3_vl import STAGE_MAX_NEW_TOKENS
+
+    assert STAGE_MAX_NEW_TOKENS["occlusion_semantics"] == 4_096
+
+
 @pytest.mark.parametrize(
     ("reserved", "threshold", "expected_clears"),
     [(99, 100, 0), (100, 100, 1)],

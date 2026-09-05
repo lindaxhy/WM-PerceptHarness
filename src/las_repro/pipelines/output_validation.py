@@ -10,6 +10,8 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
+from ..cv.summary import OcclusionCandidate
+from .occlusion import OcclusionDecisionSet, validate_occlusion_decisions
 from .scene_semantics import SceneSemantics, validate_scene_semantics
 from .validators import (
     BoundaryPlan,
@@ -135,6 +137,20 @@ _SCENE_TEMPORAL_CODES = (
     "SCENE_EVENT_OUTSIDE_VIDEO",
     "SCENE_EVENT_START_NOT_ORDERED",
     "SCENE_EVENT_UNKNOWN_OBJECT",
+)
+_OCCLUSION_TEMPORAL_CODES = (
+    "OCCLUSION_DECISION_CARDINALITY",
+    "OCCLUSION_CANDIDATE_ORDER",
+    "OCCLUSION_TARGET_MISMATCH",
+    "OCCLUSION_OCCLUDER_NOT_PROPOSED",
+    "NON_OCCLUSION_HAS_EVENTS",
+    "OCCLUSION_EVENTS_EMPTY",
+    "OCCLUSION_EVENTS_NOT_ORDERED",
+    "OCCLUSION_START_NOT_OBSERVED",
+    "OCCLUSION_END_NOT_OBSERVED",
+    "OCCLUSION_EVENT_NONPOSITIVE_DURATION",
+    "OCCLUSION_EVENT_OUTSIDE_VIDEO",
+    "OCCLUSION_EVENT_OVERLAP",
 )
 _ENRICHMENT_ENUM_FIELDS = (
     "actor",
@@ -973,6 +989,40 @@ def _validate_scene_semantics_output(
     return scene.model_dump(mode="json")
 
 
+def _validate_occlusion_decision_output(
+    result: Mapping[str, Any], validation_context: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    context = _exact_context(validation_context, {"duration", "candidates"})
+    duration = _finite_real(context["duration"], positive=True)
+    raw_candidates = context["candidates"]
+    if type(raw_candidates) is not list:
+        raise ValueError("OcclusionDecisionSet validation context is invalid")
+    try:
+        candidates = tuple(
+            OcclusionCandidate.model_validate(candidate)
+            for candidate in raw_candidates
+        )
+    except (ValidationError, TypeError, ValueError, OverflowError, RecursionError):
+        raise ValueError("OcclusionDecisionSet validation context is invalid") from None
+    try:
+        decisions = _model_from_json(OcclusionDecisionSet, result)
+    except ValidationError as error:
+        raise DeclaredSchemaOutputError(
+            _pydantic_issue_codes(error, "OCCLUSION_DECISION_SET")
+        ) from None
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        raise DeclaredSchemaOutputError(
+            ("OCCLUSION_DECISION_SET_SCHEMA_INVALID",)
+        ) from None
+    try:
+        validate_occlusion_decisions(decisions, candidates, duration=duration)
+    except TemporalValidationError as error:
+        raise DeclaredSchemaOutputError(
+            tuple(dict.fromkeys(issue.code for issue in error.issues))
+        ) from None
+    return decisions.model_dump(mode="json")
+
+
 def _enrichment_validation_context(
     validation_context: Mapping[str, Any] | None,
 ) -> Mapping[str, Any]:
@@ -1226,6 +1276,13 @@ DEFAULT_OUTPUT_SCHEMAS.register(
     _validate_scene_semantics_output,
     allowed_issue_codes=_schema_codes("SCENE_SEMANTICS") + _SCENE_TEMPORAL_CODES,
     generic_issue_code="SCENE_SEMANTICS_SCHEMA_INVALID",
+)
+DEFAULT_OUTPUT_SCHEMAS.register(
+    "OcclusionDecisionSet",
+    _validate_occlusion_decision_output,
+    allowed_issue_codes=_schema_codes("OCCLUSION_DECISION_SET")
+    + _OCCLUSION_TEMPORAL_CODES,
+    generic_issue_code="OCCLUSION_DECISION_SET_SCHEMA_INVALID",
 )
 DEFAULT_OUTPUT_SCHEMAS.register(
     "general_segment",

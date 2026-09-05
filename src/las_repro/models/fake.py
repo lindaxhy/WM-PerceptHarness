@@ -36,6 +36,7 @@ class FakeVideoModel(VideoModel):
             "embodied_pass_b",
             "embodied_enrichment",
             "scene_semantics",
+            "occlusion_semantics",
             "general_summary",
         }
     )
@@ -162,6 +163,21 @@ class FakeVideoModel(VideoModel):
                     }
                 ],
             }
+        if request.stage == "occlusion_semantics":
+            return {
+                "decisions": [
+                    {
+                        "candidate_id": candidate["candidate_id"],
+                        "classification": "unknown",
+                        "target_entity_id": candidate["target_entity_id"],
+                        "occluder_entity_id": "unknown",
+                        "events": [],
+                        "visual_evidence": "visible evidence is insufficient",
+                        "confidence": 0.2,
+                    }
+                    for candidate in _occlusion_candidates(request.prompt)
+                ]
+            }
         if request.stage == "general_summary":
             return {
                 "summary": "deterministic video summary",
@@ -193,6 +209,19 @@ def _summary_timeline(request: ModelRequest) -> list[dict[str, Any]]:
     if isinstance(prompt, dict) and isinstance(prompt.get("timeline"), list):
         return prompt["timeline"]
     return [_general_event(request.span.start, request.span.end)]
+
+
+def _occlusion_candidates(prompt: str) -> list[Mapping[str, Any]]:
+    try:
+        section = prompt.split(
+            "[trusted occlusion candidate JSON data]\n", 1
+        )[1].split("\n\n", 1)[0]
+        value = json.loads(section.splitlines()[-1])
+    except (IndexError, TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, Mapping)]
 
 
 def _coarse_actions(start: float, end: float) -> list[dict[str, Any]]:
