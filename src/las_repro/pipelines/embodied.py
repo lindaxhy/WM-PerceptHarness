@@ -16,7 +16,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from ..cv.entities import normalize_entities
+from ..cv.entities import NormalizedEntities, normalize_entities
+from ..cv.summary import CvEvidenceSummary, OcclusionCandidate
 from ..domain import InferenceJob, InferenceJobSpec, TaskRecord
 from ..media import TimeSpan, VideoMetadata, probe_video
 from ..models.base import VideoSession
@@ -90,6 +91,15 @@ class ActiveObjectPipelineError(SafePipelineError):
 
 class EmbodiedActionPipelineError(SafePipelineError):
     """A stable execution failure in the 0805 action pipeline."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        repair_history: tuple[str, ...] = ("initial",),
+    ) -> None:
+        self.repair_history = repair_history
+        super().__init__(message)
 
 
 @dataclass(frozen=True)
@@ -275,7 +285,7 @@ class EmbodiedActionPipeline:
                 affinity_anchor=pass_a_job,
                 metadata=metadata,
             )
-        except (TemporalValidationError, EmbodiedActionPipelineError):
+        except TemporalValidationError:
             scene_data = unavailable_scene_semantics()
             warnings.append({"code": "SCENE_SEMANTICS_UNAVAILABLE"})
         scene = SceneSemantics.model_validate(scene_data)
@@ -350,17 +360,26 @@ class EmbodiedActionPipeline:
                 )
             except InferenceJobFailed:
                 raise EmbodiedActionPipelineError(
-                    f"{_stage_label(stage)} inference failed"
+                    f"{_stage_label(stage)} inference failed",
+                    repair_history=(
+                        ("initial", "repair") if ordinal else ("initial",)
+                    ),
                 ) from None
             except JobWaitTimeout:
                 raise EmbodiedActionPipelineError(
-                    f"{_stage_label(stage)} inference timed out"
+                    f"{_stage_label(stage)} inference timed out",
+                    repair_history=(
+                        ("initial", "repair") if ordinal else ("initial",)
+                    ),
                 ) from None
 
             completed = context.store.get_inference_job(job.job_id)
             if completed is None or completed.completed_by is None:
                 raise EmbodiedActionPipelineError(
-                    f"{_stage_label(stage)} completion is invalid"
+                    f"{_stage_label(stage)} completion is invalid",
+                    repair_history=(
+                        ("initial", "repair") if ordinal else ("initial",)
+                    ),
                 )
             if ordinal == 0:
                 first_job = completed
@@ -425,6 +444,8 @@ class EmbodiedActionPipeline:
             )
         except TemporalValidationError:
             return OcclusionDecisionSet(decisions=()), ("initial", "repair")
+        except EmbodiedActionPipelineError as error:
+            return OcclusionDecisionSet(decisions=()), error.repair_history
         history = (
             ("initial", "repair")
             if getattr(completed, "ordinal", 0) == 1
@@ -622,45 +643,37 @@ class PromptRenderer:
 
     def occlusion_semantics(
         self,
-        candidates: Sequence[Any],
-        entities: Any,
-        evidence_summary: Mapping[str, Any] | BaseModel,
+        candidates: tuple[OcclusionCandidate, ...],
+        entities: NormalizedEntities,
+        evidence_summary: CvEvidenceSummary,
         *,
         video_duration: Any,
         frame_pts: Sequence[float],
         repair: Mapping[str, Any] | None = None,
     ) -> str:
         """Render trusted occlusion skeletons and bounded CV evidence as data."""
-        if isinstance(candidates, (str, bytes, bytearray)) or not isinstance(
-            candidates, Sequence
+        if type(candidates) is not tuple or any(
+            type(candidate) is not OcclusionCandidate for candidate in candidates
         ):
-            raise PromptRenderError("occlusion candidates must be a sequence")
+            raise PromptRenderError("occlusion candidates must be trusted records")
         candidate_data = []
         for candidate in candidates:
             prompt_record = getattr(candidate, "prompt_record", None)
             if not callable(prompt_record):
                 raise PromptRenderError("occlusion candidates must be trusted records")
             candidate_data.append(prompt_record())
-        entity_values = getattr(entities, "entities", entities)
-        if isinstance(entity_values, (str, bytes, bytearray)) or not isinstance(
-            entity_values, Sequence
-        ):
-            raise PromptRenderError("entities must be a sequence of JSON records")
+        if type(entities) is not NormalizedEntities:
+            raise PromptRenderError("entities must be validated normalized entities")
+        entity_values = entities.entities
         entity_data = [
             item.model_dump(mode="json") if isinstance(item, BaseModel) else item
             for item in entity_values
         ]
         if any(not isinstance(item, Mapping) for item in entity_data):
             raise PromptRenderError("entities must be JSON records")
-        summary_data = (
-            evidence_summary.prompt_record()
-            if callable(getattr(evidence_summary, "prompt_record", None))
-            else evidence_summary.model_dump(mode="json")
-            if isinstance(evidence_summary, BaseModel)
-            else evidence_summary
-        )
-        if not isinstance(summary_data, Mapping):
-            raise PromptRenderError("evidence summary must be a JSON record")
+        if type(evidence_summary) is not CvEvidenceSummary:
+            raise PromptRenderError("evidence summary must be a bounded CV summary")
+        summary_data = evidence_summary.prompt_record()
         if isinstance(frame_pts, (str, bytes, bytearray)) or not isinstance(
             frame_pts, Sequence
         ):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from pathlib import PurePosixPath
@@ -83,6 +84,10 @@ class OcclusionDecisionSet(StrictModel):
     decisions: Annotated[tuple[OcclusionDecision, ...], Field(max_length=256)]
 
 
+_PROHIBITED_EVIDENCE_STRUCTURE = re.compile(r"[{}\[\]\\/]")
+_RAW_MASK_SUFFIXES = (".mask", ".npy", ".npz")
+
+
 def validate_occlusion_decisions(
     result: OcclusionDecisionSet,
     candidates: tuple[OcclusionCandidate, ...],
@@ -121,6 +126,20 @@ def validate_occlusion_decisions(
             issues.append(TemporalIssue("OCCLUSION_TARGET_MISMATCH", path + ("target_entity_id",), "decision target must match its candidate"))
         if decision.occluder_entity_id != "unknown" and decision.occluder_entity_id not in candidate.possible_occluder_entity_ids:
             issues.append(TemporalIssue("OCCLUSION_OCCLUDER_NOT_PROPOSED", path + ("occluder_entity_id",), "occluder must be proposed by trusted evidence or unknown"))
+        if (
+            _PROHIBITED_EVIDENCE_STRUCTURE.search(decision.visual_evidence)
+            or decision.visual_evidence.casefold().rstrip().endswith(
+                _RAW_MASK_SUFFIXES
+            )
+            or any(ord(character) < 32 and character not in "\t\n\r" for character in decision.visual_evidence)
+        ):
+            issues.append(
+                TemporalIssue(
+                    "OCCLUSION_EVIDENCE_PROHIBITED_CONTENT",
+                    path + ("visual_evidence",),
+                    "visual evidence must be plain text without serialized data or paths",
+                )
+            )
         if decision.classification is not OcclusionClassification.OCCLUSION:
             if decision.events:
                 issues.append(TemporalIssue("NON_OCCLUSION_HAS_EVENTS", path + ("events",), "non-occlusion decisions cannot emit positive events"))

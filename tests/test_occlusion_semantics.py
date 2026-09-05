@@ -3,16 +3,38 @@
 from __future__ import annotations
 
 import copy
+import json
+from pathlib import Path
 
 import pytest
 
+from las_repro.config import Settings
+from las_repro.cv.contracts import (
+    CvEvidenceArtifact,
+    CvTrack,
+    EntityPrompt,
+    EntityRole,
+    FrameTimeline,
+    FrameTimestamp,
+    TrackObservation,
+)
+from las_repro.cv.entities import NormalizedEntities
 from las_repro.cv.summary import (
+    CvEvidenceSummary,
     OccluderProvenance,
     OcclusionCandidate,
     _candidate_identity,
+    summarize_cv_evidence,
 )
-from las_repro.media import TimeSpan
-from las_repro.pipelines.embodied import EmbodiedActionPipeline, PromptRenderer
+from las_repro.domain import InferenceStatus
+from las_repro.media import MediaResolver, TimeSpan, VideoMetadata
+from las_repro.models.fake import FakeVideoModel
+from las_repro.pipelines.base import PipelineContext
+from las_repro.pipelines.embodied import (
+    EmbodiedActionPipeline,
+    PromptRenderer,
+    PromptRenderError,
+)
 from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
 from las_repro.pipelines.occlusion import (
     OcclusionDecisionSet,
@@ -20,6 +42,8 @@ from las_repro.pipelines.occlusion import (
     validate_occlusion_decisions,
 )
 from las_repro.pipelines.validators import TemporalValidationError
+from las_repro.store import SQLiteTaskStore
+from las_repro.workers import GPUWorker, JobWaitTimeout, wait_for_jobs
 
 
 def _candidate() -> OcclusionCandidate:
@@ -73,6 +97,99 @@ def _positive_raw(candidate: OcclusionCandidate) -> dict[str, object]:
     }
 
 
+def _trusted_prompt_inputs() -> tuple[NormalizedEntities, CvEvidenceSummary]:
+    entity = EntityPrompt(
+        entity_id="apple",
+        canonical_label="apple",
+        aliases=(),
+        role=EntityRole.MANIPULATED_OBJECT,
+    )
+    observation = TrackObservation(
+        frame_index=0,
+        timestamp_seconds=0.0,
+        bbox_xyxy=(0.2, 0.2, 0.4, 0.4),
+        mask_ref=None,
+        visible=True,
+        confidence=0.9,
+        area_fraction=0.04,
+        center_xy=(0.3, 0.3),
+    )
+    timeline = FrameTimeline(
+        frames=(FrameTimestamp(frame_index=0, timestamp_seconds=0.0),)
+    )
+    artifact = CvEvidenceArtifact(
+        schema_version="cv_evidence_v1",
+        status="available",
+        provider="fake",
+        model_identity="fake-sam31-v1",
+        video_sha256="a" * 64,
+        checkpoint_sha256="b" * 64,
+        processed_timeline=timeline,
+        entities=(entity,),
+        tracks=(CvTrack(track_id="apple_1", entity_id="apple", observations=(observation,)),),
+        files=(),
+        overlay_records=(),
+        warnings=(),
+    )
+    summary = summarize_cv_evidence(artifact, timeline=timeline)
+    return (
+        NormalizedEntities(entities=(entity,), omitted_count=0),
+        summary,
+    )
+
+
+def _occlusion_runtime(tmp_path: Path, model, *, timeout: bool = False):
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    video_path = allowed / "video.mp4"
+    video_path.write_bytes(b"deterministic silent visual fixture")
+    store = SQLiteTaskStore(tmp_path / "tasks.sqlite3")
+    store.initialize()
+    settings = Settings(
+        database_path=store.database_path,
+        work_root=tmp_path / "work",
+        allowed_media_roots=(allowed,),
+        lease_seconds=6,
+    )
+    task = store.create_task(
+        {
+            "video_url": str(video_path),
+            "task_template": "embodied_action_captioning",
+            "model_name": "qwen3-vl-8b-instruct",
+        }
+    )
+    worker = GPUWorker(store, model, "gpu-0", "cuda:0", lease_seconds=6.0)
+
+    def wait(store_arg, task_id, job_ids, requested_timeout):
+        if timeout:
+            raise JobWaitTimeout("private timeout detail")
+        while worker.run_once():
+            pass
+        return wait_for_jobs(
+            store_arg,
+            task_id,
+            job_ids,
+            0.0,
+            monotonic=lambda: 0.0,
+            sleep=lambda _: pytest.fail("terminal job must not sleep"),
+        )
+
+    context = PipelineContext(
+        store=store,
+        media_resolver=MediaResolver(settings),
+        settings=settings,
+        task_dir=settings.work_root / task.task_id,
+        media_path=video_path.resolve(),
+    )
+    return (
+        EmbodiedActionPipeline(wait_jobs=wait, wait_timeout=0.75),
+        task,
+        context,
+        video_path.resolve(),
+        VideoMetadata(duration=3.0, width=320, height=180, fps=10.0),
+    )
+
+
 def test_occlusion_decision_must_use_candidate_and_observed_boundaries():
     candidate = _candidate()
     parsed = OcclusionDecisionSet.model_validate(_positive_raw(candidate))
@@ -117,6 +234,41 @@ def test_non_occlusion_classifications_cannot_emit_positive_events(classificatio
     }
 
 
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    [
+        (lambda events: events.clear(), "OCCLUSION_EVENTS_EMPTY"),
+        (
+            lambda events: events.extend(
+                [
+                    {"event_type": "occluded", "start": 1.2, "end": 2.2},
+                    {"event_type": "occluded", "start": 1.0, "end": 2.0},
+                ]
+            ),
+            "OCCLUSION_EVENTS_NOT_ORDERED",
+        ),
+        (
+            lambda events: events.append(
+                {"event_type": "occluded", "start": 1.2, "end": 2.2}
+            ),
+            "OCCLUSION_EVENT_OVERLAP",
+        ),
+    ],
+)
+def test_positive_occlusion_requires_ordered_nonoverlapping_events(
+    mutation, expected_code
+):
+    candidate = _candidate()
+    raw = _positive_raw(candidate)
+    mutation(raw["decisions"][0]["events"])
+    parsed = OcclusionDecisionSet.model_validate(raw)
+
+    with pytest.raises(TemporalValidationError) as error:
+        validate_occlusion_decisions(parsed, (candidate,), duration=3.0)
+
+    assert expected_code in {issue.code for issue in error.value.issues}
+
+
 def test_projection_emits_only_positive_events_with_closed_provenance():
     candidate = _candidate()
     parsed = OcclusionDecisionSet.model_validate(_positive_raw(candidate))
@@ -157,10 +309,11 @@ def test_projection_emits_only_positive_events_with_closed_provenance():
 
 def test_occlusion_prompt_isolates_trusted_data_and_repair_codes():
     candidate = _candidate()
+    entities, summary = _trusted_prompt_inputs()
     prompt = PromptRenderer().occlusion_semantics(
         (candidate,),
-        [{"entity_id": "apple", "canonical_label": "apple", "aliases": [], "role": "manipulated_object"}],
-        {"schema_version": "cv_summary_v1", "status": "available"},
+        entities,
+        summary,
         video_duration=3.0,
         frame_pts=(0.0, 1.0, 2.0, 3.0),
         repair={"issue_codes": ["OCCLUSION_START_NOT_OBSERVED"]},
@@ -170,6 +323,57 @@ def test_occlusion_prompt_isolates_trusted_data_and_repair_codes():
     assert candidate.candidate_id in prompt
     assert "OCCLUSION_START_NOT_OBSERVED" in prompt
     assert "invent" in prompt.lower()
+
+
+def test_occlusion_prompt_rejects_unvalidated_summary_and_entity_mappings():
+    candidate = _candidate()
+    entities, summary = _trusted_prompt_inputs()
+
+    with pytest.raises(PromptRenderError):
+        PromptRenderer().occlusion_semantics(
+            (candidate,),
+            entities,
+            {"raw_masks": [[1, 0], [0, 1]]},
+            video_duration=3.0,
+            frame_pts=(0.0, 1.0),
+        )
+    with pytest.raises(PromptRenderError):
+        PromptRenderer().occlusion_semantics(
+            (candidate,),
+            [{"entity_id": "apple", "private_path": "/tmp/private.npy"}],
+            summary,
+            video_duration=3.0,
+            frame_pts=(0.0, 1.0),
+        )
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        json.dumps({"mask": [[1, 0], [0, 1]]}),
+        "/tmp/private.npy",
+        "masks/private.npz",
+    ],
+)
+def test_schema_rejects_mask_or_path_content_before_persistence(evidence):
+    candidate = _candidate()
+    raw = _positive_raw(candidate)
+    raw["decisions"][0]["visual_evidence"] = evidence
+
+    sanitized = DEFAULT_OUTPUT_SCHEMAS.sanitize(
+        "OcclusionDecisionSet",
+        raw,
+        {"duration": 3.0, "candidates": [candidate.model_dump(mode="json")]},
+    )
+
+    assert sanitized == {
+        "_schema_validation": {
+            "schema_name": "OcclusionDecisionSet",
+            "status": "invalid",
+            "issue_codes": ["OCCLUSION_EVIDENCE_PROHIBITED_CONTENT"],
+        }
+    }
+    assert evidence not in json.dumps(sanitized)
 
 
 def test_output_registry_replaces_arbitrary_timestamp_with_closed_issue_code():
@@ -219,28 +423,68 @@ def test_empty_candidate_tuple_skips_model_stage(monkeypatch):
     assert history == ("initial",)
 
 
-def test_invalid_repair_degrades_only_occlusion_branch(monkeypatch):
-    pipeline = EmbodiedActionPipeline()
-    issue = TemporalValidationError([])
-
-    def invalid_stage(*args, **kwargs):
-        raise issue
-
-    monkeypatch.setattr(pipeline, "_run_validated_stage", invalid_stage)
+def test_invalid_initial_creates_exactly_one_repair_then_degrades(tmp_path):
+    candidate = _candidate()
+    invalid = _positive_raw(candidate)
+    invalid["decisions"][0]["events"][0]["start"] = 1.1
+    model = FakeVideoModel(
+        failure_script={"occlusion_semantics": [invalid, invalid]}
+    )
+    pipeline, task, context, video_path, metadata = _occlusion_runtime(
+        tmp_path, model
+    )
+    entities, summary = _trusted_prompt_inputs()
 
     decisions, history = pipeline.adjudicate_occlusions(
-        None,
-        None,
-        None,
+        task,
+        context,
+        video_path,
         TimeSpan(0.0, 3.0),
-        1.0,
-        candidates=(_candidate(),),
-        normalized_entities=(),
-        evidence_summary={},
-        frame_pts=(0.0, 1.0),
+        10.0,
+        candidates=(candidate,),
+        normalized_entities=entities,
+        evidence_summary=summary,
+        frame_pts=(0.0, 1.0, 2.0, 3.0),
         affinity_anchor=None,
-        metadata=None,
+        metadata=metadata,
     )
 
+    jobs = context.store.list_inference_jobs(task.task_id)
     assert decisions == OcclusionDecisionSet(decisions=())
     assert history == ("initial", "repair")
+    assert [job.ordinal for job in jobs] == [0, 1]
+    assert all(job.status is InferenceStatus.COMPLETED for job in jobs)
+
+
+@pytest.mark.parametrize("mode", ["failure", "timeout"])
+def test_occlusion_inference_failure_or_timeout_degrades_with_truthful_history(
+    tmp_path, mode
+):
+    model = FakeVideoModel(
+        failure_script={
+            "occlusion_semantics": [RuntimeError("private model detail")]
+        }
+    )
+    pipeline, task, context, video_path, metadata = _occlusion_runtime(
+        tmp_path, model, timeout=mode == "timeout"
+    )
+    entities, summary = _trusted_prompt_inputs()
+
+    decisions, history = pipeline.adjudicate_occlusions(
+        task,
+        context,
+        video_path,
+        TimeSpan(0.0, 3.0),
+        10.0,
+        candidates=(_candidate(),),
+        normalized_entities=entities,
+        evidence_summary=summary,
+        frame_pts=(0.0, 1.0, 2.0, 3.0),
+        affinity_anchor=None,
+        metadata=metadata,
+    )
+
+    jobs = context.store.list_inference_jobs(task.task_id)
+    assert decisions == OcclusionDecisionSet(decisions=())
+    assert history == ("initial",)
+    assert len(jobs) == 1

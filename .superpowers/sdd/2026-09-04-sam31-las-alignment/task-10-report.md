@@ -86,3 +86,41 @@ The two warnings are the pre-existing Starlette/httpx and AnyIO deprecations als
 ## Concerns
 
 - None. Main-pipeline CV artifact acquisition and final branch merging are intentionally left to subsequent planned tasks; this task exposes the backend-neutral adjudication stage for that integration.
+
+## Review Fix Round 1
+
+### Changes
+
+- Restored scene-stage failure behavior and moved conservative `EmbodiedActionPipelineError` handling to the occlusion adjudicator. Stage errors now carry the exact attempted history, so an initial failure/timeout reports `("initial",)` while repair exhaustion reports `("initial", "repair")`.
+- Added a closed plain-text boundary for `visual_evidence`; serialized arrays/objects, path separators, control payloads, and raw-mask file suffixes are rejected before persistence and by projection revalidation.
+- Restricted prompt rendering to exact `NormalizedEntities`, `CvEvidenceSummary`, and `OcclusionCandidate` inputs. The renderer now uses the summary's bounded `prompt_record()` projection and rejects arbitrary mappings.
+- Replaced the mocked repair-exhaustion test with a real SQLite/store/worker stage run. It verifies one initial job plus exactly one repair job, then conservative degradation.
+- Added missing decision-order, positive-event presence, same-type overlap, raw-mask/path injection, inference failure, and timeout regressions.
+
+### Covering Tests
+
+Command:
+
+```text
+.venv/bin/python -m pytest tests/test_occlusion_semantics.py tests/test_embodied_pipeline.py tests/test_qwen_backend.py -q
+```
+
+Output:
+
+```text
+260 passed in 3.32s
+```
+
+Full-suite command:
+
+```text
+.venv/bin/python -m pytest -q
+```
+
+Output:
+
+```text
+1456 passed, 2 warnings in 24.05s
+```
+
+The warnings remain the existing Starlette/httpx and AnyIO deprecations.
