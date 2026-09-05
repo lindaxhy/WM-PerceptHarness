@@ -72,11 +72,17 @@ if not isinstance(original, dict) or "annotation_branches" not in original:
     return public
 try:
     validate_hybrid_result(original)
-except (ValueError, TypeError, KeyError):
+except (ValueError, TypeError, KeyError, AttributeError):
     return public  # retain existing fail-closed redaction; restore nothing
 # Copy only schema-owned paths below, never arbitrary subtrees.
 return public
 ```
+
+User-approved review amendment: include `AttributeError` because malformed
+canonical containers (for example `cv_evidence=None`) can raise it in the
+existing validator. Preserve the same fail-closed redacted result and restore
+nothing on this path. Add an actual authenticated Poll regression; do not
+relax the canonical validator or catch unrelated runtime failures.
 
 Only restore:
 
