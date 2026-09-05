@@ -50,6 +50,15 @@ identified a malformed deep-JSON recursion error classification edge case;
 commit `718a9ff` fixed it, with a RED/GREEN regression and clean scoped review.
 Controller verification passed all 26 backend tests on that final fix.
 
+After the independently reviewed scene prompt repair at `1963dac`, an immutable
+source snapshot rendered the normal scene prompt and replayed the original
+`full_0024` diagnostic's validated segment context through `ArkVideoModel`.
+The request returned HTTP 200 in 27.737 seconds, with 15,206 input and 684 output
+tokens. Both `SceneSemantics` and the normal pipeline's structural, temporal,
+and required-object validation passed on the first response. No diagnostic
+prompt override or repair retry was used. This is a single-stage contract
+verification, not a replacement for the five-demo control/treatment experiment.
+
 Provider request formats were checked against the official SDK's
 [image input type](https://github.com/volcengine/volcengine-python-sdk/blob/master/volcenginesdkarkruntime/types/responses/response_input_image_param.py)
 and [video input type](https://github.com/volcengine/volcengine-python-sdk/blob/master/volcenginesdkarkruntime/types/responses/response_input_video_param.py).
