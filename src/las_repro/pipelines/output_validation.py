@@ -953,9 +953,10 @@ def _validate_enrichment_output(
 def _validate_scene_semantics_output(
     result: Mapping[str, Any], validation_context: Mapping[str, Any] | None
 ) -> dict[str, Any]:
+    extra = {"evidence_summary", "segments"} if validation_context and "evidence_summary" in validation_context else set()
     context = _exact_context(
         validation_context,
-        {"duration", "require_observed_content", "required_object_ids"},
+        {"duration", "require_observed_content", "required_object_ids"} | extra,
     )
     duration = _finite_real(context["duration"], positive=True)
     require_content = context["require_observed_content"]
@@ -977,16 +978,33 @@ def _validate_scene_semantics_output(
     except (TypeError, ValueError, OverflowError, RecursionError):
         raise DeclaredSchemaOutputError(("SCENE_SEMANTICS_SCHEMA_INVALID",)) from None
     try:
+        summary = None
+        if context.get("evidence_summary") is not None:
+            from ..cv.summary import CvEvidenceSummary
+            summary = CvEvidenceSummary.model_validate(context["evidence_summary"])
+            summary.prompt_record()
         validate_scene_semantics(
             scene,
             duration,
             require_observed_content=require_content,
             required_object_ids=tuple(required_ids),
+            spatial_evidence_available=summary is not None,
         )
+        from .hybrid_result import validate_event_provenance, _reject_artifact_text
+        _reject_artifact_text(scene.model_dump(mode="json"))
+        names = {obj.object_id: obj.name for obj in scene.objects}
+        for collection in (scene.locations, scene.relations):
+            for item in collection:
+                row = item.model_dump(mode="json")
+                ids = [row["object_id"]] if "object_id" in row else [row["subject_object_id"], row["object_object_id"]]
+                validate_event_provenance(row, segments=context["segments"], summary=summary,
+                    frame_pts=None, spatial=True, expected_names=[names[key] for key in ids])
     except TemporalValidationError as error:
         raise DeclaredSchemaOutputError(
             tuple(dict.fromkeys(issue.code for issue in error.issues))
         ) from None
+    except (ValueError, TypeError, KeyError):
+        raise DeclaredSchemaOutputError(("SCENE_SPATIAL_INVALID",)) from None
     return scene.model_dump(mode="json")
 
 

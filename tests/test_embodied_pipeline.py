@@ -1796,6 +1796,100 @@ def _pipeline_context(harness: _ActionHarness, task: Any) -> PipelineContext:
     )
 
 
+def test_disabled_cv_has_canonical_branches_and_immutable_performance(tmp_path):
+    harness = _ActionHarness(tmp_path, FakeVideoModel())
+    completed = harness.run()
+    assert completed.status is TaskStatus.COMPLETED
+    result = completed.result
+    assert result["cv_evidence"] == {"status": "disabled"}
+    assert result["annotation_branches"]["action_events"][0]["evidence_mode"] == "vlm_only"
+    stages = result["performance"]["stages"]
+    assert {row["stage"] for row in stages} == {"media_decode", "pass_a", "sam31",
+        "action_enrichment", "occlusion", "scene_facts", "merge"}
+    queued = [row for row in stages if "model_stage" in row]
+    assert [(row["stage"], row["model_stage"]) for row in queued] == [
+        ("pass_a", "embodied_pass_a"), ("action_enrichment", "embodied_pass_b"),
+        ("action_enrichment", "embodied_enrichment"), ("scene_facts", "scene_semantics")]
+    assert result["performance"]["repair_count"] == 0
+    assert result["performance"]["degradation_count"] == 0
+    for row, job in zip(queued, sorted(harness.store.list_inference_jobs(completed.task_id), key=lambda job: job.created_at)):
+        assert row["wall_seconds"] == job.finished_at - job.created_at
+        assert row["queue_seconds"] == job.started_at - job.created_at
+        assert row["attempt_count"] == job.attempt
+    assert len(list(iter_action_captions("hybrid_disabled", result, source_fps=10.0))) == len(result["segments"])
+
+
+@pytest.mark.parametrize("mode", ["available", "cache", "timeout", "failed", "corrupt", "zero", "scene", "occlusion", "both", "repair"])
+def test_hybrid_optional_branches_complete_independently(tmp_path, monkeypatch, mode):
+    from las_repro.cv.artifacts import CvArtifactStore
+    from las_repro.cv.base import FakeCvEvidenceProvider
+    from las_repro.cv.contracts import FrameTimeline, FrameTimestamp
+    from las_repro.cv.worker import CVEvidenceWorker
+    script = {}
+    if mode in {"scene", "both"}:
+        script["scene_semantics"] = [{}, {}]
+    if mode in {"occlusion", "both"}:
+        script["occlusion_semantics"] = [{}, {}]
+    if mode == "repair":
+        script["embodied_enrichment"] = [{}]
+    harness = _ActionHarness(tmp_path, FakeVideoModel(failure_script=script))
+    harness.settings = harness.settings.model_copy(update={
+        "cv_provider": "fake", "cv_cache_root": tmp_path / "cv-cache",
+        "cv_timeout_seconds": 9.0})
+    timeline = FrameTimeline(frames=tuple(FrameTimestamp(frame_index=i, timestamp_seconds=i / 2)
+                                         for i in range(4)))
+    monkeypatch.setattr(embodied_module, "probe_frame_timeline", lambda path: timeline)
+    class Provider(FakeCvEvidenceProvider):
+        def analyze(self, request, staging_dir):
+            if mode == "failed":
+                raise RuntimeError("private provider error")
+            result = super().analyze(request, staging_dir)
+            return result.model_copy(update={"tracks": ()}) if mode == "zero" else result
+    with CvArtifactStore(harness.settings.cv_cache_root) as cache:
+        worker = CVEvidenceWorker(harness.store, Provider(), cache, "sam-gpu-3")
+        def wait(store, task_id, job_ids, timeout):
+            job = store.get_inference_job(job_ids[0])
+            if job.stage != "cv_evidence":
+                return harness.wait_jobs(store, task_id, job_ids, timeout)
+            assert timeout == 9.0
+            if mode == "timeout":
+                raise JobWaitTimeout("private timeout")
+            worker.run_once()
+            if mode == "corrupt":
+                key = store.get_inference_job(job.job_id).result["artifact_key"]
+                # Corrupt a known fixture manifest after publication.
+                manifest = next(harness.settings.cv_cache_root.rglob("manifest.json"))
+                assert key in str(manifest)
+                manifest.write_text("invalid manifest")
+            return wait_for_jobs(store, task_id, job_ids, 0.0)
+        harness.pipeline = EmbodiedActionPipeline(probe=harness.probe, wait_jobs=wait, wait_timeout=0.75)
+        completed = harness.run()
+        if mode == "cache":
+            completed = harness.run()
+    assert completed.status is TaskStatus.COMPLETED, completed.error
+    result = completed.result
+    branches = result["annotation_branches"]
+    assert bool(result["segments"])
+    unavailable = mode in {"timeout", "failed", "corrupt"}
+    assert result["performance"]["degradation_count"] == (
+        2 if unavailable or mode == "both" else 1 if mode in {"scene", "occlusion"} else 0)
+    assert result["cv_evidence"]["status"] == ("unavailable" if unavailable else "available")
+    assert branches["scene_facts"]["status"] == ("unavailable" if mode in {"scene", "both"} else "available")
+    assert branches["occlusion"]["status"] == ("unavailable" if unavailable or mode in {"occlusion", "both"} else "available")
+    assert branches["occlusion"]["events"] == []
+    assert branches["action_events"][0]["evidence_mode"] == ("vlm_only" if unavailable or mode == "zero" else "hybrid")
+    if mode == "cache":
+        assert result["cv_evidence"]["cache_hit"] is True
+    if mode == "repair":
+        assert branches["action_events"][0]["repair_history"] == ["initial", "repair"]
+        assert result["performance"]["repair_count"] == 1
+    for request in harness.model.calls:
+        if request.stage in {"embodied_enrichment", "scene_semantics"}:
+            assert ("[CV_EVIDENCE_SUMMARY_JSON]" in request.prompt) is not unavailable
+            assert "masks/" not in request.prompt
+    assert len(list(iter_action_captions("hybrid", result, source_fps=10.0))) == len(result["segments"])
+
+
 def test_enrichment_total_guard_precedes_segment_table_materialization(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3622,7 +3716,7 @@ def test_affinity_fallback_reconstructs_same_local_video_session_on_new_worker(
         job = store.get_inference_job(job_ids[0])
         assert job is not None
         if job.stage == "embodied_pass_a":
-            assert pass_a_worker.run_once(now=100.0)
+            assert pass_a_worker.run_once(now=job.created_at)
         else:
             assert job.affinity_fallback_at is not None
             assert fallback_worker.run_once(now=job.affinity_fallback_at)

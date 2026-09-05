@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import re
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
@@ -17,7 +19,10 @@ from typing import Any
 from pydantic import BaseModel
 
 from ..cv.entities import NormalizedEntities, normalize_entities
-from ..cv.summary import CvEvidenceSummary, OcclusionCandidate
+from ..cv.artifacts import CvArtifactStore, CvArtifactHandle, CvArtifactError, cv_cache_key
+from ..cv.contracts import CvEvidenceRequest, SamplingPolicy, EvidenceThresholds
+from ..cv.timeline import probe_frame_timeline, TimelineError
+from ..cv.summary import CvEvidenceSummary, OcclusionCandidate, summarize_cv_evidence, build_cv_prompt_bundle
 from ..domain import InferenceJob, InferenceJobSpec, TaskRecord
 from ..media import TimeSpan, VideoMetadata, probe_video
 from ..models.base import VideoSession
@@ -25,13 +30,13 @@ from ..pipelines.base import PipelineContext, SafePipelineError
 from ..store import SQLiteTaskStore
 from ..workers import InferenceJobFailed, JobWaitTimeout, wait_for_jobs
 from .output_validation import DEFAULT_OUTPUT_SCHEMAS, NormalizedSchemaOutput
-from .occlusion import OcclusionDecisionSet
+from .occlusion import OcclusionDecisionSet, project_occlusion_events
+from .hybrid_result import build_hybrid_result, validate_hybrid_result, build_performance
 from .scene_semantics import (
     SceneSemantics,
     trusted_target_skeleton,
     unavailable_scene_semantics,
 )
-from .semantic_events import build_semantic_events
 from .validators import (
     BoundaryPlan,
     CoarsePlan,
@@ -76,6 +81,14 @@ _ENRICHMENT_WARNING_FIELD_BY_CODE = (
 
 class PromptRenderError(ValueError):
     """A prompt asset or its structured variable set is invalid."""
+
+
+def _with_cv_summary(prompt: str, summary: CvEvidenceSummary | None) -> str:
+    if summary is None:
+        return prompt
+    if type(summary) is not CvEvidenceSummary or summary.status != "available":
+        raise PromptRenderError("CV evidence must be an available bounded summary")
+    return prompt + "\n\n[CV_EVIDENCE_SUMMARY_JSON]\n" + _canonical_json(summary.prompt_record())
 
 
 @dataclass(frozen=True)
@@ -153,8 +166,10 @@ class EmbodiedActionPipeline:
         self._wait_timeout = _positive_finite(wait_timeout, "wait_timeout")
 
     def run(self, task: TaskRecord, context: PipelineContext) -> dict[str, Any]:
+        started = time.monotonic()
         media_path = _action_media_path(context)
         metadata = self._probe(media_path)
+        media_seconds = time.monotonic() - started
         span = TimeSpan(
             0.0,
             _action_positive_finite(metadata.duration, "duration"),
@@ -184,7 +199,16 @@ class EmbodiedActionPipeline:
             coarse.entity_candidates,
             limit=context.settings.cv_entity_limit,
         )
+        cv_started = time.monotonic()
+        cv_evidence, bundle, timeline, artifact, cv_decode_seconds = self._run_cv_evidence(
+            task, context, media_path, span.end, normalized_entities)
+        cv_seconds = time.monotonic() - cv_started
+        media_seconds += cv_decode_seconds
+        summary = bundle.summary if bundle is not None else None
         warnings: list[dict[str, Any]] = []
+        if cv_evidence["status"] == "unavailable":
+            warnings.extend([{"code": "CV_EVIDENCE_UNAVAILABLE"},
+                             {"code": "OCCLUSION_UNAVAILABLE"}])
         for warning in normalized_entities.warnings:
             if warning == "ENTITY_ALIASES_TRUNCATED":
                 warnings.append(
@@ -237,7 +261,7 @@ class EmbodiedActionPipeline:
         segment_table = _fine_segment_table(boundary)
         expected_indices = [row.segment_index for row in segment_table]
 
-        enrichment_data, _, enrichment_normalization = self._run_validated_stage(
+        enrichment_data, enrichment_job, enrichment_normalization = self._run_validated_stage(
             task,
             context,
             media_path,
@@ -249,6 +273,7 @@ class EmbodiedActionPipeline:
             render_prompt=lambda repair: self._renderer.enrichment(
                 [row.prompt_record() for row in segment_table],
                 expected_indices=expected_indices,
+                evidence_summary=summary,
                 repair=repair,
             ),
             affinity_anchor=pass_a_job,
@@ -261,8 +286,10 @@ class EmbodiedActionPipeline:
             warnings.append(_enrichment_normalization_warning(enrichment_normalization))
         segments = _merge_enrichment(segment_table, enrichment)
         trusted_targets = trusted_target_skeleton(segments)
+        scene_status = "available"
+        scene_history = ("initial",)
         try:
-            scene_data, _, _ = self._run_validated_stage(
+            scene_data, scene_job, _ = self._run_validated_stage(
                 task,
                 context,
                 media_path,
@@ -276,28 +303,102 @@ class EmbodiedActionPipeline:
                     "required_object_ids": [
                         target["object_id"] for target in trusted_targets
                     ],
+                    "evidence_summary": summary.model_dump(mode="json") if summary is not None else None,
+                    "segments": segments,
                 },
                 render_prompt=lambda repair: self._renderer.scene_semantics(
                     segments,
                     video_duration=span.end,
+                    evidence_summary=summary,
                     repair=repair,
                 ),
                 affinity_anchor=pass_a_job,
                 metadata=metadata,
             )
-        except TemporalValidationError:
+            scene_history = ("initial", "repair") if scene_job.ordinal else ("initial",)
+        except (TemporalValidationError, EmbodiedActionPipelineError):
             scene_data = unavailable_scene_semantics()
+            scene_status = "unavailable"
             warnings.append({"code": "SCENE_SEMANTICS_UNAVAILABLE"})
         scene = SceneSemantics.model_validate(scene_data)
-        result = {
-            "task_description": coarse.task_description,
-            "segments": segments,
-            "grouped_semantic_events": build_semantic_events(segments),
-            **scene.model_dump(mode="json"),
-        }
-        if warnings:
-            result["warnings"] = warnings
+        occlusion_started = time.monotonic()
+        occlusion = {"status": cv_evidence["status"], "decisions": [], "events": []}
+        if bundle is not None and bundle.candidates:
+            decisions, history = self.adjudicate_occlusions(
+                task, context, media_path, span, fps, candidates=bundle.candidates,
+                normalized_entities=normalized_entities, evidence_summary=summary,
+                frame_pts=[frame.timestamp_seconds for frame in timeline.frames],
+                affinity_anchor=pass_a_job, metadata=metadata)
+            if len(decisions.decisions) != len(bundle.candidates):
+                occlusion["status"] = "unavailable"
+                warnings.append({"code": "OCCLUSION_UNAVAILABLE"})
+            else:
+                occlusion["decisions"] = decisions.model_dump(mode="json")["decisions"]
+                occlusion["events"] = project_occlusion_events(
+                    decisions, bundle.candidates, artifact.tracks, segments, repair_history=history)
+        merge_started = time.monotonic()
+        occlusion_seconds = merge_started - occlusion_started
+        jobs = context.store.list_inference_jobs(task.task_id)
+        performance = build_performance(jobs, media_seconds=media_seconds,
+            cv_seconds=cv_seconds, occlusion_seconds=occlusion_seconds,
+            merge_seconds=0.0, total_seconds=time.monotonic() - started,
+            degradation_count=sum(s == "unavailable" for s in
+                                  (cv_evidence["status"], scene_status, occlusion["status"])))
+        result = build_hybrid_result(task_description=coarse.task_description,
+            segments=segments, scene=scene.model_dump(mode="json"), scene_status=scene_status,
+            cv_evidence=cv_evidence, evidence_summary=summary, warnings=warnings,
+            performance=performance, occlusion=occlusion,
+            action_history=("initial", "repair") if enrichment_job.ordinal else ("initial",),
+            scene_history=scene_history)
+        validate_hybrid_result(result, evidence_summary=summary,
+            frame_pts=[frame.timestamp_seconds for frame in timeline.frames] if summary is not None else None,
+            occlusion_candidates=bundle.candidates if bundle is not None else None)
+        result["performance"]["stages"][-1]["elapsed_seconds"] = time.monotonic() - merge_started
+        result["performance"]["total_seconds"] = time.monotonic() - started
         return result
+
+    def _run_cv_evidence(self, task, context, media_path, duration, entities):
+        settings = context.settings
+        if settings.cv_provider == "disabled":
+            return {"status": "disabled"}, None, None, None, 0.0
+        decode_started = time.monotonic()
+        decode_seconds = None
+        try:
+            timeline = probe_frame_timeline(media_path)
+            with media_path.open("rb") as source:
+                digest = hashlib.file_digest(source, "sha256").hexdigest()
+            decode_seconds = time.monotonic() - decode_started
+            request = CvEvidenceRequest(schema_version="cv_request_v1",
+                provider=settings.cv_provider, model_identity=settings.cv_model_alias,
+                video_path=media_path, video_sha256=digest, duration_seconds=duration,
+                frame_count=len(timeline.frames), checkpoint_sha256=settings.cv_checkpoint_sha256,
+                timeline=timeline, entities=entities.entities,
+                sampling=SamplingPolicy(short_video_seconds=settings.cv_short_video_seconds,
+                    scan_fps=settings.cv_scan_fps, max_fps=settings.cv_max_fps,
+                    refinement_radius_seconds=settings.cv_refinement_radius_seconds),
+                thresholds=EvidenceThresholds(min_confidence=settings.cv_min_confidence,
+                    min_area_fraction=settings.cv_min_area_fraction,
+                    occlusion_visibility_drop=settings.cv_occlusion_visibility_drop))
+            [job] = context.store.create_inference_jobs(task.task_id, [InferenceJobSpec(
+                stage="cv_evidence", ordinal=0, payload=request.model_dump(mode="json"),
+                model_name=settings.cv_model_alias)])
+            [result] = self._wait_jobs(context.store, task.task_id, [job.job_id], settings.cv_timeout_seconds)
+            if (type(result) is not dict or set(result) != {"status", "artifact_key", "manifest_sha256", "cache_hit"}
+                    or result["status"] != "available" or type(result["cache_hit"]) is not bool
+                    or result["artifact_key"] != cv_cache_key(request)):
+                raise ValueError("invalid CV result")
+            with CvArtifactStore(settings.cv_cache_root, max_files=settings.cv_cache_max_files,
+                                 max_bytes=settings.cv_cache_max_bytes) as store:
+                artifact = store.load(CvArtifactHandle(result["artifact_key"], result["manifest_sha256"]))
+            if artifact.status != "available":
+                raise ValueError("unavailable CV artifact")
+            summary = summarize_cv_evidence(artifact, timeline=timeline)
+            bundle = build_cv_prompt_bundle(summary, request.thresholds)
+            return result, bundle, timeline, artifact, decode_seconds
+        except (InferenceJobFailed, JobWaitTimeout, CvArtifactError, TimelineError,
+                OSError, ValueError, TypeError):
+            return {"status": "unavailable"}, None, None, None, (
+                decode_seconds if decode_seconds is not None else time.monotonic() - decode_started)
 
     def _run_validated_stage(
         self,
@@ -581,6 +682,7 @@ class PromptRenderer:
         segments: Sequence[Mapping[str, Any] | BaseModel],
         *,
         expected_indices: Sequence[int],
+        evidence_summary: CvEvidenceSummary | None = None,
         repair: Mapping[str, Any] | None = None,
     ) -> str:
         """Render six-field enrichment instructions for an immutable segment table."""
@@ -602,20 +704,21 @@ class PromptRenderer:
             raise PromptRenderError(
                 "expected_indices must match the immutable segment table"
             )
-        return self.render(
+        return _with_cv_summary(self.render(
             "embodied_enrichment",
             {
                 "SEGMENTS_JSON": table,
                 "ENRICHMENT_REQUIREMENTS_JSON": _enrichment_requirements(indices),
                 "VALIDATION_REPAIR_JSON": repair,
             },
-        )
+        ), evidence_summary)
 
     def scene_semantics(
         self,
         segments: Sequence[Mapping[str, Any] | BaseModel],
         *,
         video_duration: Any,
+        evidence_summary: CvEvidenceSummary | None = None,
         repair: Mapping[str, Any] | None = None,
     ) -> str:
         """Render full-video scene facts with the validated segment table as data."""
@@ -631,7 +734,7 @@ class PromptRenderer:
         ]
         if any(not isinstance(item, Mapping) for item in table):
             raise PromptRenderError("segments must be a sequence of JSON records")
-        return self.render(
+        return _with_cv_summary(self.render(
             "scene_semantics",
             {
                 "VIDEO_DURATION_SECONDS_JSON": _prompt_video_duration(video_duration),
@@ -639,7 +742,7 @@ class PromptRenderer:
                 "KNOWN_TARGETS_JSON": trusted_target_skeleton(table),
                 "VALIDATION_REPAIR_JSON": repair,
             },
-        )
+        ), evidence_summary)
 
     def occlusion_semantics(
         self,

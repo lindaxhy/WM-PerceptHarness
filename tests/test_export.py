@@ -21,6 +21,23 @@ from las_repro.export import (
 )
 
 
+def test_hybrid_metadata_preserves_training_jsonl_bytes(tmp_path, embodied_result):
+    from las_repro.pipelines.hybrid_result import build_hybrid_result
+    from las_repro.pipelines.scene_semantics import unavailable_scene_semantics
+    hybrid = build_hybrid_result(
+        task_description=embodied_result["task_description"], segments=embodied_result["segments"],
+        scene=unavailable_scene_semantics(), scene_status="unavailable",
+        cv_evidence={"status": "disabled"}, warnings=[{"code": "SCENE_SEMANTICS_UNAVAILABLE"}],
+        performance={"stages": [], "total_seconds": 0.0, "repair_count": 0, "degradation_count": 1})
+    before, after = tmp_path / "before.jsonl", tmp_path / "after.jsonl"
+    write_action_captions_jsonl(before, iter_action_captions("video", embodied_result, source_fps=30.0))
+    write_action_captions_jsonl(after, iter_action_captions("video", hybrid, source_fps=30.0))
+    assert before.read_bytes() == after.read_bytes()
+    hybrid["annotation_branches"]["action_events"][0]["source_segment_indices"] = [99]
+    with pytest.raises(ActionCaptionExportError):
+        list(iter_action_captions("video", hybrid, source_fps=30.0))
+
+
 @pytest.fixture
 def embodied_result() -> dict[str, object]:
     """A completed, locally validated 0805 action result."""

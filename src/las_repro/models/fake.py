@@ -136,6 +136,8 @@ class FakeVideoModel(VideoModel):
             }
         if request.stage == "scene_semantics":
             return {
+                "locations": [],
+                "relations": [],
                 "objects": [
                     {
                         "object_id": "red_container",

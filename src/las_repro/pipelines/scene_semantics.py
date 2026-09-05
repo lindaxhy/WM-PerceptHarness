@@ -6,7 +6,7 @@ import math
 import re
 from enum import StrEnum
 from collections.abc import Mapping, Sequence
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -93,10 +93,48 @@ class SceneSemanticEvent(_SceneModel):
     confidence: Confidence
 
 
+class SceneLocation(_SceneModel):
+    object_id: ObjectId
+    location: str
+    start: Timestamp
+    end: Timestamp
+    visual_evidence: str
+    confidence: Confidence
+    evidence_mode: Literal["hybrid"]
+    source_track_ids: list[str]
+    source_keyframe_ids: list[str]
+    branch: Literal["scene"]
+    model_stage: Literal["scene_semantics"]
+    source_segment_indices: list[Index]
+    repair_history: list[Literal["initial", "repair"]]
+    review_status: Literal["not_required"]
+
+
+class SceneRelation(_SceneModel):
+    subject_object_id: ObjectId
+    relation: Literal["left_of", "right_of", "above", "below", "inside", "on",
+                      "overlapping", "near", "occluding", "unknown"]
+    object_object_id: ObjectId
+    start: Timestamp
+    end: Timestamp
+    visual_evidence: str
+    confidence: Confidence
+    evidence_mode: Literal["hybrid"]
+    source_track_ids: list[str]
+    source_keyframe_ids: list[str]
+    branch: Literal["scene"]
+    model_stage: Literal["scene_semantics"]
+    source_segment_indices: list[Index]
+    repair_history: list[Literal["initial", "repair"]]
+    review_status: Literal["not_required"]
+
+
 class SceneSemantics(_SceneModel):
     objects: list[SceneObject]
     initial_state: list[SceneState]
     final_state: list[SceneState]
+    locations: list[SceneLocation]
+    relations: list[SceneRelation]
     outcome: SceneOutcome
     semantic_events: list[SceneSemanticEvent]
 
@@ -138,6 +176,7 @@ def validate_scene_semantics(
     *,
     require_observed_content: bool = False,
     required_object_ids: tuple[str, ...] = (),
+    spatial_evidence_available: bool = False,
 ) -> None:
     """Validate references and time bounds while allowing event overlap."""
     if isinstance(duration, bool) or not isinstance(duration, (int, float)):
@@ -214,6 +253,20 @@ def validate_scene_semantics(
                 )
             seen.add(state.object_id)
     previous_start: float | None = None
+    for collection_name in ("locations", "relations"):
+        previous_key = None
+        for index, row in enumerate(getattr(result, collection_name)):
+            refs = ([row.object_id] if collection_name == "locations" else
+                    [row.subject_object_id, row.object_object_id])
+            key = (row.start, row.end, *refs)
+            if (not spatial_evidence_available or not 0 <= row.start < row.end <= duration
+                    or not set(refs) <= object_ids
+                    or (previous_key is not None and key < previous_key)
+                    or not row.source_track_ids
+                    or row.repair_history not in (["initial"], ["initial", "repair"])):
+                issues.append(TemporalIssue("SCENE_SPATIAL_INVALID", (collection_name, index),
+                                            "spatial facts require ordered supported references"))
+            previous_key = key
     for index, event in enumerate(result.semantic_events):
         path = ("semantic_events", index)
         if event.event_index != index:
@@ -267,6 +320,8 @@ def unavailable_scene_semantics() -> dict[str, object]:
         "objects": [],
         "initial_state": [],
         "final_state": [],
+        "locations": [],
+        "relations": [],
         "outcome": {
             "status": "unknown",
             "description": "scene semantics unavailable",

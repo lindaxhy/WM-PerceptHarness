@@ -1,0 +1,331 @@
+"""Canonical hybrid result projections and trust boundaries."""
+
+import copy
+
+import pytest
+
+from las_repro.pipelines import hybrid_result
+from las_repro.pipelines.scene_semantics import unavailable_scene_semantics
+
+
+def source_segments():
+    return [
+        {
+            "segment_index": 0,
+            "start": 0.0,
+            "end": 1.0,
+            "actor": "right_hand",
+            "skill": "move",
+            "target": "cup",
+            "description": "hand moves cup",
+            "confidence": 0.8,
+        }
+    ]
+
+
+def test_canonical_projection_preserves_legacy_fields_and_empty_evidence():
+    result = hybrid_result.build_hybrid_result(
+        task_description="move cup",
+        segments=source_segments(),
+        scene=unavailable_scene_semantics(),
+        scene_status="unavailable",
+        cv_evidence={"status": "disabled"},
+        warnings=[{"code": "SCENE_SEMANTICS_UNAVAILABLE"}],
+        performance={
+            "stages": [],
+            "total_seconds": 0.0,
+            "repair_count": 0,
+            "degradation_count": 1,
+        },
+    )
+    hybrid_result.validate_hybrid_result(result)
+    action = result["annotation_branches"]["action_events"][0]
+    assert action["evidence_mode"] == "vlm_only"
+    assert action["source_track_ids"] == []
+    assert hybrid_result.legacy_action_projection(action) == {
+        "event_index": 0,
+        "start": 0.0,
+        "end": 1.0,
+        "actor": "right_hand",
+        "action": "motion",
+        "target": "cup",
+        "description": "hand moves cup",
+        "confidence": 0.8,
+        "source_segment_indices": [0],
+    }
+    assert result["semantic_events"] == []
+    assert result["annotation_branches"]["occlusion"] == {
+        "status": "disabled",
+        "decisions": [],
+        "events": [],
+    }
+    for mutation in (
+        lambda r: r["grouped_semantic_events"][0].update(confidence=0.1),
+        lambda r: r["annotation_branches"]["action_events"][0].update(
+            source_track_ids=["foreign"]
+        ),
+        lambda r: r["cv_evidence"].update(mask_path="/private/mask.npz"),
+        lambda r: r["annotation_branches"]["action_events"][0].update(
+            source_segment_indices=[9]
+        ),
+    ):
+        bad = copy.deepcopy(result)
+        mutation(bad)
+        with pytest.raises(ValueError):
+            hybrid_result.validate_hybrid_result(bad)
+
+
+@pytest.fixture
+def available_result():
+    from test_cv_summary import _artifact, _observation, _track
+
+    from las_repro.cv.summary import summarize_cv_evidence
+
+    artifact = _artifact(
+        (_track("cup_1", "cup", tuple(_observation(i) for i in (0, 5, 10))),)
+    )
+    summary = summarize_cv_evidence(artifact)
+    scene = unavailable_scene_semantics()
+    scene["objects"] = [
+        {"object_id": "cup", "name": "cup", "description": "visible cup"}
+    ]
+    scene["semantic_events"] = [
+        {
+            "event_index": 0,
+            "start": 0.0,
+            "end": 1.0,
+            "event_type": "move",
+            "actor": "right_hand",
+            "target_object_id": "cup",
+            "description": "cup moves",
+            "confidence": 0.8,
+        }
+    ]
+    scene["locations"] = [
+        {
+            "object_id": "cup",
+            "location": "center",
+            "start": 0.0,
+            "end": 1.0,
+            "visual_evidence": "cup visible in center",
+            "confidence": 0.8,
+            "branch": "scene",
+            "model_stage": "scene_semantics",
+            "evidence_mode": "hybrid",
+            "source_track_ids": ["cup_1"],
+            "source_keyframe_ids": [],
+            "source_segment_indices": [0],
+            "repair_history": ["initial"],
+            "review_status": "not_required",
+        }
+    ]
+    result = hybrid_result.build_hybrid_result(
+        task_description="move cup",
+        segments=source_segments(),
+        scene=scene,
+        scene_status="available",
+        evidence_summary=summary,
+        cv_evidence={
+            "status": "available",
+            "artifact_key": "a" * 64,
+            "manifest_sha256": "b" * 64,
+            "cache_hit": False,
+        },
+        warnings=[],
+        performance={
+            "stages": [],
+            "total_seconds": 0.0,
+            "repair_count": 0,
+            "degradation_count": 0,
+        },
+    )
+    return result, summary
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("source_track_ids", ["foreign_track"]),
+        ("source_keyframe_ids", ["foreign_frame"]),
+        ("end", 0.93),
+    ],
+)
+def test_external_references_require_trusted_context(available_result, field, value):
+    result, summary = available_result
+    hybrid_result.validate_hybrid_result(
+        result, evidence_summary=summary, frame_pts=[i / 10 for i in range(11)]
+    )
+    result["locations"][0][field] = value
+    result["annotation_branches"]["scene_facts"]["locations"][0][field] = value
+    hybrid_result.validate_hybrid_result(result)
+    with pytest.raises(ValueError):
+        hybrid_result.validate_hybrid_result(
+            result, evidence_summary=summary, frame_pts=[i / 10 for i in range(11)]
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda r: r["performance"].update(degradation_count=9),
+        lambda r: r["performance"].update(repair_count=9),
+        lambda r: r.update(warnings=[{"code": "PRIVATE_WARNING", "path": "/secret"}]),
+        lambda r: r["grouped_semantic_events"][0].update(end=1),
+        lambda r: r["annotation_branches"]["action_events"][0].update(
+            repair_history=["initial", "repair"]
+        ),
+        lambda r: r.update(task_description="/private/masks.npy"),
+        lambda r: r["annotation_branches"]["action_events"][0].update(
+            source_track_ids=["NOT_A_TRACK"]
+        ),
+        lambda r: r["annotation_branches"]["occlusion"].update(
+            decisions=[
+                {
+                    "candidate_id": "occ_aaaaaaaaaaaa_0000",
+                    "classification": "occlusion",
+                    "target_entity_id": "cup",
+                    "occluder_entity_id": "unknown",
+                    "events": [],
+                    "visual_evidence": "cup hidden",
+                    "confidence": 0.8,
+                }
+            ]
+        ),
+    ],
+)
+def test_public_validation_rejects_internally_forged_metadata(
+    available_result, mutation
+):
+    result, _ = available_result
+    mutation(result)
+    with pytest.raises(ValueError):
+        hybrid_result.validate_hybrid_result(result)
+
+
+def test_positive_occlusion_is_a_checked_projection_of_real_candidates():
+    from test_cv_summary import _candidate_artifact
+
+    from las_repro.cv.contracts import EvidenceThresholds
+    from las_repro.cv.summary import build_cv_prompt_bundle, summarize_cv_evidence
+    from las_repro.pipelines.occlusion import (
+        OcclusionDecisionSet,
+        project_occlusion_events,
+    )
+
+    artifact, timeline = _candidate_artifact()
+    summary = summarize_cv_evidence(artifact, timeline=timeline)
+    bundle = build_cv_prompt_bundle(
+        summary,
+        EvidenceThresholds(
+            min_confidence=0.5, min_area_fraction=0.01, occlusion_visibility_drop=0.5
+        ),
+    )
+    decisions = []
+    for candidate in bundle.candidates:
+        positive = candidate.target_entity_id == "behind_target"
+        decisions.append(
+            {
+                "candidate_id": candidate.candidate_id,
+                "classification": "occlusion" if positive else "unknown",
+                "target_entity_id": candidate.target_entity_id,
+                "occluder_entity_id": candidate.possible_occluder_entity_ids[0]
+                if positive
+                else "unknown",
+                "visual_evidence": "target visibly hidden behind board"
+                if positive
+                else "insufficient evidence",
+                "confidence": 0.8 if positive else 0.2,
+                "events": [
+                    {
+                        "event_type": "occluded",
+                        "start": candidate.allowed_start_times[0],
+                        "end": candidate.allowed_end_times[-1],
+                    }
+                ]
+                if positive
+                else [],
+            }
+        )
+    parsed = OcclusionDecisionSet.model_validate({"decisions": decisions})
+    segments = source_segments()
+    projected = project_occlusion_events(
+        parsed,
+        bundle.candidates,
+        artifact.tracks,
+        segments,
+        repair_history=("initial",),
+    )
+    assert len(projected) == 1
+    result = hybrid_result.build_hybrid_result(
+        task_description="move cup",
+        segments=segments,
+        scene=unavailable_scene_semantics(),
+        scene_status="unavailable",
+        evidence_summary=summary,
+        cv_evidence={
+            "status": "available",
+            "artifact_key": "a" * 64,
+            "manifest_sha256": "b" * 64,
+            "cache_hit": False,
+        },
+        warnings=[{"code": "SCENE_SEMANTICS_UNAVAILABLE"}],
+        performance={
+            "stages": [],
+            "total_seconds": 0.0,
+            "repair_count": 0,
+            "degradation_count": 1,
+        },
+        occlusion={"status": "available", "decisions": decisions, "events": projected},
+    )
+    context = {
+        "evidence_summary": summary,
+        "frame_pts": [f.timestamp_seconds for f in timeline.frames],
+        "occlusion_candidates": bundle.candidates,
+    }
+    hybrid_result.validate_hybrid_result(result, **context)
+    result["annotation_branches"]["occlusion"]["events"][0]["source_track_ids"] = [
+        "foreign"
+    ]
+    hybrid_result.validate_hybrid_result(result)
+    with pytest.raises(ValueError):
+        hybrid_result.validate_hybrid_result(result, **context)
+
+
+def test_scene_registry_checks_spatial_rows_against_summary(available_result):
+    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+
+    result, summary = available_result
+    scene = {key: copy.deepcopy(result[key]) for key in hybrid_result.SCENE_KEYS}
+    scene["relations"] = [
+        {
+            **{
+                k: v
+                for k, v in scene["locations"][0].items()
+                if k not in {"location", "object_id"}
+            },
+            "subject_object_id": "cup",
+            "object_object_id": "cup",
+            "relation": "unknown",
+        }
+    ]
+    context = {
+        "duration": 1.0,
+        "require_observed_content": True,
+        "required_object_ids": ["cup"],
+        "segments": source_segments(),
+        "evidence_summary": summary.model_dump(mode="json"),
+    }
+    assert DEFAULT_OUTPUT_SCHEMAS.sanitize("SceneSemantics", scene, context) == scene
+    for mutation in (
+        lambda r: r["relations"][0].update(object_object_id="foreign"),
+        lambda r: r["relations"][0].update(relation="private"),
+        lambda r: r["relations"][0].update(start=0.03),
+        lambda r: r["relations"][0].update(source_track_ids=["foreign"]),
+        lambda r: r["relations"][0].update(source_segment_indices=[5]),
+        lambda r: r["relations"][0].update(visual_evidence=" "),
+        lambda r: r["relations"][0].update(visual_evidence="/tmp/private.mask"),
+    ):
+        bad = copy.deepcopy(scene)
+        mutation(bad)
+        sanitized = DEFAULT_OUTPUT_SCHEMAS.sanitize("SceneSemantics", bad, context)
+        assert DEFAULT_OUTPUT_SCHEMAS.failure_codes("SceneSemantics", sanitized)

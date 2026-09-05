@@ -29,6 +29,7 @@ from .pipelines.validators import (
     VisualMotionState,
 )
 from .pipelines.semantic_events import validate_semantic_events
+from .pipelines.hybrid_result import HYBRID_KEYS, validate_hybrid_result
 
 
 _ANNOTATION_STAGE = "boundary_fine_segments_0805"
@@ -48,8 +49,8 @@ _SCENE_RESULT_KEYS = frozenset(
     {"objects", "initial_state", "final_state", "outcome", "semantic_events"}
 )
 _OPTIONAL_RESULT_KEYS = frozenset(
-    {"warnings", "grouped_semantic_events"}
-) | _SCENE_RESULT_KEYS
+    {"warnings", "grouped_semantic_events", "locations", "relations"}
+) | _SCENE_RESULT_KEYS | HYBRID_KEYS
 _NORMALIZATION_WARNING_KEYS = frozenset({"code", "fields", "count"})
 _NORMALIZATION_WARNING_CODE = "ENRICHMENT_ENUM_NORMALIZED_TO_UNKNOWN"
 _BOUNDARY_WARNING_KEYS = frozenset({"code", "issue_codes", "count"})
@@ -307,6 +308,10 @@ def _completed_segments(
 
         segments = tuple(_segment(value) for value in raw_segments)
         _validate_segment_order(segments)
+        if result_keys & HYBRID_KEYS:
+            validate_hybrid_result(result_data)
+        elif result_keys & {"locations", "relations"} and any(result_data.get(k) for k in ("locations", "relations")):
+            raise ValueError
         if "grouped_semantic_events" in result_data:
             validate_semantic_events(
                 result_data["grouped_semantic_events"], raw_segments
@@ -317,7 +322,9 @@ def _completed_segments(
         if present_scene_keys:
             scene = SceneSemantics.model_validate_json(
                 json.dumps(
-                    {key: result_data[key] for key in _SCENE_RESULT_KEYS},
+                    {**{key: result_data[key] for key in _SCENE_RESULT_KEYS},
+                     "locations": result_data.get("locations", []),
+                     "relations": result_data.get("relations", [])},
                     ensure_ascii=False,
                     separators=(",", ":"),
                     allow_nan=False,
@@ -343,6 +350,7 @@ def _completed_segments(
                     if scene_unavailable
                     else tuple(target["object_id"] for target in required_targets)
                 ),
+                spatial_evidence_available=result_data.get("cv_evidence", {}).get("status") == "available",
             )
         if "warnings" in result_data:
             _validate_normalization_warnings(
@@ -358,7 +366,7 @@ def _validate_normalization_warnings(
     segments: tuple[_CompletedSegment, ...],
     result: Mapping[str, object],
 ) -> None:
-    if type(value) is not list or not 1 <= len(value) <= 5:
+    if type(value) is not list or not 1 <= len(value) <= 7:
         raise ValueError
     codes: list[str] = []
     for warning in value:
@@ -383,7 +391,10 @@ def _validate_normalization_warnings(
                 raise ValueError
             if {
                 key: result[key] for key in _SCENE_RESULT_KEYS
-            } != unavailable_scene_semantics():
+            } != {key: unavailable_scene_semantics()[key] for key in _SCENE_RESULT_KEYS}:
+                raise ValueError
+        elif code in {"CV_EVIDENCE_UNAVAILABLE", "OCCLUSION_UNAVAILABLE"}:
+            if warning != {"code": code} or not HYBRID_KEYS <= result.keys():
                 raise ValueError
         else:
             raise ValueError
