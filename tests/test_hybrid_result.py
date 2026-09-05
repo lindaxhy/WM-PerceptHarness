@@ -283,6 +283,14 @@ def test_positive_occlusion_is_a_checked_projection_of_real_candidates():
         "occlusion_candidates": bundle.candidates,
     }
     hybrid_result.validate_hybrid_result(result, **context)
+    empty = copy.deepcopy(result)
+    empty["annotation_branches"]["occlusion"].update(decisions=[], events=[])
+    with pytest.raises(ValueError):
+        hybrid_result.validate_hybrid_result(empty, **context)
+    empty["annotation_branches"]["occlusion"]["status"] = "unavailable"
+    empty["warnings"].append({"code": "OCCLUSION_UNAVAILABLE"})
+    empty["performance"]["degradation_count"] = 2
+    hybrid_result.validate_hybrid_result(empty, **context)
     result["annotation_branches"]["occlusion"]["events"][0]["source_track_ids"] = [
         "foreign"
     ]
@@ -329,3 +337,76 @@ def test_scene_registry_checks_spatial_rows_against_summary(available_result):
         mutation(bad)
         sanitized = DEFAULT_OUTPUT_SCHEMAS.sanitize("SceneSemantics", bad, context)
         assert DEFAULT_OUTPUT_SCHEMAS.failure_codes("SceneSemantics", sanitized)
+
+
+@pytest.mark.parametrize("status", ["unavailable", "disabled"])
+def test_nonavailable_scene_rejects_successful_outcome(status):
+    result = hybrid_result.build_hybrid_result(
+        task_description="move cup",
+        segments=source_segments(),
+        scene=unavailable_scene_semantics(),
+        scene_status=status,
+        cv_evidence={"status": "disabled"},
+        warnings=[{"code": "SCENE_SEMANTICS_UNAVAILABLE"}]
+        if status == "unavailable"
+        else [],
+        performance={
+            "stages": [],
+            "total_seconds": 0.0,
+            "repair_count": 0,
+            "degradation_count": int(status == "unavailable"),
+        },
+    )
+    hybrid_result.validate_hybrid_result(result)
+    outcome = {"status": "success", "description": "task achieved", "confidence": 1.0}
+    result["outcome"] = outcome
+    result["annotation_branches"]["scene_facts"]["outcome"] = outcome.copy()
+    with pytest.raises(ValueError):
+        hybrid_result.validate_hybrid_result(result)
+
+
+@pytest.mark.parametrize(
+    "warning",
+    [
+        {"code": "ENTITY_ALIASES_TRUNCATED", "omitted_count": -100},
+        {"code": "ENTITY_ALIASES_TRUNCATED", "omitted_count": True},
+        {"code": "ENTITY_ALIASES_TRUNCATED", "omitted_count": 16385},
+        {
+            "code": "CV_ENTITY_LIMIT_APPLIED",
+            "omitted_count": 1,
+            "limit": 16,
+            "message": "false audit",
+        },
+        {
+            "code": "CV_ENTITY_LIMIT_APPLIED",
+            "omitted_count": 63,
+            "limit": 16,
+            "message": "63 entity candidates omitted by limit 16",
+        },
+        {
+            "code": "BOUNDARY_TOPOLOGY_NORMALIZED",
+            "issue_codes": ["SEGMENT_TOO_LONG"],
+            "count": -1,
+        },
+        {
+            "code": "BOUNDARY_TOPOLOGY_NORMALIZED",
+            "issue_codes": ["private"],
+            "count": 1,
+        },
+        {
+            "code": "ENRICHMENT_ENUM_NORMALIZED_TO_UNKNOWN",
+            "fields": ["skill"],
+            "count": 1,
+        },
+        {
+            "code": "ENRICHMENT_ENUM_NORMALIZED_TO_UNKNOWN",
+            "fields": ["private"],
+            "count": 1,
+        },
+    ],
+)
+def test_audit_warning_values_must_match_their_semantics(available_result, warning):
+    result, _ = available_result
+    result["warnings"] = [warning]
+    with pytest.raises(ValueError):
+        hybrid_result.validate_hybrid_result(result)

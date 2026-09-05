@@ -29,7 +29,7 @@ from .pipelines.validators import (
     VisualMotionState,
 )
 from .pipelines.semantic_events import validate_semantic_events
-from .pipelines.hybrid_result import HYBRID_KEYS, validate_hybrid_result
+from .pipelines.hybrid_result import HYBRID_KEYS, validate_audit_warning, validate_hybrid_result
 
 
 _ANNOTATION_STAGE = "boundary_fine_segments_0805"
@@ -51,23 +51,11 @@ _SCENE_RESULT_KEYS = frozenset(
 _OPTIONAL_RESULT_KEYS = frozenset(
     {"warnings", "grouped_semantic_events", "locations", "relations"}
 ) | _SCENE_RESULT_KEYS | HYBRID_KEYS
-_NORMALIZATION_WARNING_KEYS = frozenset({"code", "fields", "count"})
 _NORMALIZATION_WARNING_CODE = "ENRICHMENT_ENUM_NORMALIZED_TO_UNKNOWN"
-_BOUNDARY_WARNING_KEYS = frozenset({"code", "issue_codes", "count"})
 _BOUNDARY_WARNING_CODE = "BOUNDARY_TOPOLOGY_NORMALIZED"
-_CV_ENTITY_LIMIT_WARNING_KEYS = frozenset(
-    {"code", "omitted_count", "limit", "message"}
-)
 _CV_ENTITY_LIMIT_WARNING_CODE = "CV_ENTITY_LIMIT_APPLIED"
-_ENTITY_ALIAS_WARNING_KEYS = frozenset({"code", "omitted_count"})
 _ENTITY_ALIAS_WARNING_CODE = "ENTITY_ALIASES_TRUNCATED"
-_MAX_ENTITY_ALIAS_OMISSIONS = 64 * 256
 _SCENE_WARNING_CODE = "SCENE_SEMANTICS_UNAVAILABLE"
-_BOUNDARY_WARNING_ISSUE_CODES = (
-    "SEGMENT_TOO_LONG",
-    "SEGMENT_BOUNDARY_NOT_ADJACENT",
-    "SEGMENT_DESCRIPTION_INVALID",
-)
 _NORMALIZABLE_ENUM_FIELDS = (
     "actor",
     "actor_state",
@@ -401,107 +389,32 @@ def _validate_normalization_warnings(
 
 
 def _validate_entity_alias_warning(warning: Mapping[str, object]) -> None:
-    warning_data = dict(warning)
-    if set(warning_data) != _ENTITY_ALIAS_WARNING_KEYS:
-        raise ValueError
-    code = warning_data["code"]
-    omitted_count = warning_data["omitted_count"]
-    if (
-        type(code) is not str
-        or code != _ENTITY_ALIAS_WARNING_CODE
-        or type(omitted_count) is not int
-        or not 1 <= omitted_count <= _MAX_ENTITY_ALIAS_OMISSIONS
-    ):
-        raise ValueError
+    validate_audit_warning(warning)
 
 
 def _validate_cv_entity_limit_warning(warning: Mapping[str, object]) -> None:
-    warning_data = dict(warning)
-    if set(warning_data) != _CV_ENTITY_LIMIT_WARNING_KEYS:
-        raise ValueError
-    code = warning_data["code"]
-    omitted_count = warning_data["omitted_count"]
-    limit = warning_data["limit"]
-    message = warning_data["message"]
-    if (
-        type(code) is not str
-        or code != _CV_ENTITY_LIMIT_WARNING_CODE
-        or type(omitted_count) is not int
-        or not 1 <= omitted_count <= 63
-        or type(limit) is not int
-        or not 1 <= limit <= 16
-        or omitted_count + limit > 64
-        or type(message) is not str
-    ):
-        raise ValueError
-    noun = "candidate" if omitted_count == 1 else "candidates"
-    if message != f"{omitted_count} entity {noun} omitted by limit {limit}":
-        raise ValueError
+    validate_audit_warning(warning)
 
 
 def _validate_enrichment_warning(
     warning: Mapping[str, object],
     segments: tuple[_CompletedSegment, ...],
 ) -> None:
-    warning_data = dict(warning)
-    if set(warning_data) != _NORMALIZATION_WARNING_KEYS:
-        raise ValueError
-    code = warning_data["code"]
-    if type(code) is not str or code != _NORMALIZATION_WARNING_CODE:
-        raise ValueError
-
-    fields = warning_data["fields"]
-    if type(fields) is not list or not fields:
-        raise ValueError
-    if any(type(field) is not str for field in fields):
-        raise ValueError
-    canonical_fields = [
-        field for field in _NORMALIZABLE_ENUM_FIELDS if field in fields
-    ]
-    if fields != canonical_fields:
-        raise ValueError
-
-    count = warning_data["count"]
-    if type(count) is not int or count <= 0:
-        raise ValueError
-    if not len(fields) <= count <= len(fields) * len(segments):
-        raise ValueError
-
-    unknown_counts = {
-        field: sum(
-            1
-            for segment in segments
-            if getattr(segment, field).value == "unknown"
-        )
-        for field in fields
-    }
-    if any(field_count == 0 for field_count in unknown_counts.values()):
-        raise ValueError
-    if count > sum(unknown_counts.values()):
-        raise ValueError
+    validate_audit_warning(
+        warning,
+        segment_count=len(segments),
+        unknown_counts={
+            field: sum(getattr(segment, field).value == "unknown" for segment in segments)
+            for field in _NORMALIZABLE_ENUM_FIELDS
+        },
+    )
 
 
 def _validate_boundary_warning(
     warning: Mapping[str, object],
     segments: tuple[_CompletedSegment, ...],
 ) -> None:
-    warning_data = dict(warning)
-    if set(warning_data) != _BOUNDARY_WARNING_KEYS:
-        raise ValueError
-    code = warning_data["code"]
-    if type(code) is not str or code != _BOUNDARY_WARNING_CODE:
-        raise ValueError
-    issue_codes = warning_data["issue_codes"]
-    if type(issue_codes) is not list or not issue_codes:
-        raise ValueError
-    canonical = [
-        value for value in _BOUNDARY_WARNING_ISSUE_CODES if value in issue_codes
-    ]
-    if issue_codes != canonical:
-        raise ValueError
-    count = warning_data["count"]
-    if type(count) is not int or count != len(segments):
-        raise ValueError
+    validate_audit_warning(warning, segment_count=len(segments))
 
 
 def _segment(value: object) -> _CompletedSegment:

@@ -27,6 +27,7 @@ from .occlusion import (
 from .scene_semantics import (
     SceneSemanticEvent,
     SceneSemantics,
+    unavailable_scene_semantics,
     validate_scene_semantics,
 )
 from .semantic_events import build_semantic_events
@@ -55,6 +56,15 @@ SCENE_KEYS = frozenset(
     }
 )
 HYBRID_KEYS = frozenset({"annotation_branches", "cv_evidence", "performance"})
+NORMALIZABLE_FIELDS = ("actor", "actor_state", "skill", "visual_motion_state")
+AUDIT_WARNING_CODES = frozenset(
+    {
+        "ENTITY_ALIASES_TRUNCATED",
+        "CV_ENTITY_LIMIT_APPLIED",
+        "ENRICHMENT_ENUM_NORMALIZED_TO_UNKNOWN",
+        "BOUNDARY_TOPOLOGY_NORMALIZED",
+    }
+)
 _STATUSES = {"available", "unavailable", "disabled"}
 _STAGES = {
     "media_decode",
@@ -489,7 +499,11 @@ def validate_hybrid_result(
         validate_event_provenance(
             event, segments=segments, summary=evidence_summary, frame_pts=frame_pts
         )
-    if evidence_summary is not None and decisions.decisions:
+    if (
+        evidence_summary is not None
+        and occlusion["status"] == "available"
+        and (decisions.decisions or occlusion_candidates is not None)
+    ):
         if occlusion_candidates is None:
             raise ValueError("trusted occlusion candidates are required")
         validate_occlusion_decisions(decisions, occlusion_candidates, duration=duration)
@@ -521,6 +535,15 @@ def validate_hybrid_result(
         if warning["code"] not in warning_fields:
             raise ValueError("unknown hybrid warning")
         _exact(warning, warning_fields[warning["code"]])
+        if warning["code"] in AUDIT_WARNING_CODES:
+            validate_audit_warning(
+                warning,
+                segment_count=len(segments),
+                unknown_counts={
+                    field: sum(segment.get(field) == "unknown" for segment in segments)
+                    for field in NORMALIZABLE_FIELDS
+                },
+            )
     if len(codes) != len(set(codes)):
         raise ValueError("duplicate warning codes")
     for branch_status, code in (
@@ -542,6 +565,10 @@ def validate_hybrid_result(
         )
     ):
         raise ValueError("unavailable scene contains claims")
+    if scene["status"] != "available" and not _same_json(
+        scene["outcome"], unavailable_scene_semantics()["outcome"]
+    ):
+        raise ValueError("unavailable scene outcome is not conservative")
     if occlusion["status"] != "available" and (
         occlusion["decisions"] or occlusion["events"]
     ):
@@ -581,6 +608,74 @@ def validate_hybrid_result(
     ):
         raise ValueError("degradation count differs from statuses")
     _reject_artifact_text(result)
+
+
+def validate_audit_warning(
+    warning: Mapping[str, Any],
+    *,
+    segment_count: int = 0,
+    unknown_counts: Mapping[str, int] | None = None,
+) -> None:
+    """Shared semantic audit checks for public hybrid results and legacy export."""
+    warning = dict(warning)
+    code = warning.get("code")
+    if code == "ENTITY_ALIASES_TRUNCATED":
+        _exact(warning, {"code", "omitted_count"})
+        count = warning["omitted_count"]
+        if type(count) is not int or not 1 <= count <= 64 * 256:
+            raise ValueError("alias omission count is invalid")
+    elif code == "CV_ENTITY_LIMIT_APPLIED":
+        _exact(warning, {"code", "omitted_count", "limit", "message"})
+        count, limit = warning["omitted_count"], warning["limit"]
+        if (
+            type(count) is not int
+            or not 1 <= count <= 63
+            or type(limit) is not int
+            or not 1 <= limit <= 16
+            or count + limit > 64
+        ):
+            raise ValueError("entity omission count is invalid")
+        noun = "candidate" if count == 1 else "candidates"
+        if warning["message"] != f"{count} entity {noun} omitted by limit {limit}":
+            raise ValueError("entity omission message disagrees with count")
+    elif code == "ENRICHMENT_ENUM_NORMALIZED_TO_UNKNOWN":
+        _exact(warning, {"code", "fields", "count"})
+        fields, count = warning["fields"], warning["count"]
+        if (
+            type(fields) is not list
+            or not fields
+            or any(type(field) is not str for field in fields)
+            or fields != [field for field in NORMALIZABLE_FIELDS if field in fields]
+        ):
+            raise ValueError("normalization fields are invalid")
+        if (
+            type(count) is not int
+            or not len(fields) <= count <= len(fields) * segment_count
+        ):
+            raise ValueError("normalization count is invalid")
+        counts = unknown_counts or {}
+        if any(counts.get(field, 0) == 0 for field in fields) or count > sum(
+            counts.get(field, 0) for field in fields
+        ):
+            raise ValueError("normalization count lacks unknown output fields")
+    elif code == "BOUNDARY_TOPOLOGY_NORMALIZED":
+        _exact(warning, {"code", "issue_codes", "count"})
+        issues = warning["issue_codes"]
+        allowed = (
+            "SEGMENT_TOO_LONG",
+            "SEGMENT_BOUNDARY_NOT_ADJACENT",
+            "SEGMENT_DESCRIPTION_INVALID",
+        )
+        if (
+            type(issues) is not list
+            or not issues
+            or issues != [item for item in allowed if item in issues]
+        ):
+            raise ValueError("boundary normalization codes are invalid")
+        if type(warning["count"]) is not int or warning["count"] != segment_count:
+            raise ValueError("boundary normalization count differs from segments")
+    else:
+        raise ValueError("unknown audit warning")
 
 
 def _reject_artifact_text(value):
