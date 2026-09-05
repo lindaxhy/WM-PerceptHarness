@@ -21,6 +21,9 @@ _JPEG_EOI = b"\xff\xd9"
 _MAX_MJPEG_STREAM_BYTES = 512 * 1024 * 1024
 _MAX_JPEG_FRAME_BYTES = 64 * 1024 * 1024
 _STREAM_READ_BYTES = 64 * 1024
+# FFprobe commonly emits six decimal places; comparisons may therefore differ
+# by one microsecond across two independently rounded timestamps.
+_PTS_COMPARISON_TOLERANCE = Fraction(1, 1_000_000)
 
 
 class TimelineError(RuntimeError):
@@ -161,10 +164,10 @@ def initial_sample_indices(
     try:
         start, end = _timeline_bounds(timeline)
         if end - start <= Fraction(str(policy.short_video_seconds)):
-            source_fps = _source_fps(timeline, start, end)
-            if source_fps is None or source_fps <= Fraction(str(policy.max_fps)):
+            max_rate = Fraction(str(policy.max_fps))
+            if _rate_at_or_below(timeline, start, end, max_rate):
                 return tuple(point.frame_index for point in timeline.frames)
-            rate = Fraction(str(policy.max_fps))
+            rate = max_rate
         else:
             rate = Fraction(str(policy.scan_fps))
         return _select_pts_at_or_after(timeline, start, end, rate)
@@ -231,7 +234,10 @@ def _cap_selected_pts(
     previous: Fraction | None = None
     for index in sorted(selected):
         timestamp = Fraction(str(points_by_index[index].timestamp_seconds))
-        if previous is None or timestamp - previous >= interval:
+        if (
+            previous is None
+            or timestamp - previous + _PTS_COMPARISON_TOLERANCE >= interval
+        ):
             capped.append(index)
             previous = timestamp
     return tuple(capped)
@@ -248,12 +254,13 @@ def _timeline_bounds(timeline: FrameTimeline) -> tuple[Fraction, Fraction]:
     return start, end
 
 
-def _source_fps(
-    timeline: FrameTimeline, start: Fraction, end: Fraction
-) -> Fraction | None:
+def _rate_at_or_below(
+    timeline: FrameTimeline, start: Fraction, end: Fraction, rate: Fraction
+) -> bool:
     if len(timeline.frames) == 1 or end == start:
-        return None
-    return Fraction(len(timeline.frames) - 1, 1) / (end - start)
+        return True
+    required_duration = Fraction(len(timeline.frames) - 1, 1) / rate
+    return end - start + _PTS_COMPARISON_TOLERANCE >= required_duration
 
 
 def _select_pts_at_or_after(
@@ -272,10 +279,16 @@ def _select_pts_at_or_after(
     interval = Fraction(1, 1) / rate
     target = start
     cursor = 0
-    while target <= end:
-        while cursor < len(timestamps) and timestamps[cursor] < target:
+    while target <= end + _PTS_COMPARISON_TOLERANCE:
+        while (
+            cursor < len(timestamps)
+            and timestamps[cursor] + _PTS_COMPARISON_TOLERANCE < target
+        ):
             cursor += 1
-        if cursor == len(timestamps) or timestamps[cursor] > end:
+        if (
+            cursor == len(timestamps)
+            or timestamps[cursor] > end + _PTS_COMPARISON_TOLERANCE
+        ):
             break
         selected.append(points[cursor].frame_index)
         target += interval

@@ -147,7 +147,7 @@ class PredictorDouble:
     ) -> list[dict[str, Any]]:
         del session_number, prompt
         start = request["start_frame_index"]
-        stop = start + request["max_frame_num_to_track"] + 1
+        stop = start + request["max_frame_num_to_track"]
         outputs = []
         for frame_index in range(start, stop):
             outputs.append(
@@ -663,7 +663,7 @@ def test_empty_detections_are_valid_and_still_close_the_session(
     ) -> list[dict[str, Any]]:
         del session_number, prompt
         start = stream_request["start_frame_index"]
-        stop = start + stream_request["max_frame_num_to_track"] + 1
+        stop = start + stream_request["max_frame_num_to_track"]
         return [empty_frame_output(index) for index in range(start, stop)]
 
     predictor = PredictorDouble(empty_stream)
@@ -862,13 +862,14 @@ def test_adapter_rejects_undeclared_files_in_numbered_frame_directory(
     assert predictor.requests == []
 
 
-def test_adapter_uses_one_official_full_sequence_stream_per_prompt(
-    tmp_path: Path, fake_torch: SimpleNamespace
+@pytest.mark.parametrize("frame_count", [1, 5, 32])
+def test_adapter_uses_sample_count_for_one_uninterrupted_stream_per_prompt(
+    tmp_path: Path, fake_torch: SimpleNamespace, frame_count: int
 ) -> None:
     request = make_request(
         tmp_path,
-        duration_seconds=4.0,
-        timestamps=(0.0, 1.0, 2.0, 3.0, 4.0),
+        duration_seconds=max(0.001, (frame_count - 1) / 30),
+        timestamps=tuple(index / 30 for index in range(frame_count)),
     )
     predictor = PredictorDouble()
     materializer = MaterializerDouble()
@@ -885,15 +886,16 @@ def test_adapter_uses_one_official_full_sequence_stream_per_prompt(
         (item["start_frame_index"], item["max_frame_num_to_track"])
         for item in predictor.stream_requests
     ]
-    assert per_prompt == [(0, 4), (0, 4)]
-    assert materializer.calls[0][1] == (0, 1, 2, 3, 4)
-    assert [item.frame_index for item in artifact.tracks[0].observations] == [
-        0,
-        1,
-        2,
-        3,
-        4,
-    ]
+    assert per_prompt == [(0, frame_count), (0, frame_count)]
+    assert materializer.calls[0][1] == tuple(range(frame_count))
+    assert [item.frame_index for item in artifact.tracks[0].observations] == list(
+        range(frame_count)
+    )
+    assert all(
+        observation.frame_index < frame_count
+        for track in artifact.tracks
+        for observation in track.observations
+    )
 
 
 def test_pinned_base_start_session_compatibility_and_execution_chunk_control(
@@ -1014,7 +1016,7 @@ def test_long_video_scans_refines_union_and_discards_preliminary_outputs(
     ) -> list[dict[str, Any]]:
         del prompt
         start = stream_request["start_frame_index"]
-        stop = start + stream_request["max_frame_num_to_track"] + 1
+        stop = start + stream_request["max_frame_num_to_track"]
         if session_number == 0:
             scan = {
                 0: frame_output(0),
@@ -1082,7 +1084,7 @@ def test_visibility_overlay_files_are_bounded_to_twenty_four(
     ) -> list[dict[str, Any]]:
         del session_number, prompt
         start = stream_request["start_frame_index"]
-        stop = start + stream_request["max_frame_num_to_track"] + 1
+        stop = start + stream_request["max_frame_num_to_track"]
         return [
             frame_output(index) if index % 2 == 0 else empty_frame_output(index)
             for index in range(start, stop)
@@ -1184,7 +1186,7 @@ def test_cuda_cache_baseexception_cannot_mask_oom_or_discard_retry_plan(
             raise fake_torch.cuda.OutOfMemoryError("private allocator state")
         return [
             frame_output(index)
-            for index in range(stream_request["max_frame_num_to_track"] + 1)
+            for index in range(stream_request["max_frame_num_to_track"])
         ]
 
     empty_cache_calls = 0
@@ -1235,7 +1237,7 @@ def test_worker_owned_oom_retry_reuses_identical_long_video_final_samples(
         session_number: int, prompt: str, stream_request: dict[str, Any]
     ) -> list[dict[str, Any]]:
         del prompt
-        count = stream_request["max_frame_num_to_track"] + 1
+        count = stream_request["max_frame_num_to_track"]
         if session_number == 0:
             return [frame_output(0), empty_frame_output(1), frame_output(2)]
         if session_number == 1:
@@ -1341,7 +1343,7 @@ def test_successful_stream_cleanup_failure_is_sanitized_and_cleans_outputs(
     class PredictorWithFailingStreamClose(PredictorDouble):
         def handle_stream_request(self, request: dict[str, Any]) -> CompleteStream:
             self.stream_requests.append(dict(request))
-            return CompleteStream(request["max_frame_num_to_track"] + 1)
+            return CompleteStream(request["max_frame_num_to_track"])
 
     predictor = PredictorWithFailingStreamClose()
     provider = make_provider(predictor, fake_torch, MaterializerDouble())
@@ -2521,6 +2523,7 @@ def test_load_verifies_local_revision_and_hash_then_calls_official_builder(
         max_num_objects: int,
         multiplex_count: int,
         compile: bool,
+        use_fa3: bool,
     ) -> PredictorDouble:
         factory_calls.append(
             {
@@ -2529,6 +2532,7 @@ def test_load_verifies_local_revision_and_hash_then_calls_official_builder(
                 "max_num_objects": max_num_objects,
                 "multiplex_count": multiplex_count,
                 "compile": compile,
+                "use_fa3": use_fa3,
             }
         )
         return predictor
@@ -2606,6 +2610,7 @@ def test_load_verifies_local_revision_and_hash_then_calls_official_builder(
             "max_num_objects": 16,
             "multiplex_count": 16,
             "compile": True,
+            "use_fa3": False,
         }
     ]
     assert provider.checkpoint_sha256 == digest
@@ -2813,8 +2818,9 @@ def test_builder_receives_private_asset_snapshots_immune_to_path_replacement(
         max_num_objects: int,
         multiplex_count: int,
         compile: bool,
+        use_fa3: bool,
     ) -> PredictorDouble:
-        del max_num_objects, multiplex_count, compile
+        del max_num_objects, multiplex_count, compile, use_fa3
         checkpoint.rename(tmp_path / "replaced-original.pt")
         checkpoint.write_bytes(b"attacker replacement")
         original_bpe.rename(tmp_path / "replaced-bpe.txt")
@@ -2911,6 +2917,7 @@ def test_load_imports_sam_only_from_configured_repository_and_restores_sys_path(
             "max_num_objects": 16,
             "multiplex_count": 16,
             "compile": False,
+            "use_fa3": False,
         }
     ]
     assert checkpoint_argument.read_bytes() == checkpoint.read_bytes()

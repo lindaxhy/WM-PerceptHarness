@@ -363,6 +363,7 @@ class Sam31EvidenceProvider:
                 max_num_objects=16,
                 multiplex_count=16,
                 compile=compile_model,
+                use_fa3=False,
             )
             _require_predictor_interface(predictor)
             if predictor_factory is None:
@@ -702,7 +703,7 @@ class Sam31EvidenceProvider:
             "session_id": session_id,
             "propagation_direction": "forward",
             "start_frame_index": 0,
-            "max_frame_num_to_track": frame_count - 1,
+            "max_frame_num_to_track": frame_count,
             "output_prob_thresh": request.thresholds.min_confidence,
         }
         try:

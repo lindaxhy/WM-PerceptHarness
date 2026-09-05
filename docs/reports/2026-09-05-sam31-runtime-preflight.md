@@ -53,9 +53,12 @@ then exposed three adapter/runtime compatibility issues:
   resolves that mismatch without modifying upstream code.
 
 Separately, rounded FFprobe timestamps make nominal 30 fps appear as
-30.000002205882517 fps. The existing exact sampler selects only 92 of 137 source
-frames. This has a deterministic local reproduction and remains to be corrected
-using bounded timestamp comparison precision, not by rewriting observed PTS.
+30.000002205882517 fps. The previous exact sampler selected only 92 of 137 source
+frames. The adapter now uses a one-microsecond tolerance for timestamp comparisons,
+bounded by the difference between two six-decimal FFprobe roundings. It preserves
+all 137 source indices and their observed PTS unchanged, while genuinely higher-rate
+sources, long-video scans, and refinement windows remain capped by the approved
+sampling rates.
 
 A diagnostic run on frozen `full_0024` using the baseline `ba1f46f` wheel and
 the two explicit attention/count overrides succeeded in 46.010 seconds:
@@ -65,7 +68,10 @@ Source SHA-256 is
 `a7a696bcdd835c083b27ca3705d13a2f22e069ebec9038581354fed39e6fbbe8`.
 This demonstrates actual checkpoint inference and artifact generation; it is
 not production-adapter acceptance because of the diagnostic overrides and
-incomplete sampling. The formal remediation, corrected 137-frame run, memory
+incomplete sampling. The production adapter now passes `use_fa3=False` and the
+sampled-frame count to the pinned builder/tracker boundary. A fresh immutable-wheel
+real-GPU run with all 137 original index/PTS mappings remains controller-owned and
+has not yet been accepted. The formal corrected run, memory
 stability checks, and five-demo acceptance gates remain required.
 
 Sources: [ModelScope model](https://www.modelscope.cn/models/facebook/sam3.1),

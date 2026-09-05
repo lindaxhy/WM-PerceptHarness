@@ -206,6 +206,66 @@ def test_initial_sampling_keeps_all_short_video_frames_at_or_below_max_fps() -> 
     assert indices == tuple(range(21))
 
 
+def test_initial_sampling_preserves_all_nominal_30_fps_rounded_pts() -> None:
+    """Six-decimal FFprobe rounding must not falsely put a 30 fps source over cap."""
+    timeline = FrameTimeline(
+        frames=tuple(
+            FrameTimestamp(
+                frame_index=index,
+                timestamp_seconds=float(f"{index / 30:.6f}"),
+            )
+            for index in range(137)
+        )
+    )
+
+    assert initial_sample_indices(timeline, _policy()) == tuple(range(137))
+
+
+def test_initial_sampling_still_caps_genuinely_higher_rounded_rate() -> None:
+    """Timestamp tolerance must not expand the approved 30 fps sampling cap."""
+    timeline = FrameTimeline(
+        frames=tuple(
+            FrameTimestamp(
+                frame_index=index,
+                timestamp_seconds=float(f"{index / 31:.6f}"),
+            )
+            for index in range(137)
+        )
+    )
+
+    selected = initial_sample_indices(timeline, _policy())
+
+    assert len(selected) < len(timeline.frames)
+    assert selected == tuple(sorted(set(selected)))
+
+
+def test_rounded_pts_long_scan_and_refinement_remain_capped_and_stable() -> None:
+    """Comparison tolerance must not create duplicate or over-cap long-video samples."""
+    timeline = FrameTimeline(
+        frames=tuple(
+            FrameTimestamp(
+                frame_index=index,
+                timestamp_seconds=float(f"{index / 60:.6f}"),
+            )
+            for index in range(60 * 60 + 1)
+        )
+    )
+
+    scan = initial_sample_indices(timeline, _policy())
+    refined = refinement_sample_indices(timeline, (600, 601), _policy())
+
+    assert scan == tuple(sorted(set(scan)))
+    assert len(scan) <= 60 * 8 + 1
+    assert refined == tuple(sorted(set(refined)))
+    assert len(refined) <= 2 * 30 + 1
+    selected_pts = tuple(timeline.frames[index].timestamp_seconds for index in refined)
+    assert selected_pts == tuple(float(f"{index / 60:.6f}") for index in refined)
+    assert all(
+        later - earlier + 0.000001 >= 1 / 30
+        for earlier, later in zip(selected_pts, selected_pts[1:])
+    )
+
+
 def test_initial_sampling_uses_first_eligible_pts_above_short_video_cap() -> None:
     """Rounding sample times can select a decoded frame before its requested PTS."""
     timeline = FrameTimeline(
