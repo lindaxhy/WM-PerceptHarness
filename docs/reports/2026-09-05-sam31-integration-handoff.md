@@ -29,12 +29,15 @@ but Poll's generic sensitive-name redaction corrupts keyframe provenance and
 numeric usage. The original transport response is preserved; the bounded
 [Poll contract repair](../superpowers/plans/2026-09-05-poll-hybrid-provenance.md)
 was implemented at `5f7a5d0`; review found two boundary cases. The valid null
-metrics case was fixed at `1046cf3` and independently re-reviewed, with 163
-covering tests passing. Malformed CV containers can also raise `AttributeError`,
-which the plan's explicit exception tuple omits. A user decision on extending
-that fail-closed tuple is pending; no repaired package has been deployed yet.
-No inference resubmission is needed for this repair; full Task 15 acceptance
-remains incomplete.
+metrics case was fixed at `1046cf3`. The user approved adding `AttributeError`
+for malformed-container validation failures; that fix completed at `323393f`
+with independent re-review. Final verification passed 1,659 Python tests with
+85.75% branch-enabled combined coverage and 19 Node tests. Both isolated runtime
+environments now contain the verified repaired wheel. Re-polling the original
+completed task returned valid data byte-identical to its canonical stored
+snapshot, with no additional task or inference job. The resumed driver exported
+the first sample and has submitted sample two. Full Task 15 acceptance remains
+incomplete.
 Task 13 adds verified projection,
 variant selection and bounded overlay access; its actual five-demo data and
 acceptance publication remain Task 15 work. Focused verification passed 152

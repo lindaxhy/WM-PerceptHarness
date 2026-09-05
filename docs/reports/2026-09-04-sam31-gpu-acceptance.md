@@ -77,11 +77,36 @@ The resumable driver stopped before submitting sample two. A bounded API-only
 contract repair was implemented at `5f7a5d0` (1,657 tests passed, 85.75%
 branch-enabled combined coverage). Independent review found a valid null-metrics
 case, fixed and re-reviewed at `1046cf3` (163 covering tests passed), plus a
-malformed-container `AttributeError` not covered by the prescribed exception
-tuple. Extending that tuple awaits the user's plan decision. No repaired package
-has been installed; the same completed task will be re-polled without repeating
-inference once review is closed. This is not yet a valid exported control run
-or five-demo acceptance.
+malformed-container `AttributeError` not covered by the original prescribed
+exception tuple. The user approved the bounded amendment; the second fix and
+independent re-review completed at `323393f`.
+
+Final pre-deployment verification: 1,659 Python tests passed in 74.86 seconds,
+85.75% branch-enabled combined coverage, two existing dependency warnings;
+19 Node tests, JavaScript syntax and branch whitespace checks passed.
+
+The repaired release identities are:
+
+| Input | Identity |
+| --- | --- |
+| Source commit | `323393f5f5feacd87755e8bc5c7242fa05edace1` |
+| Wheel SHA-256 | `de7b62489bd77a60a578daa10a15561952c6197a6cba100554eff9615395047c` |
+| Source archive SHA-256 | `22b4fa7b2713eb203dffc003dd8b8510df75b15b8ac2a67acd5eba1e86926bfb` |
+
+Only `api.py` differs from the actual GPU-smoke wheel; all 45 other product
+files are byte-identical, including the pipeline, providers and prompts. Both
+isolated environments were updated and all 46 installed product files compared
+against the new wheel. Five owned idle control processes were restarted after
+confirming terminal database state; their original logs were preserved. ARK's
+dependency check remains clean. The original Qwen deployment was untouched.
+
+Authenticated Poll of the same completed task now validates and has exactly the
+stored canonical SHA-256 above. The database still held one task and five jobs;
+unauthenticated Poll returned 401. No inference was repeated. The first sample
+export contains 14 fine training rows. Its inference used `f4e7970`, while its
+repaired transport used `323393f`; this API-only provenance distinction is
+intentional and recorded. The resumed driver has submitted sample two. The
+five-sample control/treatment and full acceptance gates remain incomplete.
 
 ## Remaining acceptance
 
