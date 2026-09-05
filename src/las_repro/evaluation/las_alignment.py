@@ -138,12 +138,21 @@ class Event:
     state: str | None = None
     result: str | None = None
     event_id: str = ""
+    target_entity_id: str | None = None
+    occluder_entity_id: str | None = None
 
     def __post_init__(self):
         if not 0 <= _number(self.start) < _number(self.end):
             raise ValueError("invalid positive event interval")
         _text(self.event_type)
-        for label in (self.actor, self.target, self.state, self.result):
+        for label in (
+            self.actor,
+            self.target,
+            self.state,
+            self.result,
+            self.target_entity_id,
+            self.occluder_entity_id,
+        ):
             if label is not None:
                 _text(label)
 
@@ -261,6 +270,7 @@ class SampleMetrics:
     rates: dict
     provenance: dict
     occlusion_intervals: dict
+    field_temporal_assignment: dict
 
     def to_dict(self):
         return asdict(self)
@@ -456,10 +466,40 @@ def evaluate_sample(
         claims = review["claims"]
         if type(claims) is not list:
             raise ValueError("invalid review claims")
+        predicted_claims = {e.event_id: e for e in prediction.occlusions}
+        if len(predicted_claims) != len(prediction.occlusions):
+            raise ValueError("duplicate prediction claim identity")
         for claim in claims:
-            _exact(claim, {"event_id", "correct"})
+            _exact(
+                claim,
+                {
+                    "event_id",
+                    "correct",
+                    "target_entity_id",
+                    "occluder_entity_id",
+                    "event_type",
+                    "start",
+                    "end",
+                    "visual_reason",
+                },
+            )
+            _text(claim["event_id"])
             if type(claim["correct"]) is not bool:
                 raise ValueError("incomplete human review")
+            _text(claim["visual_reason"])
+            if len(claim["visual_reason"]) > 1024:
+                raise ValueError("review visual reason exceeds bound")
+            event = predicted_claims.get(claim["event_id"])
+            if event is None:
+                raise ValueError("foreign review event")
+            for name in ("target_entity_id", "occluder_entity_id", "event_type"):
+                if _text(claim[name]) != getattr(event, name):
+                    raise ValueError("review event identity mismatch")
+            if (
+                _number(claim["start"]) != event.start
+                or _number(claim["end"]) != event.end
+            ):
+                raise ValueError("review event timing mismatch")
         ids = [c["event_id"] for c in claims]
         if len(ids) != len(set(ids)) or set(ids) != {
             e.event_id for e in prediction.occlusions
@@ -509,6 +549,20 @@ def evaluate_sample(
             "human_review_sha256": digest(review) if review is not None else None,
         },
         {str(t): _event_metrics(ri, pi, t) for t in (0.3, 0.5)},
+        {
+            "threshold": 0.3,
+            "matched_count": len(matches),
+            "unmatched_reference_ids": [
+                e.event_id
+                for i, e in enumerate(refs)
+                if i not in {m.reference_index for m in matches}
+            ],
+            "unmatched_prediction_ids": [
+                e.event_id
+                for i, e in enumerate(preds)
+                if i not in {m.prediction_index for m in matches}
+            ],
+        },
     )
 
 
@@ -1119,6 +1173,8 @@ def adapt_hybrid(
                 e["event_type"],
                 target=entities[e["target_entity_id"]],
                 event_id=f"occlusion_{e['event_index']}",
+                target_entity_id=e["target_entity_id"],
+                occluder_entity_id=e["occluder_entity_id"],
             )
         )
     statuses = (
@@ -1201,6 +1257,7 @@ def evaluate_run(
     if {p.stem for p in root.glob("*.json")} != set(references):
         raise ValueError("missing or extra result samples")
     samples = []
+    cv_model = None
     for entry in sorted(metadata["samples"], key=lambda x: x["sample_id"]):
         sid = entry["sample_id"]
         source = entries[sid]["source_video"]
@@ -1253,6 +1310,11 @@ def evaluate_run(
             )
         else:
             raise ValueError("new controls and hybrid require canonical branches")
+        sample_cv_model = prediction.provenance.get("cv_model")
+        if sample_cv_model is not None:
+            if cv_model is not None and sample_cv_model != cv_model:
+                raise ValueError("mixed CV model or checkpoint in evaluation run")
+            cv_model = sample_cv_model
         samples.append(
             evaluate_sample(
                 references[sid], prediction, mapping, (reviews or {}).get(sid)
@@ -1260,6 +1322,7 @@ def evaluate_run(
         )
     return {
         "model_identity": metadata["model_identity"],
+        "cv_model": cv_model,
         "provider": metadata["provider"],
         "configuration_sha256": metadata["configuration_sha256"],
         "runtime_metadata_sha256": digest(metadata),
