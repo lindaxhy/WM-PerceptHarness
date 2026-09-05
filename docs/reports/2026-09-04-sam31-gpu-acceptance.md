@@ -230,6 +230,34 @@ roles were verified before submitting its first cold sample. A durable remote
 observer records Submit/Poll progress and exit status independent of SSH.
 Five-demo treatment, cached runs and the remaining acceptance gates are pending.
 
+### Second cold attempt: first terminal sample
+
+`full_0001` completed in **744.250 seconds**, failing the unchanged 720-second
+end-to-end limit. Its CV branch succeeded: 328 source frames, eight prompts,
+15 tracks, 413.567 seconds job time (413.237 seconds inference), no cache hit
+or OOM retry, and peak Torch allocation of 21,742,110,208 bytes.
+It produced eight action events and 14 fine rows, with two repairs and one
+degradation. Scene semantics remained unavailable; both its initial and repair
+responses yielded `SCENE_SEMANTICS_SCHEMA_INVALID`. Those scene jobs took
+64.888 and 87.240 seconds. The stored diagnostics do not identify the invalid
+field, and raw rejected responses were not retained. The occlusion branch
+completed with seven decisions: four `out_of_frame` and three `unknown`, hence
+zero positive events. No passing timing or semantic gate is claimed.
+
+- Artifact key: `077b324e5346ffc92d2f1297a0650508e177d7c4b1cc19129e44e3d42ef1de8c`.
+- Manifest SHA-256: `c0fcb5ff666002111e9784c2b2ca1ee499a3df39434123156179154e2d4093f6`.
+- Canonical result SHA-256: `21082453b5d3f8ce42ed86d8fec35609884cc28108eb9b03026620e56a74317d`.
+
+The same immutable release/configuration continues through the remaining
+samples; `full_0002` is running. This failure is preserved before any further
+diagnosis or changes. Whole-cohort metrics are not yet available.
+
+Fresh local verification on the complete sentinel test revision passed all
+1,690 Python tests in 80.39 seconds with 85.80% coverage and the same two
+third-party deprecation warnings. All 20 Node viewer tests, JavaScript syntax
+validation and branch/current whitespace checks passed. This does not replace
+the unfinished runtime gates.
+
 ## Actual control viewer compatibility
 
 The actual five controls exposed production Fine boundary IDs rejected by the
@@ -244,7 +272,7 @@ no browser or human acceptance is claimed.
 
 ## Remaining acceptance
 
-The isolated control completed; hybrid services are stopped for CV diagnosis.
+The isolated control completed; the second hybrid cold cohort is running.
 Original media, query and sampling settings are preserved. Treatment, cache,
 recovery, metrics and human
 review evidence will be added from actual terminal jobs; no passing gate or
