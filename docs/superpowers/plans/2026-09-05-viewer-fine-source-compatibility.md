@@ -11,6 +11,12 @@ source-only metadata, validate their text with the existing safety boundary,
 and omit them from the unchanged closed Fine display schema. Original and
 canonical digests continue to bind all original source fields.
 
+Actual export then exposed a second existing-contract mismatch: scene semantic
+events explicitly allow `target_object_id: "unknown"` without a declared object.
+The browser must accept this sentinel only for scene event targets, display it
+as `unknown`, and continue rejecting foreign IDs, null targets and spatial
+references to undeclared objects. This is not a nullable-target contract.
+
 **Tech Stack:** Existing Python projector/exporter, pytest and Node model.
 
 ## Global Constraints
@@ -27,6 +33,8 @@ canonical digests continue to bind all original source fields.
 **Files:**
 - Modify: `src/las_repro/evaluation/viewer_projection.py`
 - Test: `tests/test_viewer_projection.py`
+- Modify: `evaluation/viewer/js/model.js`
+- Test: `evaluation/viewer/tests/model.test.mjs`
 
 **Interfaces:** Production `FineSegmentTableRow.public_record()` includes both
 boundary IDs. The projector's display allowlist and JS fine-event schema do not.
@@ -49,6 +57,10 @@ validation with `unknown viewer fine field` on these existing source fields.
   ```
 
   Do not remove or rewrite anything in the input result or its digest inputs.
+- [ ] Add a failing Node regression for the canonical scene target `unknown`
+  (including absent object declarations), plus known/foreign/null targets and
+  strict spatial-reference negatives. Accept the sentinel only in scene mode;
+  preserve closed fields and render an explicit `unknown` target.
 - [ ] Run projector/export/static Python tests, Node model tests, scoped Ruff
   and `git diff --check`. Run the actual five-control exporter and feed every
   generated projection to the real Node normalizer; verify frozen Qwen and

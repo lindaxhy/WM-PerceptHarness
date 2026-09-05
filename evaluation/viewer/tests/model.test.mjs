@@ -99,6 +99,39 @@ test("hybrid overlapping scene facts receive deterministic lanes and retain obje
   assert.equal(result.context.objects[0].name, "cup");
 });
 
+test("hybrid scene targets accept the canonical unknown sentinel without weakening object references", () => {
+  const fixture = target => {
+    const data = hybridFixture();
+    const {action, target: ignoredTarget, ...event} = data.layers.action_events.events[0];
+    data.layers.scene_facts.events = [{...event, id: "scene_0", branch: "scene",
+      model_stage: "scene_semantics", event_type: "move", target_object_id: target}];
+    return data;
+  };
+  for (const target of ["cup", "unknown"]) {
+    const data = fixture(target);
+    if (target === "unknown") data.layers.scene_facts.objects = [];
+    const before = structuredClone(data);
+    assert.equal(normalizeHybrid(data, 1, "full_0001").scene[0].target, target);
+    assert.deepEqual(data, before);
+  }
+  for (const target of ["foreign", null, ""]) {
+    assert.throws(() => normalizeHybrid(fixture(target), 1, "full_0001"));
+  }
+  for (const target of ["unknown", "foreign", null]) {
+    const data = hybridFixture();
+    const {id, event_index, action, actor, target: ignoredTarget, description, review, ...provenance} = data.layers.action_events.events[0];
+    data.layers.scene_facts.locations = [{...provenance, branch: "scene", model_stage: "scene_semantics",
+      object_id: target, location: "center", visual_evidence: "Visible location"}];
+    assert.throws(() => normalizeHybrid(data, 1, "full_0001"));
+    data.layers.scene_facts.locations = [];
+    for (const field of ["subject_object_id", "object_object_id"]) {
+      data.layers.scene_facts.relations = [{...provenance, branch: "scene", model_stage: "scene_semantics",
+        subject_object_id: "cup", object_object_id: "cup", relation: "near", visual_evidence: "Visible relation", [field]: target}];
+      assert.throws(() => normalizeHybrid(data, 1, "full_0001"));
+    }
+  }
+});
+
 test("hybrid review verdicts require matching provenance and human evidence", () => {
   const data = hybridFixture();
   const event = data.layers.occlusion_events.events[0];

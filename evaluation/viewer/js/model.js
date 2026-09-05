@@ -417,6 +417,7 @@ export function normalizeHybrid(data, duration, expectedSampleId) {
       } else if (event.review !== null) throw new Error("INVALID_REVIEW");
     } else if (event.review_status !== "not_required" || (!spatial && event.review !== null)) throw new Error("INVALID_REVIEW_STATUS");
     for (const key of ["target_object_id", "object_id", "subject_object_id", "object_object_id"]) {
+      if (mode === "scene" && key === "target_object_id" && event[key] === "unknown") continue;
       if (event[key] !== undefined && !objects.has(event[key])) throw new Error("FOREIGN_OBJECT");
     }
     if (mode === "relation" && !["left_of", "right_of", "above", "below", "inside", "on", "overlapping", "near", "occluding", "unknown"].includes(event.relation)) throw new Error("INVALID_RELATION");
@@ -425,7 +426,8 @@ export function normalizeHybrid(data, duration, expectedSampleId) {
       id, start: event.start, end: event.end, confidence: event.confidence, source: "local",
       type: spatial ? mode : event.action ?? event.skill ?? event.event_type,
       actor: event.actor ?? (mode === "relation" ? objects.get(event.subject_object_id) : "unknown"),
-      target: event.target ?? event.target_entity_id ?? objects.get(event.target_object_id ?? event.object_id ?? event.object_object_id),
+      target: event.target ?? event.target_entity_id ?? (mode === "scene" && event.target_object_id === "unknown"
+        ? "unknown" : objects.get(event.target_object_id ?? event.object_id ?? event.object_object_id)),
       description: spatial ? `${event.location ?? event.relation}: ${event.visual_evidence}` : event.description,
       meta: { branch, evidenceMode: event.evidence_mode, modelStage: event.model_stage,
         sourceSegments: [...event.source_segment_indices], sourceTracks: [...event.source_track_ids],

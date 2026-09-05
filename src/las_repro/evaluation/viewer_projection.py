@@ -34,6 +34,7 @@ _FINE_FIELDS = frozenset(
         "confidence",
     }
 )
+_SOURCE_FINE_FIELDS = _FINE_FIELDS | {"start_boundary_id", "end_boundary_id"}
 _OVERLAY_FIELDS = frozenset(
     {
         "keyframe_id",
@@ -203,7 +204,7 @@ def project_hybrid_viewer_data(
         if segments[0]["start"] != 0 or segments[-1]["end"] != duration:
             raise ValueError("viewer duration does not match annotation")
         for segment in segments:
-            if not set(segment) <= _FINE_FIELDS:
+            if not set(segment) <= _SOURCE_FINE_FIELDS:
                 raise ValueError("unknown viewer fine field")
             for key, value in segment.items():
                 if key in {"segment_index", "action_index"}:
@@ -276,7 +277,11 @@ def project_hybrid_viewer_data(
                 )
                 fine.append(
                     {
-                        **copy.deepcopy(segment),
+                        **{
+                            key: copy.deepcopy(value)
+                            for key, value in segment.items()
+                            if key in _FINE_FIELDS
+                        },
                         "id": f"fine_{segment['segment_index']}",
                         "branch": "fine",
                         "model_stage": "embodied_enrichment",

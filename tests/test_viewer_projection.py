@@ -12,6 +12,7 @@ import test_hybrid_result as hybrid_fixtures
 from test_hybrid_result import source_segments
 
 from las_repro.evaluation.las_alignment import canonical_json
+from las_repro.pipelines.embodied import FineSegmentTableRow
 from las_repro.pipelines.hybrid_result import build_hybrid_result
 from las_repro.pipelines.scene_semantics import unavailable_scene_semantics
 
@@ -95,6 +96,51 @@ def test_fine_layer_is_opt_in_and_retains_source_identity(result):
     assert event["skill"] == "move"
     assert event["source_segment_indices"] == [0]
     assert event["review_status"] == "not_required"
+
+
+def add_production_boundary_fields(result):
+    segment = result["segments"][0]
+    segment.update(
+        FineSegmentTableRow(
+            action_index=0,
+            segment_index=segment["segment_index"],
+            start=segment["start"],
+            end=segment["end"],
+            description=segment["description"],
+            event_type="motion",
+            start_boundary_id="a0_b0",
+            end_boundary_id="a0_b1",
+        ).public_record()
+    )
+
+
+@pytest.mark.parametrize("include_fine", [False, True])
+def test_production_boundary_metadata_is_accepted_without_expanding_display_schema(
+    result, include_fine
+):
+    add_production_boundary_fields(result)
+    before = copy.deepcopy(result)
+    expected_sha = hashlib.sha256(canonical_json(before).encode()).hexdigest()
+    output = project(result, include_fine_segments=include_fine)
+    assert result == before
+    assert output["provenance"]["canonical_result_sha256"] == expected_sha
+    assert output["provenance"]["source_result_sha256"] == expected_sha
+    assert ("fine_segments" in output["layers"]) is include_fine
+    if include_fine:
+        event = output["layers"]["fine_segments"]["events"][0]
+        assert event["source_segment_indices"] == [0]
+        assert event["description"] == "hand moves cup"
+        assert "start_boundary_id" not in event
+        assert "end_boundary_id" not in event
+
+
+@pytest.mark.parametrize("field", ["start_boundary_id", "end_boundary_id"])
+@pytest.mark.parametrize("value", [None, 1, True, [], "", "/root/private"])
+def test_source_boundary_metadata_must_still_be_safe_text(result, field, value):
+    add_production_boundary_fields(result)
+    result["segments"][0][field] = value
+    with pytest.raises(ValueError):
+        project(result, include_fine_segments=True)
 
 
 @pytest.mark.parametrize(
@@ -329,6 +375,7 @@ def test_python_projection_is_accepted_by_browser_model(positive_result, keyfram
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node is required for the cross-language viewer contract")
+    add_production_boundary_fields(positive_result)
     positive_result["annotation_branches"]["occlusion"]["events"][0][
         "source_keyframe_ids"
     ] = [keyframe]
