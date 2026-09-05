@@ -57,6 +57,8 @@ _ZIP_ENTRY_ALLOWANCE = 1024
 _MAX_GIT_TREE_BYTES = 16 * 1024 * 1024
 _MAX_GIT_SOURCE_FILES = 100_000
 _MAX_GIT_SOURCE_BYTES = 1024 * 1024 * 1024
+# Pinned sam3_multiplex_base.py uses this score for removed objects.
+_REMOVED_OBJECT_SCORE = -10000.0
 _NETWORK_PREFIX = re.compile(
     r"(?i)^(?:https?|ssh|git|ftp|s3|gs|hf)://|^[^/\\\s]+@[^/\\\s]+:"
 )
@@ -1623,8 +1625,16 @@ def _parse_frame_response(
     detections: list[_Detection] = []
     for object_offset in sorted(range(count), key=lambda offset: parsed_ids[offset]):
         object_id = parsed_ids[object_offset]
-        probability = _bounded_float(
-            _array_item(probabilities, object_offset), lower=0.0, upper=1.0
+        raw_probability = _array_item(probabilities, object_offset)
+        removed = (
+            not isinstance(raw_probability, bool)
+            and isinstance(raw_probability, Real)
+            and float(raw_probability) == _REMOVED_OBJECT_SCORE
+        )
+        probability = (
+            None
+            if removed
+            else _bounded_float(raw_probability, lower=0.0, upper=1.0)
         )
         box = tuple(
             _bounded_float(
@@ -1637,6 +1647,14 @@ def _parse_frame_response(
         x, y, width, height = box
         if width <= 0 or height <= 0 or x + width > 1 or y + height > 1:
             raise ValueError
+        if removed:
+            _consume_mask_rows(
+                masks,
+                object_offset,
+                masks_shape[1],
+                masks_shape[2],
+            )
+            continue
         if mask_writer is None:
             area_fraction, center_xy = _consume_mask_rows(
                 masks,

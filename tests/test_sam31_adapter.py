@@ -677,6 +677,216 @@ def test_empty_detections_are_valid_and_still_close_the_session(
     assert predictor.requests[-1]["type"] == "close_session"
 
 
+def test_removed_sentinel_does_not_publish_detection(
+    tmp_path: Path, fake_torch: SimpleNamespace
+) -> None:
+    request = make_request(
+        tmp_path, entities=(make_request(tmp_path).entities[0],)
+    )
+
+    def stream(
+        session_number: int, prompt: str, payload: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        del session_number, prompt
+        return [
+            frame_output(index, probabilities=[-10000.0])
+            for index in range(
+                payload["start_frame_index"],
+                payload["start_frame_index"]
+                + payload["max_frame_num_to_track"],
+            )
+        ]
+
+    provider = make_provider(
+        PredictorDouble(stream), fake_torch, MaterializerDouble()
+    )
+
+    artifact = provider.analyze(request, tmp_path / "staging")
+
+    assert artifact.tracks == ()
+    assert artifact.overlay_records == ()
+    assert artifact.processed_timeline == request.timeline
+    with zipfile.ZipFile(tmp_path / "staging" / "masks/right_hand.npz") as archive:
+        assert not any(name.startswith("masks/") for name in archive.namelist())
+        assert read_int64_array(archive, "frame_indices.npy") == ()
+        assert read_int64_array(archive, "object_ids.npy") == ()
+        assert read_int64_array(archive, "mask_indices.npy") == ()
+
+
+def test_removed_sentinel_mixed_rows_preserve_only_valid_detection_and_mask(
+    tmp_path: Path, fake_torch: SimpleNamespace
+) -> None:
+    request = make_request(
+        tmp_path,
+        duration_seconds=1.0,
+        timestamps=(0.0,),
+        entities=(make_request(tmp_path).entities[0],),
+    )
+    response = frame_output(
+        0,
+        object_ids=[2, 1],
+        probabilities=[-10000.0, 0.875],
+        boxes=[[0.5, 0.25, 0.25, 0.5], [0.1, 0.2, 0.4, 0.5]],
+        masks=[
+            [[False, False], [False, True]],
+            [[True, False], [False, True]],
+        ],
+    )
+    provider = make_provider(
+        PredictorDouble(lambda *_: [response]), fake_torch, MaterializerDouble()
+    )
+
+    artifact = provider.analyze(request, tmp_path / "staging")
+
+    assert [track.track_id for track in artifact.tracks] == ["right_hand_1"]
+    observation = artifact.tracks[0].observations[0]
+    assert observation.frame_index == 0
+    assert observation.bbox_xyxy == (0.1, 0.2, 0.5, 0.7)
+    assert observation.confidence == 0.875
+    assert artifact.overlay_records == ()
+    with zipfile.ZipFile(tmp_path / "staging" / observation.mask_ref) as archive:
+        assert read_int64_array(archive, "frame_indices.npy") == (0,)
+        assert read_int64_array(archive, "object_ids.npy") == (1,)
+        assert read_int64_array(archive, "mask_indices.npy") == (0,)
+        mask_members = [
+            name for name in archive.namelist() if name.startswith("masks/")
+        ]
+        assert mask_members == ["masks/00000000.npy"]
+        assert read_npy(archive.read(mask_members[0])) == (
+            (2, 2),
+            b"\x01\x00\x00\x01",
+        )
+
+
+def test_removed_sentinel_between_visible_frames_adds_no_observation(
+    tmp_path: Path, fake_torch: SimpleNamespace
+) -> None:
+    request = make_request(
+        tmp_path, entities=(make_request(tmp_path).entities[0],)
+    )
+    responses = [
+        frame_output(0),
+        frame_output(1, probabilities=[-10000.0]),
+        frame_output(2),
+    ]
+
+    def render_overlay(*, destination: Path, **kwargs: Any) -> None:
+        del kwargs
+        destination.write_bytes(b"\x89PNG\r\n\x1a\nremoved-sentinel-test")
+
+    provider = make_provider(
+        PredictorDouble(lambda *_: responses),
+        fake_torch,
+        MaterializerDouble(),
+        overlay_renderer=render_overlay,
+    )
+
+    artifact = provider.analyze(request, tmp_path / "staging")
+
+    assert [
+        observation.frame_index
+        for observation in artifact.tracks[0].observations
+    ] == [0, 2]
+    assert all(
+        observation.visible
+        for observation in artifact.tracks[0].observations
+    )
+    assert all(record.frame_index != 1 for record in artifact.overlay_records)
+
+
+@pytest.mark.parametrize(
+    "probability",
+    [
+        pytest.param(-9999.0, id="near-sentinel"),
+        pytest.param(-10000.001, id="below-sentinel"),
+        pytest.param(-0.1, id="negative"),
+        pytest.param(1.001, id="above-one"),
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(float("inf"), id="positive-infinity"),
+        pytest.param(float("-inf"), id="negative-infinity"),
+        pytest.param(True, id="boolean-true"),
+        pytest.param(False, id="boolean-false"),
+    ],
+)
+def test_removed_sentinel_does_not_admit_other_invalid_scores_and_closes(
+    tmp_path: Path,
+    fake_torch: SimpleNamespace,
+    probability: Any,
+) -> None:
+    request = make_request(
+        tmp_path, entities=(make_request(tmp_path).entities[0],)
+    )
+    predictor = PredictorDouble(
+        lambda *_: [
+            frame_output(0, probabilities=[probability]),
+            frame_output(1),
+            frame_output(2),
+        ]
+    )
+    provider = make_provider(predictor, fake_torch, MaterializerDouble())
+
+    with pytest.raises(CvProviderError, match="^SAM3.1 CV evidence inference failed$"):
+        provider.analyze(request, tmp_path / "staging")
+
+    assert predictor.requests[-1]["type"] == "close_session"
+    assert not (tmp_path / "staging" / "masks").exists()
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        pytest.param(
+            frame_output(
+                0,
+                probabilities=[-10000.0],
+                boxes=[[0.8, 0.2, 0.3, 0.5]],
+            ),
+            id="invalid-geometry",
+        ),
+        pytest.param(
+            frame_output(
+                0,
+                probabilities=[-10000.0],
+                masks=[[[True, 0], [False, True]]],
+            ),
+            id="invalid-mask-content",
+        ),
+        pytest.param(
+            frame_output(
+                0,
+                object_ids=[1, 1],
+                probabilities=[-10000.0, 0.875],
+                boxes=[[0.1, 0.2, 0.4, 0.5], [0.1, 0.2, 0.4, 0.5]],
+                masks=[
+                    [[True, False], [False, True]],
+                    [[True, False], [False, True]],
+                ],
+            ),
+            id="duplicate-id",
+        ),
+    ],
+)
+def test_removed_sentinel_does_not_bypass_row_safety_validation(
+    tmp_path: Path,
+    fake_torch: SimpleNamespace,
+    response: dict[str, Any],
+) -> None:
+    request = make_request(
+        tmp_path,
+        duration_seconds=1.0,
+        timestamps=(0.0,),
+        entities=(make_request(tmp_path).entities[0],),
+    )
+    predictor = PredictorDouble(lambda *_: [response])
+    provider = make_provider(predictor, fake_torch, MaterializerDouble())
+
+    with pytest.raises(CvProviderError, match="^SAM3.1 CV evidence inference failed$"):
+        provider.analyze(request, tmp_path / "staging")
+
+    assert predictor.requests[-1]["type"] == "close_session"
+    assert not (tmp_path / "staging" / "masks").exists()
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
