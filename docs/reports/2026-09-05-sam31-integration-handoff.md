@@ -7,6 +7,18 @@ five-demo viewer, and SAM3.1-assisted alignment work discussed and implemented
 through 2026-09-05. It deliberately contains no credentials, private host
 address, temporary media URL, LAS task ID, or local absolute path.
 
+## Latest checkpoint — 2026-09-06
+
+The approved three-part semantic-contract repair is implemented at `df292e9`
+and independently approved. The frozen-evidence review's sole finding, missing
+Qwen model identity in the viewer manifest, is fixed at `84e9e7c` and passed
+scoped re-review. Fresh combined-state validation passed 1,697 Python tests
+(85.78% coverage), 20 Node tests and syntax/whitespace checks. The
+[remediation checkpoint](2026-09-06-semantic-contract-remediation.md) records
+the exact scope and review limits. No new deployment or inference occurred;
+real acceptance remains failed. Final whole-branch review is in progress.
+The historical continuation below retains its original chronology.
+
 ## Continuation status — 2026-09-05
 
 The original numbered sections below preserve the Tasks 1–9 checkpoint. The
