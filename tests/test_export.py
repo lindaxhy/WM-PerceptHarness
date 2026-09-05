@@ -250,6 +250,71 @@ def test_export_accepts_canonical_cv_entity_limit_warning_without_mutation(
     assert warned == original
 
 
+def test_export_accepts_alias_and_candidate_omission_warnings_together(
+    embodied_result: dict[str, object],
+) -> None:
+    """Both local entity omission audits may cross export unchanged."""
+    warned = copy.deepcopy(embodied_result)
+    warned["warnings"] = [
+        {
+            "code": "CV_ENTITY_LIMIT_APPLIED",
+            "omitted_count": 1,
+            "limit": 16,
+            "message": "1 entity candidate omitted by limit 16",
+        },
+        {
+            "code": "ENTITY_ALIASES_TRUNCATED",
+            "omitted_count": 256,
+        },
+    ]
+    original = copy.deepcopy(warned)
+
+    rows = list(iter_action_captions("video_0001", warned, source_fps=30.0))
+
+    assert len(rows) == 2
+    assert warned == original
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda warning: warning.update({"private_payload": "DO NOT LEAK"}),
+        lambda warning: warning.pop("omitted_count"),
+        lambda warning: warning.update({"omitted_count": True}),
+        lambda warning: warning.update({"omitted_count": 0}),
+        lambda warning: warning.update({"omitted_count": 16_385}),
+        lambda warning: warning.update({"omitted_count": 1.0}),
+    ],
+    ids=[
+        "extra-key",
+        "missing-key",
+        "boolean-count",
+        "zero-count",
+        "above-raw-cap",
+        "float-count",
+    ],
+)
+def test_export_rejects_malformed_alias_warning_without_mutation_or_leak(
+    embodied_result: dict[str, object], mutation: object
+) -> None:
+    warned = copy.deepcopy(embodied_result)
+    warning = {
+        "code": "ENTITY_ALIASES_TRUNCATED",
+        "omitted_count": 256,
+    }
+    assert callable(mutation)
+    mutation(warning)
+    warned["warnings"] = [warning]
+    original = copy.deepcopy(warned)
+
+    with pytest.raises(ActionCaptionExportError) as error:
+        list(iter_action_captions("video_0001", warned, source_fps=30.0))
+
+    assert str(error.value) == "completed embodied result is invalid"
+    assert "DO NOT LEAK" not in str(error.value)
+    assert warned == original
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
@@ -324,7 +389,7 @@ def test_export_rejects_malformed_cv_entity_limit_warning_without_mutation_or_le
     assert warned == original
 
 
-def test_export_accepts_all_four_unique_canonical_warning_families(
+def test_export_accepts_all_five_unique_canonical_warning_families(
     embodied_result: dict[str, object],
 ) -> None:
     combined = copy.deepcopy(embodied_result)
@@ -348,6 +413,10 @@ def test_export_accepts_all_four_unique_canonical_warning_families(
                     "omitted_count": 1,
                     "limit": 16,
                     "message": "1 entity candidate omitted by limit 16",
+                },
+                {
+                    "code": "ENTITY_ALIASES_TRUNCATED",
+                    "omitted_count": 256,
                 },
                 {
                     "code": "BOUNDARY_TOPOLOGY_NORMALIZED",

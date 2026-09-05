@@ -58,6 +58,9 @@ _CV_ENTITY_LIMIT_WARNING_KEYS = frozenset(
     {"code", "omitted_count", "limit", "message"}
 )
 _CV_ENTITY_LIMIT_WARNING_CODE = "CV_ENTITY_LIMIT_APPLIED"
+_ENTITY_ALIAS_WARNING_KEYS = frozenset({"code", "omitted_count"})
+_ENTITY_ALIAS_WARNING_CODE = "ENTITY_ALIASES_TRUNCATED"
+_MAX_ENTITY_ALIAS_OMISSIONS = 64 * 256
 _SCENE_WARNING_CODE = "SCENE_SEMANTICS_UNAVAILABLE"
 _BOUNDARY_WARNING_ISSUE_CODES = (
     "SEGMENT_TOO_LONG",
@@ -355,7 +358,7 @@ def _validate_normalization_warnings(
     segments: tuple[_CompletedSegment, ...],
     result: Mapping[str, object],
 ) -> None:
-    if type(value) is not list or not 1 <= len(value) <= 4:
+    if type(value) is not list or not 1 <= len(value) <= 5:
         raise ValueError
     codes: list[str] = []
     for warning in value:
@@ -371,6 +374,8 @@ def _validate_normalization_warnings(
             _validate_boundary_warning(warning, segments)
         elif code == _CV_ENTITY_LIMIT_WARNING_CODE:
             _validate_cv_entity_limit_warning(warning)
+        elif code == _ENTITY_ALIAS_WARNING_CODE:
+            _validate_entity_alias_warning(warning)
         elif code == _SCENE_WARNING_CODE:
             if dict(warning) != {"code": _SCENE_WARNING_CODE}:
                 raise ValueError
@@ -382,6 +387,21 @@ def _validate_normalization_warnings(
                 raise ValueError
         else:
             raise ValueError
+
+
+def _validate_entity_alias_warning(warning: Mapping[str, object]) -> None:
+    warning_data = dict(warning)
+    if set(warning_data) != _ENTITY_ALIAS_WARNING_KEYS:
+        raise ValueError
+    code = warning_data["code"]
+    omitted_count = warning_data["omitted_count"]
+    if (
+        type(code) is not str
+        or code != _ENTITY_ALIAS_WARNING_CODE
+        or type(omitted_count) is not int
+        or not 1 <= omitted_count <= _MAX_ENTITY_ALIAS_OMISSIONS
+    ):
+        raise ValueError
 
 
 def _validate_cv_entity_limit_warning(warning: Mapping[str, object]) -> None:

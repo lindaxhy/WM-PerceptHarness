@@ -3602,8 +3602,8 @@ def _summary_fits(summary: CvEvidenceSummary, cap: int) -> bool:
     return _minimum_usable_bundle_char_count(summary) <= cap
 
 
-def _maximum_candidate_count(summary: CvEvidenceSummary) -> int:
-    """Count candidates possible under any valid thresholds, stopping at 257."""
+def _maximum_candidate_source_count(summary: CvEvidenceSummary) -> int:
+    """Bound candidate sources structurally without choosing thresholds."""
     if summary.status is not EvidenceStatus.AVAILABLE:
         return 0
     count = 0
@@ -3612,42 +3612,33 @@ def _maximum_candidate_count(summary: CvEvidenceSummary) -> int:
         if count > _MAX_BUNDLE_CANDIDATES:
             return count
         observations = track.observations
-        in_run = False
         for index in range(1, len(observations) - 1):
             previous = observations[index - 1]
             current = observations[index]
             following = observations[index + 1]
-            reference_area = max(
-                previous.area_fraction, following.area_fraction
-            )
-            possible = (
+            if (
                 previous.visible
                 and current.visible
                 and following.visible
                 and previous.source_ordinal + 1 == current.source_ordinal
                 and current.source_ordinal + 1 == following.source_ordinal
-                and (
-                    current.confidence < 1.0
-                    or current.area_fraction < 1.0
-                    or (
-                        reference_area > 0.0
-                        and current.area_fraction <= reference_area
-                    )
-                )
-            )
-            if possible and not in_run:
+            ):
+                # Any one structurally eligible interior observation can be a
+                # separate run under some strict legal thresholds.  Counting
+                # positions, rather than a union of threshold-specific runs,
+                # is therefore a conservative absolute source bound.
                 count += 1
                 if count > _MAX_BUNDLE_CANDIDATES:
                     return count
-            in_run = possible
     return count
 
 
 def _minimum_usable_bundle_char_count(summary: CvEvidenceSummary) -> int:
-    """Size the widest legal empty default bundle for this summary."""
-    maximum_candidates = _maximum_candidate_count(summary)
-    prompt_truncated = maximum_candidates > 0
-    source_truncated = maximum_candidates > _MAX_BUNDLE_CANDIDATES
+    """Size a widest legal empty bundle for every allowed candidate limit."""
+    maximum_sources = _maximum_candidate_source_count(summary)
+    prompt_truncated = maximum_sources > 0
+    source_truncated = maximum_sources > _MAX_BUNDLE_CANDIDATES
+    count_truncated = maximum_sources > 1
     codes = tuple(
         code
         for code, enabled in (
@@ -3656,6 +3647,7 @@ def _minimum_usable_bundle_char_count(summary: CvEvidenceSummary) -> int:
                 not summary.candidate_search_complete,
             ),
             ("CANDIDATE_SOURCE_TRUNCATED", source_truncated),
+            ("CANDIDATE_COUNT_TRUNCATED", count_truncated),
             ("CANDIDATE_PROMPT_TRUNCATED", prompt_truncated),
         )
         if enabled

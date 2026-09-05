@@ -22,7 +22,7 @@ _MAX_ALIAS_OMISSIONS = _MAX_RAW_ENTITY_CANDIDATES * _MAX_ENTITY_ALIASES
 _MAX_ENTITY_ID_CHARS = 128
 _MAX_ENTITY_ID_COLLISION_SUFFIX_CHARS = 3
 _HASH_SUFFIX_CHARS = 16
-_MAX_NORMALIZATION_WARNINGS = 1
+_MAX_NORMALIZATION_WARNINGS = 2
 _MAX_WARNING_CHARS = 256
 _MAX_CANONICAL_INT = 2**63 - 1
 
@@ -67,14 +67,19 @@ class NormalizedEntities(StrictModel):
     def require_alias_audit_pair(self) -> NormalizedEntities:
         if (self.alias_omitted_count > 0) != (self.alias_warning is not None):
             raise ValueError("alias omission count and warning must be paired")
+        expected_alias_warnings = 1 if self.alias_omitted_count else 0
+        if self.warnings.count("ENTITY_ALIASES_TRUNCATED") != expected_alias_warnings:
+            raise ValueError("alias omission audit must be present exactly once")
+        if self.warnings != tuple(dict.fromkeys(self.warnings)):
+            raise ValueError("normalization warnings must be unique and ordered")
         return self
 
 
 @dataclass(slots=True)
 class _MergedEntity:
+    canonical_key: str
     canonical_label: str
     role: EntityRole
-    position: int
     aliases: dict[str, str] = field(default_factory=dict)
 
 
@@ -161,7 +166,7 @@ def normalize_entities(
             raise ValueError("entity candidate role must be canonical")
 
     merged: dict[str, _MergedEntity] = {}
-    for position, candidate in enumerate(candidates):
+    for candidate in candidates:
         canonical_key = _normalize_text(candidate.name)
         if canonical_key in {"", "unknown"}:
             continue
@@ -169,11 +174,11 @@ def normalize_entities(
         record = merged.setdefault(
             canonical_key,
             _MergedEntity(
+                canonical_key=canonical_key,
                 canonical_label=_truncate_with_hash(
                     canonical_key, _MAX_ENTITY_NAME_CHARS
                 ),
                 role=candidate.role,
-                position=position,
             ),
         )
         if _ROLE_PRIORITY[candidate.role] < _ROLE_PRIORITY[record.role]:
@@ -190,7 +195,7 @@ def normalize_entities(
 
     ordered = sorted(
         merged.values(),
-        key=lambda record: (_ROLE_PRIORITY[record.role], record.position),
+        key=lambda record: (_ROLE_PRIORITY[record.role], record.canonical_key),
     )
     omitted_count = max(0, len(ordered) - limit)
     alias_omitted_count = 0
@@ -206,14 +211,11 @@ def normalize_entities(
             entity_id = f"{base_id}_{occurrence}"
         used_ids.add(entity_id)
         next_occurrence[base_id] = occurrence + 1
-        aliases_over_limit = len(record.aliases) > _MAX_ENTITY_ALIASES
-        alias_items = (
-            sorted(record.aliases.items(), key=lambda item: (item[1], item[0]))
-            if aliases_over_limit
-            else record.aliases.items()
+        alias_items = sorted(
+            record.aliases.items(), key=lambda item: (item[1], item[0])
         )
         aliases = tuple(
-            value for _, value in tuple(alias_items)[:_MAX_ENTITY_ALIASES]
+            value for _, value in alias_items[:_MAX_ENTITY_ALIASES]
         )
         alias_omitted_count += max(0, len(record.aliases) - len(aliases))
         prompts.append(
@@ -232,6 +234,8 @@ def normalize_entities(
         if omitted_count
         else ()
     )
+    if alias_omitted_count:
+        warnings += ("ENTITY_ALIASES_TRUNCATED",)
     return NormalizedEntities(
         entities=tuple(prompts),
         omitted_count=omitted_count,

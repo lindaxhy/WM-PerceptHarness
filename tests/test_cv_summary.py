@@ -3112,3 +3112,123 @@ def test_minimum_summary_budget_is_immediately_bundle_usable() -> None:
     )
 
     assert len(encoded) == 666
+
+
+def test_summary_budget_reserves_all_threshold_dependent_candidate_codes() -> None:
+    """Threshold-specific runs must not exceed the summary's bundle envelope."""
+    entity_ids = ("a000", "a111", "a222")
+    tracks = tuple(
+        _track(
+            f"{entity_id}_1",
+            entity_id,
+            tuple(
+                _observation(
+                    frame,
+                    confidence=0.0 if frame % 2 else 0.9,
+                    area_fraction=1.0,
+                    bbox_xyxy=(0.0, 0.0, 1.0, 1.0),
+                )
+                for frame in range(256)
+            ),
+        )
+        for entity_id in entity_ids
+    )
+    artifact = _artifact(
+        tracks,
+        entities=tuple(
+            EntityPrompt(
+                entity_id=entity_id,
+                canonical_label=entity_id,
+                aliases=tuple(
+                    chr(100 + alias_index) + "x" * 127
+                    for alias_index in range(3)
+                ),
+                role=EntityRole.OTHER,
+            )
+            for entity_id in entity_ids
+        ),
+        processed_timeline=_timeline(*range(256)),
+    )
+    thresholds = EvidenceThresholds(
+        min_confidence=2.2250738585072014e-308,
+        min_area_fraction=2.2250738585072014e-308,
+        occlusion_visibility_drop=2.220446049250313e-16,
+    )
+    unrestricted = summarize_cv_evidence(
+        artifact,
+        max_tracks=3,
+        max_observations_per_track=256,
+        max_relations=1,
+    )
+
+    assert summary_module._summary_fits(unrestricted, 160_221) is False
+
+    summary = summarize_cv_evidence(
+        artifact,
+        max_tracks=3,
+        max_observations_per_track=256,
+        max_relations=1,
+        max_prompt_chars=160_222,
+    )
+    bundle = summary_module.build_cv_prompt_bundle(summary, thresholds)
+    encoded = json.dumps(
+        bundle.prompt_record(),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+    assert len(encoded) <= 160_222
+
+
+def test_summary_budget_reserves_count_truncation_for_small_candidate_limit() -> None:
+    """A small candidate limit must fit its additional truncation audit."""
+    artifact = _artifact(
+        (
+            _track(
+                "a_1",
+                "a",
+                tuple(
+                    _observation(
+                        frame,
+                        bbox_xyxy=(0.0, 0.0, 1.0, 1.0),
+                        confidence=1.0,
+                        area_fraction=1.0,
+                    )
+                    for frame in (0, 2, 4)
+                ),
+            ),
+        ),
+        entities=(
+            EntityPrompt(
+                entity_id="a",
+                canonical_label="a",
+                aliases=(),
+                role=EntityRole.OTHER,
+            ),
+        ),
+        processed_timeline=_timeline(*range(5)),
+    )
+    thresholds = EvidenceThresholds(
+        min_confidence=2.2250738585072014e-308,
+        min_area_fraction=2.2250738585072014e-308,
+        occlusion_visibility_drop=2.2250738585072014e-308,
+    )
+    unrestricted = summarize_cv_evidence(artifact, max_prompt_chars=10_000)
+
+    assert summary_module._summary_fits(unrestricted, 2_735) is False
+
+    summary = summarize_cv_evidence(artifact, max_prompt_chars=2_736)
+    bundle = summary_module.build_cv_prompt_bundle(
+        summary,
+        thresholds,
+        max_candidates=1,
+    )
+    encoded = json.dumps(
+        bundle.prompt_record(),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+    assert len(encoded) <= 2_736

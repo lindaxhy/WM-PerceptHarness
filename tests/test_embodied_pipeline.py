@@ -2117,6 +2117,98 @@ def test_pass_a_normalizes_entity_candidates_without_an_extra_model_call(
     assert len(exported) == len(completed.result["segments"])
 
 
+def test_pass_a_alias_truncation_is_durable_deduplicated_and_exportable(
+    tmp_path: Path,
+) -> None:
+    """Alias omission audit must survive the completed-result/export boundary."""
+    first_aliases = [f"left alias {index:03d}" for index in range(256)]
+    second_aliases = [f"right alias {index:03d}" for index in range(256)]
+    raw_candidates = [
+        {
+            "name": "shared item",
+            "aliases": first_aliases,
+            "role": "actor",
+        },
+        {
+            "name": " SHARED ITEM ",
+            "aliases": second_aliases,
+            "role": "actor",
+        },
+        *[
+            {
+                "name": f"other {index:02d}",
+                "aliases": [],
+                "role": "other",
+            }
+            for index in range(16)
+        ],
+    ]
+    initial_pass_a = {
+        "task_description": "move the red container",
+        "entity_candidates": raw_candidates,
+        "actions": [
+            {
+                "action_index": 0,
+                "start": 0.0,
+                "end": 1.0,
+                "description": "right hand reaches toward red container",
+                "event_type": "reach_and_grasp",
+            },
+            {
+                "action_index": 1,
+                "start": 1.0,
+                "end": 2.0,
+                "description": "right hand moves red container",
+                "event_type": "transport",
+            },
+        ],
+    }
+    harness = _ActionHarness(
+        tmp_path,
+        FakeVideoModel(failure_script={"embodied_pass_a": [initial_pass_a]}),
+    )
+
+    completed = harness.run()
+
+    assert completed.status is TaskStatus.COMPLETED
+    assert completed.result is not None
+    assert completed.result["warnings"] == [
+        {
+            "code": "CV_ENTITY_LIMIT_APPLIED",
+            "omitted_count": 1,
+            "limit": 16,
+            "message": "1 entity candidate omitted by limit 16",
+        },
+        {
+            "code": "ENTITY_ALIASES_TRUNCATED",
+            "omitted_count": 256,
+        },
+    ]
+    assert "left alias" not in json.dumps(completed.result["warnings"])
+    assert "right alias" not in json.dumps(completed.result["warnings"])
+    exported = list(
+        iter_action_captions("alias_limited", completed.result, source_fps=20.0)
+    )
+    assert len(exported) == len(completed.result["segments"])
+
+    reversed_pass_a = copy.deepcopy(initial_pass_a)
+    reversed_candidates = reversed_pass_a["entity_candidates"]
+    assert isinstance(reversed_candidates, list)
+    reversed_candidates[:2] = reversed(reversed_candidates[:2])
+    reversed_harness = _ActionHarness(
+        tmp_path / "reversed",
+        FakeVideoModel(
+            failure_script={"embodied_pass_a": [reversed_pass_a]}
+        ),
+    )
+
+    reversed_completed = reversed_harness.run()
+
+    assert reversed_completed.status is TaskStatus.COMPLETED
+    assert reversed_completed.result is not None
+    assert reversed_completed.result["warnings"] == completed.result["warnings"]
+
+
 def test_invalid_scene_semantics_repairs_once_then_completes_conservatively(
     tmp_path: Path,
 ) -> None:

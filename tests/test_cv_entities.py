@@ -5,6 +5,7 @@ import re
 import pytest
 from pydantic import ValidationError
 
+import las_repro.cv.entities as entities_module
 from las_repro.cv.contracts import EntityPrompt, EntityRole
 from las_repro.cv.entities import EntityCandidate, NormalizedEntities, normalize_entities
 
@@ -70,9 +71,75 @@ def test_normalize_entities_casefolds_unicode_and_uses_ascii_slug_collisions():
     )
 
     assert [(item.entity_id, item.canonical_label, item.aliases) for item in normalized.entities] == [
-        ("cafe", "caf\u00e9", ("coffee shop",)),
-        ("cafe_2", "cafe", ()),
+        ("cafe", "cafe", ()),
+        ("cafe_2", "caf\u00e9", ("coffee shop",)),
     ]
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("Caf\u00e9", "cafe"),
+        ("!!!", "???"),
+    ],
+)
+def test_slug_collision_ids_are_stable_across_candidate_permutations(
+    names: tuple[str, str],
+) -> None:
+    """Equivalent candidate sets must produce byte-identical prompt entities."""
+    candidates = tuple(
+        EntityCandidate(name=name, aliases=(), role=EntityRole.OTHER)
+        for name in names
+    )
+
+    forward = normalize_entities(candidates)
+    reverse = normalize_entities(tuple(reversed(candidates)))
+
+    assert forward.model_dump_json() == reverse.model_dump_json()
+    assert len({entity.entity_id for entity in forward.entities}) == 2
+
+
+def test_slug_and_truncation_hash_collisions_have_stable_tiebreakers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Forced base and hash collisions must not restore input-order IDs."""
+
+    class ConstantDigest:
+        def hexdigest(self) -> str:
+            return "0" * 64
+
+    monkeypatch.setattr(
+        entities_module.hashlib,
+        "sha256",
+        lambda _: ConstantDigest(),
+    )
+    prefix = "\u0130" * 255
+    candidates = (
+        EntityCandidate(
+            name=f"{prefix}a",
+            aliases=("beta", "alpha"),
+            role=EntityRole.OTHER,
+        ),
+        EntityCandidate(
+            name=f"{prefix}b",
+            aliases=(),
+            role=EntityRole.OTHER,
+        ),
+    )
+
+    forward = normalize_entities(candidates)
+    reverse = normalize_entities(tuple(reversed(candidates)))
+
+    assert forward.model_dump_json() == reverse.model_dump_json()
+    assert [entity.entity_id for entity in forward.entities] == [
+        forward.entities[0].entity_id,
+        f"{forward.entities[0].entity_id}_2",
+    ]
+    assert all(len(entity.entity_id) <= 128 for entity in forward.entities)
+    assert all(
+        re.fullmatch(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*", entity.entity_id)
+        for entity in forward.entities
+    )
 
 
 def test_normalize_entities_allocates_ids_globally_across_slug_bases():
@@ -192,6 +259,30 @@ def test_normalized_entities_enforces_container_text_and_integer_caps() -> None:
         {
             "entities": [],
             "omitted_count": 0,
+            "alias_omitted_count": 1,
+            "alias_warning": "ENTITY_ALIASES_TRUNCATED",
+            "warnings": [],
+        },
+        {
+            "entities": [],
+            "omitted_count": 0,
+            "alias_omitted_count": 0,
+            "alias_warning": None,
+            "warnings": ["ENTITY_ALIASES_TRUNCATED"],
+        },
+        {
+            "entities": [],
+            "omitted_count": 0,
+            "alias_omitted_count": 1,
+            "alias_warning": "ENTITY_ALIASES_TRUNCATED",
+            "warnings": [
+                "ENTITY_ALIASES_TRUNCATED",
+                "ENTITY_ALIASES_TRUNCATED",
+            ],
+        },
+        {
+            "entities": [],
+            "omitted_count": 0,
             "alias_omitted_count": 16_385,
             "alias_warning": "ENTITY_ALIASES_TRUNCATED",
             "warnings": [],
@@ -306,6 +397,8 @@ def test_merged_aliases_are_deterministically_capped_with_explicit_audit() -> No
         for index in range(16)
     )
 
+    alias_only = normalize_entities(same_name)
+
     forward = normalize_entities((*same_name, *trailing))
     reverse = normalize_entities((*reversed(same_name), *trailing))
 
@@ -313,8 +406,12 @@ def test_merged_aliases_are_deterministically_capped_with_explicit_audit() -> No
     assert forward.entities[0].aliases == reverse.entities[0].aliases
     assert forward.alias_omitted_count == 256
     assert forward.alias_warning == "ENTITY_ALIASES_TRUNCATED"
+    assert alias_only.warnings == ("ENTITY_ALIASES_TRUNCATED",)
     assert forward.omitted_count == 1
-    assert forward.warnings == ("1 entity candidate omitted by limit 16",)
+    assert forward.warnings == (
+        "1 entity candidate omitted by limit 16",
+        "ENTITY_ALIASES_TRUNCATED",
+    )
 
 
 @pytest.mark.parametrize("role", [BombStr("other"), BombInt(1)])

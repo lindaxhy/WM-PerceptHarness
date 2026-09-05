@@ -172,15 +172,24 @@ class EmbodiedActionPipeline:
             coarse.entity_candidates,
             limit=context.settings.cv_entity_limit,
         )
-        warnings: list[dict[str, Any]] = [
-            {
-                "code": "CV_ENTITY_LIMIT_APPLIED",
-                "omitted_count": normalized_entities.omitted_count,
-                "limit": context.settings.cv_entity_limit,
-                "message": warning,
-            }
-            for warning in normalized_entities.warnings
-        ]
+        warnings: list[dict[str, Any]] = []
+        for warning in normalized_entities.warnings:
+            if warning == "ENTITY_ALIASES_TRUNCATED":
+                warnings.append(
+                    {
+                        "code": warning,
+                        "omitted_count": normalized_entities.alias_omitted_count,
+                    }
+                )
+            else:
+                warnings.append(
+                    {
+                        "code": "CV_ENTITY_LIMIT_APPLIED",
+                        "omitted_count": normalized_entities.omitted_count,
+                        "limit": context.settings.cv_entity_limit,
+                        "message": warning,
+                    }
+                )
         max_fine_segment_seconds = _action_positive_finite(
             context.settings.max_fine_segment_seconds,
             "max_fine_segment_seconds",
