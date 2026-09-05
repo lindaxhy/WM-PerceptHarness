@@ -87,3 +87,15 @@ pending.
 Sources: [ModelScope model](https://www.modelscope.cn/models/facebook/sam3.1),
 [ModelScope file metadata](https://www.modelscope.cn/api/v1/models/facebook/sam3.1/repo/files?Revision=616acbee0b9ed4177f1f389e3c13594a0a1f6398&Recursive=true),
 [Meta release at the pinned source revision](https://github.com/facebookresearch/sam3/blob/660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7/RELEASE_SAM3p1.md).
+
+## Prompt-sensitivity diagnostic
+
+A source frame visibly contains a hand, while the initial `right hand` prompt
+produced no reliable hand track. Changing only that diagnostic prompt to `hand`
+with the same production wheel, video, checkpoint, thresholds, and 137-frame
+timeline produced two tracks and 274 observations in 66.706 seconds. The
+artifact received a distinct cache key and passed publication/reload checks.
+This supports the existing rule that missing tracks cannot prove object
+absence. It does not establish anatomical side identity or segmentation quality
+for every frame, and it does not change the production prompt-selection policy
+or the frozen five-demo acceptance configuration.

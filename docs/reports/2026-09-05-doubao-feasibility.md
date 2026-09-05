@@ -53,3 +53,20 @@ Controller verification passed all 26 backend tests on that final fix.
 Provider request formats were checked against the official SDK's
 [image input type](https://github.com/volcengine/volcengine-python-sdk/blob/master/volcenginesdkarkruntime/types/responses/response_input_image_param.py)
 and [video input type](https://github.com/volcengine/volcengine-python-sdk/blob/master/volcenginesdkarkruntime/types/responses/response_input_video_param.py).
+
+## Whole-pipeline diagnostic
+
+An immutable `609b907` source snapshot ran frozen `full_0024` through the normal
+SQLite coordinator, ARK worker, and export path with CV disabled. It reused the
+original baseline query, 2 fps, and one-second fine-segment limit. The task
+completed in 120.654 seconds, yielding three action events and six fine-segment
+training rows. Canonical validation and training export passed a read-only
+postcheck. The diagnostic wrapper initially called the exporter with an
+incorrect signature after completion; the postcheck corrected only that call,
+without repeating model inference.
+
+The scene branch remained unavailable after its single repair attempt:
+`repair_count=1`, `degradation_count=1`; occlusion was explicitly disabled.
+This demonstrates failure isolation, not complete semantic success or final
+five-demo acceptance. The canonical result SHA-256 is
+`f13f6c27eb0d30f9e192d7ff1a4916c5d91eb95abfe9723e433bbfe37699ffeb`.
