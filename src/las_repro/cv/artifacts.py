@@ -435,6 +435,124 @@ class CvArtifactStore:
         with self._operation():
             return self._load(handle)
 
+    def read_overlays(
+        self,
+        handle: CvArtifactHandle,
+        paths: tuple[str, ...],
+        *,
+        max_total_bytes: int = 64 * 1024 * 1024,
+    ) -> dict[str, bytes]:
+        """Read at most 24 registered PNGs, bound to an authenticated manifest.
+
+        This is deliberately not a general artifact-file accessor. Returned
+        bytes are checked again after load, through pinned no-follow descriptors;
+        callers never need filesystem access to masks or the cache layout.
+        """
+        with self._operation():
+            try:
+                if (
+                    not isinstance(paths, tuple)
+                    or len(paths) > 24
+                    or any(not isinstance(path, str) for path in paths)
+                    or len(set(paths)) != len(paths)
+                    or type(max_total_bytes) is not int
+                    or not 0 < max_total_bytes <= 64 * 1024 * 1024
+                ):
+                    raise ValueError
+                artifact = self._load(handle)
+                registered = {record.path for record in artifact.overlay_records}
+                files = {file.path: file for file in artifact.files}
+                if not set(paths) <= registered:
+                    raise ValueError
+                if sum(files[path].size_bytes for path in paths) > max_total_bytes:
+                    raise ValueError
+                # _load releases its lock before this acquisition (flock is not
+                # reentrant across independently opened lock descriptors).
+                with self._key_lock(handle.key), ExitStack() as stack:
+                    self._validate_store_root()
+                    prefix = self._open_prefix(handle.key, create=False)
+                    if prefix is None:
+                        raise ValueError
+                    stack.callback(os.close, prefix)
+                    entry = self._open_directory_descriptor(handle.key, dir_fd=prefix)
+                    stack.callback(os.close, entry)
+                    entry_status = os.fstat(entry)
+                    self._validate_private_directory_status(
+                        entry_status, require_owner_only=True
+                    )
+                    pinned = []
+                    output: dict[str, bytes] = {}
+                    remaining = max_total_bytes
+                    for path in (_MANIFEST_NAME, *paths):
+                        opened = stack.enter_context(
+                            self._open_relative_regular_file(
+                                entry, path, nonblocking=True
+                            )
+                        )
+                        descriptor, parent, name, status = opened
+                        limit = (
+                            self._max_manifest_bytes
+                            if path == _MANIFEST_NAME
+                            else remaining
+                        )
+                        content, digest = self._read_bounded_descriptor(
+                            descriptor, limit
+                        )
+                        if path == _MANIFEST_NAME:
+                            if digest != handle.manifest_sha256:
+                                raise ValueError
+                        else:
+                            file = files[path]
+                            if (
+                                len(content) != file.size_bytes
+                                or digest != file.sha256
+                                or not content.startswith(_PNG_SIGNATURE)
+                            ):
+                                raise ValueError
+                            output[path] = content
+                            remaining -= len(content)
+                        pinned.append((path, descriptor, parent, name, status))
+                    for path, descriptor, parent, name, status in pinned:
+                        expected = self._stat_signature(status)
+                        if (
+                            self._stat_signature(os.fstat(descriptor)) != expected
+                            or self._stat_signature(
+                                os.stat(name, dir_fd=parent, follow_symlinks=False)
+                            )
+                            != expected
+                        ):
+                            raise ValueError
+                        # Rewalk ancestry: an attacker may rename an intermediate
+                        # directory while the original parent descriptor stays valid.
+                        with self._open_relative_regular_file(
+                            entry, path, nonblocking=True
+                        ) as current:
+                            if self._stat_signature(current[3]) != expected:
+                                raise ValueError
+                    current = os.stat(handle.key, dir_fd=prefix, follow_symlinks=False)
+                    if self._stat_signature(current) != self._stat_signature(
+                        entry_status
+                    ):
+                        raise ValueError
+                    self._validate_private_directory_status(
+                        os.fstat(entry), require_owner_only=True
+                    )
+                    self._validate_store_root()
+                    current_prefix = self._open_prefix(handle.key, create=False)
+                    if current_prefix is None:
+                        raise ValueError
+                    stack.callback(os.close, current_prefix)
+                    original_prefix = os.fstat(prefix)
+                    reopened_prefix = os.fstat(current_prefix)
+                    if (original_prefix.st_dev, original_prefix.st_ino) != (
+                        reopened_prefix.st_dev,
+                        reopened_prefix.st_ino,
+                    ):
+                        raise ValueError
+                    return output
+            except (CvArtifactError, OSError, KeyError, TypeError, ValueError):
+                raise CvArtifactError("unable to read CV overlays") from None
+
     def _load(self, handle: CvArtifactHandle) -> CvEvidenceArtifact:
         try:
             if not isinstance(handle, CvArtifactHandle):

@@ -62,6 +62,11 @@ def test_viewer_route_and_all_committed_assets_resolve_over_http() -> None:
         assert _has_tag(parser, "section", id="local-panel")
         assert _has_tag(parser, "section", id="timeline-panel")
         assert _has_tag(parser, "div", id="status", role="alert")
+        assert _has_tag(parser, "label", **{"for": "local-variant"})
+        assert _has_tag(parser, "select", id="local-variant")
+        assert _has_tag(parser, "dialog", id="evidence-preview", **{"aria-labelledby": "evidence-title"})
+        for mode in ("grouped", "occlusion", "scene", "fine"):
+            assert _has_tag(parser, "button", **{"data-mode": mode})
         assert not any(asset.startswith(("http://", "https://", "//")) for asset in parser.assets)
 
         expected_assets = [

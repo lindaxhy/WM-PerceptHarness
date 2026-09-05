@@ -2,13 +2,18 @@ import {
   formatTime,
   isEventActive,
   normalizeLas,
-  normalizeLocal,
+  normalizeVariant,
+  validateManifest,
+  localVariants,
+  preferredVariant,
+  readVerifiedBytes,
+  validateOverlayPng,
   validateRelativeAssetPath,
 } from "./model.js";
 
 
 const MANIFEST_PATH = "evaluation/viewer/data/demo-manifest.json";
-const LOCAL_MODES = new Set(["grouped", "fine", "scene"]);
+const LOCAL_MODES = new Set(["grouped", "occlusion", "fine", "scene"]);
 
 const elements = {
   workspace: document.querySelector("#comparison-workspace"),
@@ -22,6 +27,11 @@ const elements = {
   lasContext: document.querySelector("#las-context"),
   localContext: document.querySelector("#local-context"),
   localModes: document.querySelector("#local-modes"),
+  localVariant: document.querySelector("#local-variant"),
+  localTitle: document.querySelector("#local-title"),
+  evidencePreview: document.querySelector("#evidence-preview"),
+  evidenceCaption: document.querySelector("#evidence-caption"),
+  evidenceImage: document.querySelector("#evidence-image"),
   video: document.querySelector("#demo-video"),
   videoMissing: document.querySelector("#video-missing"),
   expectedVideo: document.querySelector("#expected-video"),
@@ -45,11 +55,19 @@ const state = {
   lasReference: null,
   localData: null,
   lasEvents: [],
-  localLayers: { grouped: [], fine: [], scene: [] },
+  localLayers: emptyLocalLayers(),
   localMode: "grouped",
   localObjectUrl: null,
   loadSequence: 0,
+  variant: null,
+  variantSequence: 0,
+  previewSequence: 0,
+  previewObjectUrl: null,
 };
+
+function emptyLocalLayers() {
+  return {grouped: [], occlusion: [], fine: [], scene: [], availableModes: []};
+}
 
 
 function assetUrl(path) {
@@ -58,50 +76,18 @@ function assetUrl(path) {
 }
 
 
-async function loadJson(path) {
+async function loadJson(path, expectedSha) {
   const safePath = validateRelativeAssetPath(path);
-  const response = await fetch(assetUrl(safePath), { cache: "no-store" });
+  const response = await fetch(assetUrl(safePath), { cache: "no-store", redirect: "error" });
   if (!response.ok) {
     throw new Error(`无法读取 ${safePath}（HTTP ${response.status}）`);
   }
   try {
-    return await response.json();
+    const bytes = await readVerifiedBytes(response, expectedSha, 4 * 1024 * 1024);
+    return JSON.parse(new TextDecoder("utf-8", {fatal: true}).decode(bytes));
   } catch {
-    throw new Error(`JSON 格式无效：${safePath}`);
+    throw new Error(`文件格式或校验失败：${safePath}`);
   }
-}
-
-
-function validateManifest(manifest) {
-  if (
-    manifest === null ||
-    typeof manifest !== "object" ||
-    manifest.schema_version !== "comparison_viewer_manifest_v1" ||
-    !Array.isArray(manifest.samples) ||
-    manifest.samples.length === 0
-  ) {
-    throw new Error("demo manifest 格式无效");
-  }
-  const seen = new Set();
-  for (const sample of manifest.samples) {
-    if (
-      sample === null ||
-      typeof sample !== "object" ||
-      typeof sample.sample_id !== "string" ||
-      sample.sample_id.length === 0 ||
-      seen.has(sample.sample_id) ||
-      typeof sample.duration_seconds !== "number" ||
-      !Number.isFinite(sample.duration_seconds) ||
-      sample.duration_seconds <= 0
-    ) {
-      throw new Error("demo manifest 的样本定义无效");
-    }
-    validateRelativeAssetPath(sample.media_path);
-    validateRelativeAssetPath(sample.las_path);
-    validateRelativeAssetPath(sample.local_path);
-    seen.add(sample.sample_id);
-  }
-  return manifest;
 }
 
 
@@ -191,7 +177,33 @@ function renderEventList(container, events, source, mode) {
       metadata.append(item);
     }
     card.addEventListener("click", () => seekTo(event.start));
+    if (event.meta?.evidenceMode) {
+      for (const value of [
+        event.meta.evidenceMode, `复核：${event.meta.reviewStatus}`,
+        `来源片段：${event.meta.sourceSegments.join(", ") || "—"}`,
+        `轨迹：${event.meta.sourceTracks.join(", ") || "—"}`,
+        `候选：${event.meta.sourceCandidate ?? "—"}`,
+        `关键帧：${event.meta.sourceKeyframes.join(", ") || "—"}`,
+        `修复历史：${event.meta.repairHistory.join(" → ")}`,
+        ...(event.meta.occluder ? [`遮挡物：${event.meta.occluder}`] : []),
+        ...(event.meta.review ? [`${event.meta.review.reviewer}: ${event.meta.review.visual_reason}`] : []),
+      ]) {
+        const item = document.createElement("span"); item.textContent = value; metadata.append(item);
+      }
+    }
     container.append(fragment);
+    if (event.meta?.overlays?.length) {
+      // Evidence controls are siblings, never nested interactive elements in
+      // the event's seek button.
+      const actions = document.createElement("div"); actions.className = "evidence-actions";
+      for (const overlay of event.meta.overlays) {
+        const button = document.createElement("button"); button.type = "button";
+        button.textContent = `查看 ${overlay.keyframe_id}`;
+        button.addEventListener("click", () => openEvidence(overlay));
+        actions.append(button);
+      }
+      container.append(actions);
+    }
   });
 }
 
@@ -242,6 +254,7 @@ function renderLasContext(reference) {
 
 function renderLocalContext(localData) {
   elements.localContext.replaceChildren();
+  if (!localData) return;
   addContextGroup(
     elements.localContext,
     "Objects",
@@ -260,6 +273,16 @@ function renderLocalContext(localData) {
   addContextGroup(elements.localContext, "Outcome", [
     { title: localData.outcome.status, copy: localData.outcome.description },
   ]);
+  const provenance = state.localLayers.provenance;
+  if (provenance) {
+    addContextGroup(elements.localContext, "来源与运行状态", [
+      { title: provenance.model_identity || "未提供模型标识", copy: `CV: ${provenance.cv_evidence.status} · Scene: ${state.localLayers.statuses.scene} · Occlusion: ${state.localLayers.statuses.occlusion}` },
+      { title: "耗时", copy: `${provenance.performance.total_seconds.toFixed(2)} s · 修复 ${provenance.performance.repair_count} · 降级 ${provenance.performance.degradation_count}` },
+      { title: "结果 SHA-256", copy: provenance.source_result_sha256 },
+      { title: "视频 SHA-256", copy: provenance.source_video_sha256 },
+    ]);
+    if (state.localLayers.warnings.length) addContextGroup(elements.localContext, "Warnings", state.localLayers.warnings.map(warning => ({copy: JSON.stringify(warning)})));
+  }
 }
 
 
@@ -320,8 +343,13 @@ function renderPanels() {
   elements.eventTotal.textContent = `${state.lasEvents.length} / ${localEvents.length} events`;
   renderEventList(elements.lasEvents, state.lasEvents, "las", "events");
   renderEventList(elements.localEvents, localEvents, "local", state.localMode);
-  renderLasContext(state.lasReference);
-  renderLocalContext(state.localData);
+  if (state.lasReference) renderLasContext(state.lasReference);
+  else elements.lasContext.replaceChildren();
+  renderLocalContext(state.localLayers.context);
+  for (const button of elements.localModes.querySelectorAll("button[data-mode]")) {
+    button.disabled = !state.localLayers.availableModes.includes(button.dataset.mode);
+    button.setAttribute("aria-pressed", String(!button.disabled && button.dataset.mode === state.localMode));
+  }
   renderTimeline();
   syncClock(elements.video.currentTime || 0);
 }
@@ -366,6 +394,39 @@ function releaseLocalVideo() {
   }
 }
 
+function releaseEvidence() {
+  state.previewSequence++;
+  elements.evidenceImage.hidden = true;
+  elements.evidenceImage.removeAttribute("src");
+  if (state.previewObjectUrl) URL.revokeObjectURL(state.previewObjectUrl);
+  state.previewObjectUrl = null;
+}
+
+function closeEvidence() {
+  releaseEvidence();
+  if (elements.evidencePreview.open) elements.evidencePreview.close();
+}
+
+async function openEvidence(overlay) {
+  releaseEvidence();
+  const sequence = state.previewSequence;
+  elements.evidenceCaption.textContent = `正在校验 ${overlay.keyframe_id}…`;
+  if (!elements.evidencePreview.open) elements.evidencePreview.showModal();
+  try {
+    const response = await fetch(assetUrl(overlay.path), {cache: "no-store", redirect: "error"});
+    const bytes = await readVerifiedBytes(response, overlay.sha256, overlay.size_bytes);
+    if (bytes.byteLength !== overlay.size_bytes) throw new Error("OVERLAY_SIZE_MISMATCH");
+    validateOverlayPng(bytes);
+    if (sequence !== state.previewSequence || !elements.evidencePreview.open) return;
+    state.previewObjectUrl = URL.createObjectURL(new Blob([bytes], {type: "image/png"}));
+    elements.evidenceImage.src = state.previewObjectUrl;
+    elements.evidenceImage.hidden = false;
+    elements.evidenceCaption.textContent = `${overlay.keyframe_id} · ${overlay.track_id} · ${formatTime(overlay.timestamp_seconds)} · SHA-256 ${overlay.sha256}`;
+  } catch {
+    if (sequence === state.previewSequence) elements.evidenceCaption.textContent = "证据图片无法读取或校验失败。";
+  }
+}
+
 
 function loadConfiguredVideo(sample) {
   releaseLocalVideo();
@@ -379,27 +440,32 @@ function loadConfiguredVideo(sample) {
 
 async function loadSample(sampleId) {
   const sample = sampleById(sampleId);
-  if (!sample || sample.sample_id === state.sample?.sample_id) return;
+  if (!sample || (sample.sample_id === state.sample?.sample_id && state.lasReference && state.localData)) return;
   const sequence = ++state.loadSequence;
+  state.variantSequence++;
+  closeEvidence();
+  state.sample = sample;
+  state.lasReference = null; state.lasEvents = []; state.localData = null;
+  state.localLayers = emptyLocalLayers();
+  state.variant = preferredVariant(localVariants(sample));
+  elements.localVariant.replaceChildren();
+  for (const variant of localVariants(sample)) {
+    const option = document.createElement("option"); option.value = variant.id; option.textContent = variant.label;
+    elements.localVariant.append(option);
+  }
+  elements.localVariant.value = state.variant.id;
+  elements.localVariant.disabled = true;
+  renderSampleNav(); renderPanels();
+  loadConfiguredVideo(sample);
   elements.workspace.setAttribute("aria-busy", "true");
   showStatus(`正在载入 ${sample.sample_id}…`);
   try {
-    const [lasReference, localData] = await Promise.all([
-      loadJson(sample.las_path),
-      loadJson(sample.local_path),
-    ]);
+    const lasReference = await loadJson(sample.las_path, sample.las_sha256);
     const lasEvents = normalizeLas(lasReference, sample.duration_seconds);
-    const localLayers = normalizeLocal(
-      localData,
-      sample.duration_seconds,
-      sample.sample_id,
-    );
     if (sequence !== state.loadSequence) return;
     state.sample = sample;
     state.lasReference = lasReference;
-    state.localData = localData;
     state.lasEvents = lasEvents;
-    state.localLayers = localLayers;
     elements.sampleDuration.textContent = formatTime(sample.duration_seconds);
     elements.totalTime.textContent = formatTime(sample.duration_seconds);
     elements.scrubber.max = String(sample.duration_seconds);
@@ -409,8 +475,8 @@ async function loadSample(sampleId) {
     updateQuery(sample.sample_id);
     renderSampleNav();
     renderPanels();
-    loadConfiguredVideo(sample);
-    hideStatus();
+    elements.localVariant.disabled = false;
+    await loadVariant(state.variant.id);
   } catch (error) {
     if (sequence !== state.loadSequence) return;
     const message = error instanceof Error ? error.message : "未知错误";
@@ -422,16 +488,43 @@ async function loadSample(sampleId) {
   }
 }
 
+async function loadVariant(variantId) {
+  const sample = state.sample;
+  const variant = localVariants(sample).find(item => item.id === variantId);
+  if (!variant) return;
+  const sequence = ++state.variantSequence;
+  state.variant = variant; state.localData = null; state.localLayers = emptyLocalLayers();
+  elements.localTitle.textContent = variant.label;
+  closeEvidence(); renderPanels();
+  showStatus(`正在载入 ${variant.label}…`);
+  try {
+    const localData = await loadJson(variant.path, variant.sha256);
+    const localLayers = normalizeVariant(localData, sample, variant);
+    if (sequence !== state.variantSequence || sample !== state.sample) return;
+    state.localData = localData; state.localLayers = localLayers;
+    if (!localLayers.availableModes.includes(state.localMode)) state.localMode = localLayers.availableModes[0] ?? "grouped";
+    renderPanels(); hideStatus();
+  } catch {
+    if (sequence !== state.variantSequence || sample !== state.sample) return;
+    showStatus(`${variant.label} 无法读取或未通过校验；未显示旧结果。`, true);
+  }
+}
+
 
 function bindControls() {
   elements.localModes.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-mode]");
-    if (!button || !LOCAL_MODES.has(button.dataset.mode) || !state.sample) return;
+    if (!button || button.disabled || !LOCAL_MODES.has(button.dataset.mode) || !state.sample) return;
     state.localMode = button.dataset.mode;
     for (const candidate of elements.localModes.querySelectorAll("button[data-mode]")) {
       candidate.setAttribute("aria-pressed", String(candidate === button));
     }
     renderPanels();
+  });
+  elements.localVariant.addEventListener("change", () => loadVariant(elements.localVariant.value));
+  elements.evidencePreview.addEventListener("close", releaseEvidence);
+  elements.evidenceImage.addEventListener("error", () => {
+    if (elements.evidencePreview.open) { releaseEvidence(); elements.evidenceCaption.textContent = "证据图片无法解码。"; }
   });
   elements.scrubber.addEventListener("input", () => seekTo(Number(elements.scrubber.value)));
   elements.playToggle.addEventListener("click", async () => {
@@ -469,7 +562,7 @@ function bindControls() {
     elements.video.load();
     elements.videoMissing.hidden = true;
   });
-  window.addEventListener("beforeunload", releaseLocalVideo);
+  window.addEventListener("beforeunload", () => { releaseLocalVideo(); releaseEvidence(); });
 }
 
 

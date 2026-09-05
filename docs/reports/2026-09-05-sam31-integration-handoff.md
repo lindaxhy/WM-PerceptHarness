@@ -11,8 +11,9 @@ address, temporary media URL, LAS task ID, or local absolute path.
 
 The original numbered sections below preserve the Tasks 1–9 checkpoint. The
 continuation has completed Tasks 10 and 11 with independent review, plus the
-Doubao backend and SAM runtime compatibility remediation. Task 12 is implemented
-at `865c430` and remains in its review/fix loop; Tasks 13–15 are not complete.
+Doubao backend and SAM runtime compatibility remediation. Task 12 completed its
+review/fix loop at `0a66c06`; Task 13 is being implemented, and Tasks 14–15 remain
+pending. Task 13 is not yet independently reviewed or accepted.
 No integration PR or production-service deployment is claimed at this point.
 
 The user explicitly authorized Doubao remote semantic inference. The
@@ -29,10 +30,12 @@ and digest-checked artifact reload. See the
 hashes, timings, and the distinction between diagnostics and acceptance.
 
 The real Doubao-only pipeline completed and exported six fine rows, but the
-scene branch degraded after its single repair. A bounded
+scene branch degraded after its single repair. The bounded
 [scene prompt contract repair](../superpowers/plans/2026-09-05-scene-prompt-contract.md)
-is queued after Task 12 review; it clarifies existing flat provenance and
-no-CV spatial-list rules without relaxing validation. The
+completed at `1963dac` with independent review. A real no-override replay of the
+production prompt passed structural, temporal and required-object validation
+on its first response. It clarifies existing flat provenance and no-CV
+spatial-list rules without relaxing validation. The
 [feasibility report](2026-09-05-doubao-feasibility.md) records the actual result.
 
 Continue using the per-plan SDD ledgers and committed history, not the historical

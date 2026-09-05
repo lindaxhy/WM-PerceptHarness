@@ -169,6 +169,70 @@ def write_overlay_file(staging: Path, payload: bytes) -> None:
     (overlays / "opaque.png").write_bytes(payload)
 
 
+def test_registered_overlay_bytes_are_read_without_exposing_other_files(
+    tmp_path, cv_request
+):
+    payload = PNG_SIGNATURE + b"registered-overlay"
+    with CvArtifactStore(tmp_path / "cache") as store:
+        with store.staging(cv_cache_key(cv_request)) as staging:
+            write_overlay_file(staging, payload)
+            handle = store.publish(
+                cv_request, staging, overlay_artifact_for(cv_request, payload)
+            )
+        assert store.read_overlays(handle, ("overlays/opaque.png",)) == {
+            "overlays/opaque.png": payload
+        }
+        assert store.read_overlays(handle, ()) == {}
+        for paths in (
+            ("manifest.json",),
+            ("masks/0.npz",),
+            ("../opaque.png",),
+            ("overlays/missing.png",),
+            ("overlays/opaque.png",) * 2,
+        ):
+            with pytest.raises(CvArtifactError):
+                store.read_overlays(handle, paths)
+        with pytest.raises(CvArtifactError):
+            store.read_overlays(
+                handle, ("overlays/opaque.png",), max_total_bytes=len(payload) - 1
+            )
+        with pytest.raises(CvArtifactError):
+            store.read_overlays(
+                CvArtifactHandle(handle.key, "0" * 64), ("overlays/opaque.png",)
+            )
+
+
+@pytest.mark.parametrize("replacement", ["different_bytes", "symlink"])
+def test_overlay_read_rejects_post_validation_replacement(
+    tmp_path, cv_request, monkeypatch, replacement
+):
+    payload = PNG_SIGNATURE + b"registered-overlay"
+    cache = tmp_path / "cache"
+    with CvArtifactStore(cache) as store:
+        with store.staging(cv_cache_key(cv_request)) as staging:
+            write_overlay_file(staging, payload)
+            handle = store.publish(
+                cv_request, staging, overlay_artifact_for(cv_request, payload)
+            )
+        original_load = store._load
+
+        def change_after_load(candidate):
+            artifact = original_load(candidate)
+            path = cache / handle.key[:2] / handle.key / "overlays/opaque.png"
+            if replacement == "symlink":
+                outside = tmp_path / "outside.png"
+                outside.write_bytes(payload)
+                path.unlink()
+                path.symlink_to(outside)
+            else:
+                path.write_bytes(PNG_SIGNATURE + b"different-overlay!")
+            return artifact
+
+        monkeypatch.setattr(store, "_load", change_after_load)
+        with pytest.raises(CvArtifactError):
+            store.read_overlays(handle, ("overlays/opaque.png",))
+
+
 def published_artifact(store, request, payload=b"mask", **artifact_updates):
     artifact = artifact_for(request, payload).model_copy(update=artifact_updates)
     key = cv_cache_key(request)

@@ -96,10 +96,15 @@
           </div>
           <span id="local-count" class="count-badge">—</span>
         </header>
+        <div class="variant-picker">
+          <label for="local-variant">对比结果</label>
+          <select id="local-variant" disabled></select>
+        </div>
         <div id="local-modes" class="mode-switch" role="group" aria-label="Local annotation level">
-          <button type="button" data-mode="grouped" aria-pressed="true">Grouped</button>
-          <button type="button" data-mode="fine" aria-pressed="false">Fine</button>
+          <button type="button" data-mode="grouped" aria-pressed="true">Action</button>
+          <button type="button" data-mode="occlusion" aria-pressed="false" disabled>Occlusion</button>
           <button type="button" data-mode="scene" aria-pressed="false">Scene</button>
+          <button type="button" data-mode="fine" aria-pressed="false">Fine</button>
         </div>
         <div id="local-events" class="event-list" aria-live="polite"></div>
         <details class="context-drawer">
@@ -110,6 +115,13 @@
 
       <div id="status" class="status-message" role="alert">正在载入标注…</div>
     </main>
+
+    <dialog id="evidence-preview" aria-labelledby="evidence-title">
+      <form method="dialog"><button type="submit" class="evidence-close" aria-label="关闭证据预览">关闭</button></form>
+      <h2 id="evidence-title">视觉证据</h2>
+      <p id="evidence-caption" aria-live="polite"></p>
+      <img id="evidence-image" alt="已校验的分割叠加图" hidden>
+    </dialog>
 
     <template id="event-card-template">
       <button class="event-card" type="button">

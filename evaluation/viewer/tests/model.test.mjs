@@ -6,9 +6,208 @@ import {
   isEventActive,
   normalizeLas,
   normalizeLocal,
+  normalizeHybrid,
+  validateManifest,
+  localVariants,
+  preferredVariant,
+  normalizeVariant,
+  readVerifiedBytes,
+  validateOverlayPng,
   packLanes,
   validateRelativeAssetPath,
 } from "../js/model.js";
+
+function hybridFixture() {
+  const event = {
+    id: "action_0", event_index: 0, start: 0, end: 1, actor: "right_hand",
+    action: "motion", target: "cup", description: "Hand moves cup", confidence: 0.8,
+    branch: "action", model_stage: "embodied_enrichment", evidence_mode: "hybrid",
+    source_segment_indices: [0], source_track_ids: ["cup_1"], source_keyframe_ids: ["frame_0002"],
+    repair_history: ["initial"], review_status: "not_required", review: null,
+  };
+  return {
+    schema_version: "comparison_viewer_hybrid_v1",
+    sample: { sample_id: "full_0001", duration_seconds: 1 },
+    layers: {
+      action_events: { status: "available", events: [event] },
+      occlusion_events: { status: "available", events: [{
+        ...event, id: "occlusion_0", branch: "occlusion", model_stage: "occlusion_semantics",
+        action: undefined, actor: undefined, target: undefined,
+        event_type: "occluded", target_entity_id: "cup", occluder_entity_id: "board",
+        source_candidate_id: "occ_aaaaaaaaaaaa_0000", review_status: "unreviewed",
+      }].map(({action, actor, target, ...rest}) => rest) },
+      scene_facts: { status: "available", events: [], locations: [], relations: [],
+        objects: [{ object_id: "cup", name: "cup", description: "visible cup" }],
+        initial_state: [], final_state: [], outcome: { status: "unknown", description: "unknown", confidence: 0 } },
+    },
+    provenance: {
+      source_video_sha256: "a".repeat(64), source_result_sha256: "b".repeat(64),
+      canonical_result_sha256: "c".repeat(64), model_identity: "doubao-seed-2-1-pro-260628",
+      cv_evidence: { status: "available", artifact_key: "d".repeat(64), manifest_sha256: "e".repeat(64), cache_hit: false },
+      review_sha256: null, performance: { total_seconds: 5, repair_count: 0, degradation_count: 0 },
+      overlays: [{ keyframe_id: "frame_0002", track_id: "cup_1", frame_index: 2, timestamp_seconds: 0.2,
+        path: `evaluation/viewer/data/hybrid/overlays/${"f".repeat(64)}.png`, sha256: "f".repeat(64), size_bytes: 100 }],
+    }, warnings: [],
+  };
+}
+
+test("hybrid normalization retains evidence, statuses and provenance without mutating input", () => {
+  const data = hybridFixture();
+  const before = structuredClone(data);
+  const result = normalizeHybrid(data, 1, "full_0001");
+  assert.deepEqual(result.availableModes, ["grouped", "occlusion", "scene"]);
+  assert.equal(result.grouped[0].type, "motion");
+  assert.equal(result.grouped[0].lane, 0);
+  assert.equal(result.occlusion[0].type, "occluded");
+  assert.equal(result.occlusion[0].meta.reviewStatus, "unreviewed");
+  assert.deepEqual(result.grouped[0].meta.sourceTracks, ["cup_1"]);
+  assert.equal(result.grouped[0].meta.overlays[0].keyframe_id, "frame_0002");
+  assert.equal(result.provenance.source_result_sha256, "b".repeat(64));
+  assert.deepEqual(result.fine, []);
+  assert.deepEqual(data, before);
+});
+
+test("hybrid fine evidence and unavailable modes remain separate", () => {
+  const data = hybridFixture();
+  data.layers.occlusion_events = { status: "unavailable", events: [] };
+  data.warnings = [{ code: "OCCLUSION_UNAVAILABLE" }];
+  data.provenance.performance.degradation_count = 1;
+  data.layers.fine_segments = { status: "available", events: [{
+    id: "fine_0", segment_index: 0, start: 0, end: 1, actor: "right_hand", skill: "move", target: "cup",
+    description: "move", confidence: 0.8, branch: "fine", model_stage: "embodied_enrichment", evidence_mode: "vlm_only",
+    source_segment_indices: [0], source_track_ids: [], source_keyframe_ids: [], repair_history: ["initial"],
+    review_status: "not_required", review: null,
+  }] };
+  const result = normalizeHybrid(data, 1, "full_0001");
+  assert.deepEqual(result.availableModes, ["grouped", "scene", "fine"]);
+  assert.deepEqual(result.occlusion, []);
+  assert.equal(result.fine[0].id, "fine_0");
+  assert.equal(result.fine[0].type, "move");
+});
+
+test("hybrid overlapping scene facts receive deterministic lanes and retain objects", () => {
+  const data = hybridFixture();
+  const { id, event_index, action, actor, target, description, review, ...provenance } = data.layers.action_events.events[0];
+  data.layers.scene_facts.locations = [{ ...provenance, branch: "scene", model_stage: "scene_semantics",
+    object_id: "cup", location: "center", visual_evidence: "Cup visibly centered" }];
+  data.layers.scene_facts.relations = [{ ...provenance, branch: "scene", model_stage: "scene_semantics",
+    subject_object_id: "cup", object_object_id: "cup", relation: "near", visual_evidence: "Visible relation" }];
+  const result = normalizeHybrid(data, 1, "full_0001");
+  assert.deepEqual(result.scene.map(event => event.lane), [0, 1]);
+  assert.equal(result.scene[0].type, "location");
+  assert.match(result.scene[0].description, /center/);
+  assert.equal(result.context.objects[0].name, "cup");
+});
+
+test("hybrid review verdicts require matching provenance and human evidence", () => {
+  const data = hybridFixture();
+  const event = data.layers.occlusion_events.events[0];
+  event.review_status = "supported";
+  event.review = { reviewer: "human-reviewer", visual_reason: "Board visibly covers cup" };
+  assert.throws(() => normalizeHybrid(data, 1, "full_0001"));
+  data.provenance.review_sha256 = "1".repeat(64);
+  assert.equal(normalizeHybrid(data, 1, "full_0001").occlusion[0].meta.reviewStatus, "supported");
+  event.review_status = "unsupported";
+  assert.equal(normalizeHybrid(data, 1, "full_0001").occlusion[0].meta.reviewStatus, "unsupported");
+});
+
+test("hybrid parser rejects invalid identity, intervals, raw masks, paths and provenance", () => {
+  const mutations = [
+    d => d.schema_version = "unknown", d => d.sample.sample_id = "other", d => d.sample.duration_seconds = 2,
+    d => d.extra = {}, d => d.layers.action_events.events[0].start = -1,
+    d => d.layers.action_events.events[0].end = 2, d => d.layers.action_events.events[0].confidence = 2,
+    d => d.layers.action_events.events[0].raw_mask = [[1]], d => d.layers.action_events.events[0].source_track_ids = ["../mask"],
+    d => d.provenance.source_video_sha256 = "bad", d => d.provenance.cv_evidence.manifest_sha256 = "bad",
+    d => d.provenance.overlays[0].path = "../frame.png", d => d.provenance.overlays[0].path = "https://example.com/x.png",
+    d => d.provenance.overlays[0].path = "evaluation/%2e%2e/x.png", d => d.provenance.overlays[0].path = "evaluation/x.npz",
+    d => d.provenance.overlays[0].keyframe_id = "foreign", d => d.provenance.overlays[0].sha256 = "0".repeat(64),
+    d => d.provenance.overlays[0].frame_index = 0.5, d => d.provenance.overlays[0].size_bytes = 0,
+    d => d.provenance.overlays[0].timestamp_seconds = 1, d => d.layers.occlusion_events.status = "unavailable",
+    d => d.layers.action_events.events[0].repair_history = ["repair"], d => d.layers.action_events.events[0].evidence_mode = "vlm_only",
+    d => d.layers.scene_facts.objects.push({...d.layers.scene_facts.objects[0]}),
+    d => d.warnings = [{code: "UNKNOWN", error: "private"}],
+  ];
+  for (const mutate of mutations) {
+    const data = hybridFixture(); mutate(data);
+    assert.throws(() => normalizeHybrid(data, 1, "full_0001"), undefined, String(mutate));
+  }
+});
+
+function manifestFixture(version = 2) {
+  const sample = { sample_id: "full_0001", duration_seconds: 1, media_path: "evaluation/media/s.mp4",
+    las_path: "evaluation/reference/s.json", caveat: "" };
+  if (version === 1) sample.local_path = "evaluation/local/s.json";
+  else sample.local_variants = [
+    { id: "qwen_only", label: "Qwen-only", path: "evaluation/local/s.json", format: "comparison_viewer_local_v1" },
+    { id: "doubao_only", label: "Doubao-only", path: "evaluation/doubao/s.json", format: "comparison_viewer_hybrid_v1" },
+    { id: "doubao_sam31", label: "Doubao + SAM3.1", path: "evaluation/hybrid/s.json", format: "comparison_viewer_hybrid_v1" },
+  ];
+  return { schema_version: `comparison_viewer_manifest_v${version}`, reference_set_id: "english", samples: [sample] };
+}
+
+test("manifest v1 compatibility and v2 honest deterministic model selection", () => {
+  const legacy = validateManifest(manifestFixture(1)).samples[0];
+  assert.equal(preferredVariant(localVariants(legacy)).id, "qwen_only");
+  const modern = validateManifest(manifestFixture()).samples[0];
+  assert.equal(preferredVariant(localVariants(modern)).id, "doubao_sam31");
+  modern.local_variants.pop();
+  assert.equal(preferredVariant(localVariants(modern)).id, "doubao_only");
+  modern.local_variants.push({ id: "qwen_sam31", label: "Qwen + SAM3.1", path: "evaluation/qwen-sam/s.json", format: "comparison_viewer_hybrid_v1" });
+  assert.equal(preferredVariant(localVariants(modern)).id, "qwen_sam31");
+});
+
+test("manifest rejects duplicates, foreign variants, misleading labels and unsafe paths", () => {
+  for (const mutate of [
+    m => m.samples[0].local_variants.push(m.samples[0].local_variants[0]),
+    m => m.samples[0].local_variants.shift(), m => m.samples[0].local_variants[1].id = "unknown",
+    m => m.samples[0].local_variants[1].label = "Qwen-only", m => m.samples[0].local_variants[1].format = "raw",
+    m => m.samples[0].local_variants[1].path = "evaluation/%2fprivate.json",
+    m => m.samples[0].local_variants[1].sha256 = "bad", m => m.samples.push(m.samples[0]),
+    m => m.samples[0].duration_seconds = NaN, m => m.samples[0].local_path = "evaluation/stale.json",
+  ]) {
+    const manifest = manifestFixture(); mutate(manifest);
+    assert.throws(() => validateManifest(manifest), undefined, String(mutate));
+  }
+});
+
+test("variant binding rejects relabeling, source swaps and format confusion", () => {
+  const data = hybridFixture();
+  const sample = manifestFixture().samples[0];
+  sample.source_video_sha256 = "a".repeat(64);
+  const variant = sample.local_variants[2];
+  variant.source_result_sha256 = "b".repeat(64);
+  variant.model_identity = "doubao-seed-2-1-pro-260628";
+  assert.equal(normalizeVariant(data, sample, variant).grouped[0].type, "motion");
+  for (const change of [
+    v => v.source_result_sha256 = "9".repeat(64), v => v.model_identity = "other",
+    v => v.id = "qwen_sam31", v => v.id = "doubao_only", v => v.format = "comparison_viewer_local_v1",
+  ]) {
+    const bad = structuredClone(variant); change(bad);
+    assert.throws(() => normalizeVariant(data, sample, bad));
+  }
+  sample.source_video_sha256 = "9".repeat(64);
+  assert.throws(() => normalizeVariant(data, sample, variant));
+});
+
+test("asset bytes are bounded and hashed before use", async () => {
+  const bytes = new TextEncoder().encode("abc");
+  const sha = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+  assert.deepEqual(await readVerifiedBytes(new Response(bytes), sha, 3), bytes);
+  await assert.rejects(readVerifiedBytes(new Response(bytes), "0".repeat(64), 3));
+  await assert.rejects(readVerifiedBytes(new Response(bytes), sha, 2));
+  await assert.rejects(readVerifiedBytes(new Response(bytes, {status: 404}), sha, 3));
+});
+
+test("overlay image header prevents non-PNG and excessive decoded dimensions", () => {
+  const bytes = new Uint8Array(24);
+  bytes.set([137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82]);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(16, 1280); view.setUint32(20, 720);
+  assert.equal(validateOverlayPng(bytes), bytes);
+  view.setUint32(16, 100000);
+  assert.throws(() => validateOverlayPng(bytes));
+  assert.throws(() => validateOverlayPng(new Uint8Array([0])));
+});
 
 
 test("formatTime emits a stable minute-second label", () => {
