@@ -35,8 +35,12 @@ with independent re-review. Final verification passed 1,659 Python tests with
 85.75% branch-enabled combined coverage and 19 Node tests. Both isolated runtime
 environments now contain the verified repaired wheel. Re-polling the original
 completed task returned valid data byte-identical to its canonical stored
-snapshot, with no additional task or inference job. The resumed driver exported
-the first sample and has submitted sample two. Full Task 15 acceptance remains
+snapshot, with no additional task or inference job. The resumed Doubao-only run
+has now completed all five samples with no degradation and all below 12 minutes.
+Strict frozen-reference evaluation gives action F1@0.3 0.48 and F1@0.5 0.32,
+versus frozen Qwen 0.13636 and 0.09091; occlusion remains zero. The acceptance
+report records immutable metadata/report digests and per-sample timings. The
+separate Doubao+SAM cold run has started; full Task 15 acceptance remains
 incomplete.
 Task 13 adds verified projection,
 variant selection and bounded overlay access; its actual five-demo data and

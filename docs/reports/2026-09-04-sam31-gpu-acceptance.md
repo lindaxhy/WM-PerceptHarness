@@ -108,6 +108,46 @@ repaired transport used `323393f`; this API-only provenance distinction is
 intentional and recorded. The resumed driver has submitted sample two. The
 five-sample control/treatment and full acceptance gates remain incomplete.
 
+## Completed Doubao-only cold control
+
+All five tasks completed, passed canonical validation and caption export, and
+matched their persisted results exactly. No sample degraded; two repairs were
+used across the five tasks. All remained below the 12-minute bound.
+
+| Sample | Wall seconds | Actions | Fine rows | Repairs |
+| --- | ---: | ---: | ---: | ---: |
+| `full_0001` | 155.554 | 9 | 14 | 1 |
+| `full_0002` | 111.027 | 6 | 18 | 0 |
+| `full_0024` | 64.175 | 4 | 6 | 0 |
+| `full_0021` | 112.798 | 6 | 10 | 1 |
+| `full_0004` | 100.263 | 7 | 11 | 0 |
+
+Median wall time is 111.027 seconds. Timing uses actual database task creation
+and terminal timestamps; the API-repair pause is not inference time.
+
+The strict evaluator verified the five original media hashes, result hashes,
+canonical structures, fixed configuration and unchanged reference/mapping:
+
+- Action Event F1@0.3: 24/50 = **0.48** (12 matches, 32 predictions,
+  18 reference action events); frozen Qwen was 6/44 = 0.13636.
+- Action Event F1@0.5: 16/50 = **0.32** (8 matches); frozen Qwen was
+  4/44 = 0.09091.
+- Occlusion Event F1@0.3: 0/13 = **0**, with no positive control predictions.
+- Configuration SHA-256:
+  `98e6faccc826bc3fc0bdb957461dc4c2dddc125ada0cec0e83cac8bfd541a439`.
+- Run metadata SHA-256:
+  `1244cfd79df36e4eb55240af86def889b4505d4622b8daa63d0661fd68e98afa`.
+- Verified control report SHA-256:
+  `10fef3e1a8bd67a1658a3f390546eec361ec6b77ab5d10c434cf570cf5beab15`.
+
+This supports a diagnostic semantic-backend comparison, not a dataset-wide
+quality claim or a claim about SAM's contribution. The separate Doubao+SAM
+cold run has started with the same semantic settings and a fresh CV cache.
+Its CV worker runs the unmodified installed CLI under standard-library cProfile
+to record actual provider `analyze` calls for cold/cache comparison; measured
+hybrid timings will include that profiling overhead. GPUs 0–2 remained unused
+at startup, while SAM loaded on physical GPU 3.
+
 ## Remaining acceptance
 
 The isolated authenticated loopback service is running the Doubao-only control
