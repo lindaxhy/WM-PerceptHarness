@@ -1,6 +1,7 @@
 # SAM3.1 removed-object sentinel compatibility
 
-Status: proposed; user confirmation pending. No product change made.
+Status: approved by the user's continuation instruction after the bounded
+sentinel proposal. Implementation and independent verification are pending.
 
 ## Evidence
 
