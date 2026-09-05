@@ -250,8 +250,11 @@ def _ark_worker(arguments: argparse.Namespace, settings: Settings, stop: threadi
             if arguments.once: worker.run_once()
             else: worker.run_forever(stop)
         finally:
-            if worker is not None: worker.close()
-            model.close()
+            try:
+                if worker is not None:
+                    worker.close()
+            finally:
+                model.close()
     return 0
 
 

@@ -130,6 +130,85 @@ def test_ark_worker_constructs_remote_worker_and_closes_lifecycle(tmp_path, monk
     assert observed == {"model_close": 1, "worker_close": 1, "run": 1}
 
 
+def test_ark_worker_once_completes_exactly_one_matching_sqlite_job(tmp_path, monkeypatch):
+    from las_repro.domain import InferenceJobSpec, InferenceStatus
+    from las_repro.models.ark import ArkVideoModel
+    from las_repro.models.fake import FakeVideoModel
+    media_root = tmp_path / "media"; media_root.mkdir()
+    video = media_root / "video.mp4"; video.write_bytes(b"video")
+    environment = _cli_environment(tmp_path, media_root)
+    environment.update({"LAS_BACKEND": "ark", "LAS_ARK_API_KEY": "ark-secret",
+                        "LAS_ARK_MODEL_REGISTRY": '{"doubao-pro":"doubao-seed-2-1-pro-260628"}'})
+    for key, value in environment.items():
+        if key.startswith("LAS_"): monkeypatch.setenv(key, value)
+    store = SQLiteTaskStore(Path(environment["LAS_DATABASE_PATH"])); store.initialize()
+    task = store.create_task({"video_url": str(video), "model_name": "doubao-pro"})
+    payload = {"video_path": str(video.resolve()), "start": 0.0, "end": 1.0, "fps": 1.0,
+               "prompt": "describe", "schema_name": "general_segment", "video_session_id": task.task_id}
+    jobs = store.create_inference_jobs(task.task_id, [
+        InferenceJobSpec(stage="general_segment", ordinal=index, payload=payload)
+        for index in range(2)])
+    class Model(FakeVideoModel):
+        def close(self): pass
+    monkeypatch.setattr(ArkVideoModel, "__new__", lambda cls, **kwargs: Model())
+    store.close()
+    assert cli.main(["ark-worker", "--model-name", "doubao-pro", "--once"]) == 0
+    check = SQLiteTaskStore(Path(environment["LAS_DATABASE_PATH"])); check.initialize()
+    statuses = [check.get_inference_job(job.job_id).status for job in jobs]
+    check.close()
+    assert statuses.count(InferenceStatus.COMPLETED) == 1
+    assert statuses.count(InferenceStatus.PENDING) == 1
+
+
+def test_ark_worker_closes_model_when_worker_cleanup_raises(tmp_path, monkeypatch):
+    media_root = tmp_path / "media"; media_root.mkdir()
+    environment = _cli_environment(tmp_path, media_root)
+    environment.update({"LAS_BACKEND": "ark", "LAS_ARK_API_KEY": "ark-secret",
+                        "LAS_ARK_MODEL_REGISTRY": '{"doubao-pro":"remote-id"}'})
+    for key, value in environment.items():
+        if key.startswith("LAS_"): monkeypatch.setenv(key, value)
+    closed = 0
+    from las_repro.models.ark import ArkVideoModel
+    from las_repro import workers
+    class Model:
+        def close(self):
+            nonlocal closed; closed += 1
+    class Worker:
+        def __init__(self, *args, **kwargs): pass
+        def run_once(self): pass
+        def close(self): raise RuntimeError("cleanup failed")
+    monkeypatch.setattr(ArkVideoModel, "__new__", lambda cls, **kwargs: Model())
+    monkeypatch.setattr(workers, "GPUWorker", Worker)
+    assert cli.main(["ark-worker", "--model-name", "doubao-pro", "--once"]) == 1
+    assert closed == 1
+
+
+@pytest.mark.parametrize("failure_point", ["init", "run"])
+def test_ark_worker_closes_http_model_on_initialization_or_run_failure(
+    tmp_path, monkeypatch, failure_point
+):
+    media_root = tmp_path / "media"; media_root.mkdir()
+    environment = _cli_environment(tmp_path, media_root)
+    environment.update({"LAS_BACKEND": "ark", "LAS_ARK_API_KEY": "ark-secret",
+                        "LAS_ARK_MODEL_REGISTRY": '{"doubao-pro":"remote-id"}'})
+    for key, value in environment.items():
+        if key.startswith("LAS_"): monkeypatch.setenv(key, value)
+    observed = {"model": 0, "worker": 0}
+    from las_repro.models.ark import ArkVideoModel
+    from las_repro import workers
+    class Model:
+        def close(self): observed["model"] += 1
+    class Worker:
+        def __init__(self, *args, **kwargs):
+            if failure_point == "init": raise RuntimeError("init failed")
+        def run_once(self): raise RuntimeError("run failed")
+        def close(self): observed["worker"] += 1
+    monkeypatch.setattr(ArkVideoModel, "__new__", lambda cls, **kwargs: Model())
+    monkeypatch.setattr(workers, "GPUWorker", Worker)
+    assert cli.main(["ark-worker", "--model-name", "doubao-pro", "--once"]) == 1
+    assert observed == {"model": 1, "worker": int(failure_point == "run")}
+
+
 def test_distribution_registers_the_las_repro_console_script() -> None:
     entry_points = {
         entry.name: entry.value
@@ -1412,7 +1491,7 @@ class BlockSam(importlib.abc.MetaPathFinder):
         if (
             fullname == 'las_repro.cv.sam31'
             or package in {'sam3', 'cv2'}
-            or (role != 'gpu-worker' and package in {'numpy', 'torch'})
+            or (role != 'gpu-worker' and package in {'numpy', 'torch', 'transformers'})
         ):
             raise AssertionError(f'SAM dependency imported by {role}: {fullname}')
         return None
@@ -1440,17 +1519,32 @@ elif role == 'gpu-worker':
     Qwen3VLModel.load_alias = classmethod(lambda cls, *args, **kwargs: object())
     workers.GPUWorker = Worker
     arguments = ['gpu-worker', '--device', '0', '--once']
+elif role == 'ark-worker':
+    from las_repro import workers
+    from las_repro.models.ark import ArkVideoModel
+    class Model:
+        def close(self): pass
+    class Worker:
+        def __init__(self, *args, **kwargs): pass
+        def run_once(self): return False
+        def close(self): pass
+    ArkVideoModel.__new__ = lambda cls, **kwargs: Model()
+    workers.GPUWorker = Worker
+    arguments = ['ark-worker', '--model-name', 'doubao-pro', '--once']
 else:
     arguments = ['run-fake', '--once']
 
 raise SystemExit(cli.main(arguments))
 """
 
-    for role in ("api", "coordinator", "gpu-worker", "run-fake", "run-fake-cv"):
+    for role in ("api", "coordinator", "gpu-worker", "ark-worker", "run-fake", "run-fake-cv"):
         role_environment = dict(environment)
         if role == "run-fake-cv":
             role_environment["LAS_CV_PROVIDER"] = "fake"
             role_environment["LAS_CV_CACHE_ROOT"] = str(tmp_path / "cv-cache")
+        if role == "ark-worker":
+            role_environment.update({"LAS_BACKEND": "ark", "LAS_ARK_API_KEY": "ark-secret",
+                                     "LAS_ARK_MODEL_REGISTRY": '{"doubao-pro":"remote-id"}'})
         completed = subprocess.run(
             [sys.executable, "-c", script, role],
             cwd=REPOSITORY_ROOT,

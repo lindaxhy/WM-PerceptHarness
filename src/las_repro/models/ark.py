@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import math
+import re
 import shutil
 import tempfile
 from collections.abc import Mapping
@@ -15,7 +16,7 @@ import httpx
 
 from ..media import FrameRef, TimeSpan, extract_frames
 from ..model_alias import validate_model_alias
-from .base import ModelOutputError, ModelRequest, parse_strict_json
+from .base import ModelOutputError, ModelRequest
 from .qwen3_vl import STAGE_MAX_NEW_TOKENS
 
 ARK_RESPONSES_ENDPOINT = "https://ark.cn-beijing.volces.com/api/v3/responses"
@@ -85,7 +86,8 @@ class ArkVideoModel:
             try:
                 with self._client.stream("POST", ARK_RESPONSES_ENDPOINT,
                     headers={"Authorization": f"Bearer {self._key}", "Content-Type": "application/json"},
-                    content=encoded) as response:
+                    content=encoded, timeout=self.timeout_seconds,
+                    follow_redirects=False) as response:
                     if response.status_code != 200:
                         raise ArkBackendError("ARK service request failed")
                     raw = self._bounded_body(response)
@@ -130,10 +132,16 @@ class ArkVideoModel:
             raise ModelOutputError("ARK response is not valid JSON") from None
         if not isinstance(envelope, dict) or envelope.get("status") != "completed" or envelope.get("model") != model_id:
             raise ModelOutputError("ARK response identity or status is invalid")
-        messages = [item for item in envelope.get("output", []) if isinstance(item, dict) and item.get("type") == "message"]
+        output = envelope.get("output")
+        if not isinstance(output, list):
+            raise ModelOutputError("ARK response output must be a list")
+        messages = [item for item in output if isinstance(item, dict) and item.get("type") == "message"]
         if len(messages) != 1 or messages[0].get("role") != "assistant" or messages[0].get("status") not in (None, "completed"):
             raise ModelOutputError("ARK response must contain one completed assistant message")
-        outputs = [part.get("text") for part in messages[0].get("content", []) if isinstance(part, dict) and part.get("type") == "output_text"]
+        content = messages[0].get("content")
+        if not isinstance(content, list):
+            raise ModelOutputError("ARK response message content must be a list")
+        outputs = [part.get("text") for part in content if isinstance(part, dict) and part.get("type") == "output_text"]
         if len(outputs) != 1:
             raise ModelOutputError("ARK response must contain one output text")
         usage = envelope.get("usage")
@@ -159,13 +167,41 @@ class ArkVideoModel:
 def _strict_no_duplicates(text: Any, max_chars: int) -> dict[str, Any]:
     if not isinstance(text, str) or len(text) > max_chars:
         raise ModelOutputError("model output exceeds the configured maximum size")
+    payload = text.strip()
+    fenced = re.fullmatch(r"```(?:json)?[ \t]*\r?\n(?P<body>.*?)(?:\r?\n)?```", payload,
+                          flags=re.IGNORECASE | re.DOTALL)
+    if payload.startswith("```") or payload.endswith("```"):
+        if fenced is None:
+            raise ModelOutputError("model output must use one complete JSON Markdown fence")
+        payload = fenced.group("body")
+    payload = payload.lstrip()
+    if not payload:
+        raise ModelOutputError("model output is empty")
+
     def pairs(values):
         result = {}
         for key, value in values:
             if key in result: raise ModelOutputError("model output contains duplicate keys")
             result[key] = value
         return result
-    try: json.loads(text.strip().removeprefix("```json").removesuffix("```").strip(), object_pairs_hook=pairs)
-    except ModelOutputError: raise
-    except Exception: pass
-    return parse_strict_json(text, max_chars=max_chars)
+    try:
+        value, end = json.JSONDecoder(object_pairs_hook=pairs).raw_decode(payload)
+    except ModelOutputError:
+        raise
+    except (ValueError, RecursionError):
+        raise ModelOutputError("model output is not valid JSON") from None
+    if payload[end:].strip():
+        raise ModelOutputError("model output contains trailing prose or multiple JSON values")
+    if not isinstance(value, dict):
+        raise ModelOutputError("model output must be a JSON object")
+    _require_finite(value)
+    return value
+
+
+def _require_finite(value: Any) -> None:
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ModelOutputError("model output numeric fields must be finite")
+    if isinstance(value, dict):
+        for child in value.values(): _require_finite(child)
+    elif isinstance(value, list):
+        for child in value: _require_finite(child)

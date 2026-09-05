@@ -123,6 +123,11 @@ Paste only that digest into `LAS_API_KEY_SHA256`. The `.env.example` fields are:
 | `LAS_ARK_API_KEY` | Server-owned ARK credential; never accepted from Submit payloads. |
 | `LAS_ARK_MODEL_REGISTRY` | JSON alias-to-remote-model allowlist, separate from local checkpoint paths. |
 | `LAS_ARK_PROXY` | Optional explicit HTTPS proxy; ambient proxy variables are ignored. |
+| `LAS_MAX_MODEL_OUTPUT_CHARS` | Strict structured-output size limit. |
+| `LAS_SEGMENT_SECONDS`, `LAS_SEGMENT_OVERLAP_SECONDS` | General-video split and overlap. |
+| `LAS_MAX_FINE_SEGMENT_SECONDS` | Maximum embodied fine-segment duration. |
+| `LAS_LEASE_SECONDS` | Recoverable coordinator/inference claim lease. |
+| `LAS_TOS_ENDPOINT`, `LAS_TOS_REGION`, `LAS_TOS_ACCESS_KEY`, `LAS_TOS_SECRET_KEY` | Optional TOS access, supplied only at runtime. |
 
 ### Opt-in Doubao semantic worker
 
@@ -139,11 +144,6 @@ Responses endpoint. It sends no audio, local filenames, or caller credentials.
 Set `LAS_ARK_PROXY` when an explicit proxy is required. To roll back locally,
 submit the Qwen alias and run the existing `gpu-worker` processes with
 `LAS_BACKEND=qwen3_vl`; there is no silent fallback or model relabeling.
-| `LAS_MAX_MODEL_OUTPUT_CHARS` | Strict structured-output size limit. |
-| `LAS_SEGMENT_SECONDS`, `LAS_SEGMENT_OVERLAP_SECONDS` | General-video split and overlap. |
-| `LAS_MAX_FINE_SEGMENT_SECONDS` | Maximum embodied fine-segment duration. |
-| `LAS_LEASE_SECONDS` | Recoverable coordinator/inference claim lease. |
-| `LAS_TOS_ENDPOINT`, `LAS_TOS_REGION`, `LAS_TOS_ACCESS_KEY`, `LAS_TOS_SECRET_KEY` | Optional TOS access, supplied only at runtime. |
 
 Create the database directory as the dedicated service account, then initialize
 the database once:

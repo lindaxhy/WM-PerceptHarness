@@ -124,3 +124,41 @@ def test_close_closes_owned_client_and_is_idempotent(tmp_path):
     model = _model(lambda request: httpx.Response(200, json=_envelope()))
     model.generate(_request(tmp_path)); model.close(); model.close()
     with pytest.raises(Exception): model.generate(_request(tmp_path))
+
+
+@pytest.mark.parametrize("text", [
+    '```\n{"x":1,"x":2}\n```',
+    '```JSON\n{"x":1,"x":2}\n```',
+])
+def test_every_supported_fence_rejects_duplicate_keys(tmp_path, text):
+    model = _model(lambda request: httpx.Response(200, json=_envelope(text)))
+    with pytest.raises(ModelOutputError, match="duplicate"):
+        model.generate(_request(tmp_path))
+
+
+@pytest.mark.parametrize("changes", [
+    {"output": None}, {"output": 7},
+    {"output": [{"type": "message", "role": "assistant", "content": None}]},
+    {"output": [{"type": "message", "role": "assistant", "content": 7}]},
+])
+def test_malformed_output_containers_are_repairable_model_errors(tmp_path, changes):
+    model = _model(lambda request: httpx.Response(200, json=_envelope(**changes)))
+    with pytest.raises(ModelOutputError):
+        model.generate(_request(tmp_path))
+
+
+def test_injected_client_still_uses_configured_timeout_and_refuses_redirect(tmp_path):
+    calls = []
+    def handler(request):
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(302, headers={"location": "https://evil.test"})
+        return httpx.Response(200, json=_envelope())
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True,
+                          timeout=999, trust_env=False)
+    model = _model(handler, client=client, transport=None, timeout_seconds=3.5)
+    from las_repro.models.ark import ArkBackendError
+    with pytest.raises(ArkBackendError): model.generate(_request(tmp_path))
+    assert len(calls) == 1
+    assert calls[0].extensions["timeout"]["read"] == 3.5
+    client.close()
