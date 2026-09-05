@@ -381,6 +381,100 @@ def test_occlusion_prompt_isolates_trusted_data_and_repair_codes():
     assert "invent" in prompt.lower()
 
 
+def test_occlusion_prompt_examples_are_distinct_valid_shapes():
+    candidate = _candidate()
+    entities, summary = _trusted_prompt_inputs()
+    prompt = PromptRenderer().occlusion_semantics(
+        (candidate,),
+        entities,
+        summary,
+        video_duration=3.0,
+        frame_pts=(0.0, 1.0, 2.0, 3.0),
+        repair=None,
+    )
+    output_schema = prompt.split("[output schema]\n", 1)[1].split(
+        "\n[validation repair data]", 1
+    )[0]
+    examples = [
+        json.loads(line)
+        for line in output_schema.splitlines()
+        if line.startswith('{"decisions":')
+    ]
+
+    assert any(
+        decision["classification"] == "unknown" and decision["events"] == []
+        for example in examples
+        for decision in example["decisions"]
+    )
+    assert any(
+        decision["classification"] == "occlusion" and decision["events"]
+        for example in examples
+        for decision in example["decisions"]
+    )
+    for example in examples:
+        for decision in example["decisions"]:
+            if decision["candidate_id"] == "occ_example_0001":
+                decision["candidate_id"] = candidate.candidate_id
+            if decision["target_entity_id"] == "object":
+                decision["target_entity_id"] = candidate.target_entity_id
+            if decision["occluder_entity_id"] == "panel":
+                decision["occluder_entity_id"] = (
+                    candidate.possible_occluder_entity_ids[0]
+                )
+        parsed = OcclusionDecisionSet.model_validate(example)
+        validate_occlusion_decisions(parsed, (candidate,), duration=3.0)
+
+
+@pytest.mark.parametrize(
+    ("bad_event", "expected_codes"),
+    [
+        (
+            {"event_type": "occluded", "timestamp": 1.0},
+            [
+                "OCCLUSION_DECISION_SET_MISSING_FIELD",
+                "OCCLUSION_DECISION_SET_EXTRA_FIELD",
+            ],
+        ),
+        (
+            {"event_type": "occluded", "start": 1.0},
+            ["OCCLUSION_DECISION_SET_MISSING_FIELD"],
+        ),
+        (
+            {"event_type": "occluded", "end": 2.0},
+            ["OCCLUSION_DECISION_SET_MISSING_FIELD"],
+        ),
+        (
+            {
+                "event_type": "occluded",
+                "start": 1.0,
+                "end": 2.0,
+                "timestamp": 1.0,
+            },
+            ["OCCLUSION_DECISION_SET_EXTRA_FIELD"],
+        ),
+    ],
+)
+def test_occlusion_registry_redacts_malformed_events(bad_event, expected_codes):
+    candidate = _candidate()
+    raw = _positive_raw(candidate)
+    raw["decisions"][0]["events"] = [bad_event]
+
+    sanitized = DEFAULT_OUTPUT_SCHEMAS.sanitize(
+        "OcclusionDecisionSet",
+        raw,
+        {"duration": 3.0, "candidates": [candidate.model_dump(mode="json")]},
+    )
+
+    assert sanitized == {
+        "_schema_validation": {
+            "schema_name": "OcclusionDecisionSet",
+            "status": "invalid",
+            "issue_codes": expected_codes,
+        }
+    }
+    assert not any(key in json.dumps(sanitized) for key in bad_event)
+
+
 def test_occlusion_prompt_rejects_unvalidated_summary_and_entity_mappings():
     candidate = _candidate()
     entities, summary = _trusted_prompt_inputs()

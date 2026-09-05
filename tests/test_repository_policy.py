@@ -306,7 +306,6 @@ def test_env_example_documents_disabled_local_cv_defaults() -> None:
     assert values["LAS_CV_MIN_CONFIDENCE"] == "0.5"
     assert values["LAS_CV_MIN_AREA_FRACTION"] == "0.01"
     assert values["LAS_CV_OCCLUSION_VISIBILITY_DROP"] == "0.5"
-    assert values["LAS_CV_OVERLAP_THRESHOLD"] == "0.1"
     assert values["LAS_CV_EXECUTION_CHUNK_FRAMES"] == "8"
     assert values["LAS_CV_TIMEOUT_SECONDS"] == "300.0"
     assert values["LAS_CV_COMPILE_MODEL"] == "false"

@@ -108,6 +108,17 @@ and validated manifests, never mask paths. Video/checkpoint/model identity,
 entities, sampling, and thresholds participate in cache identity. Quarantine
 cache state after any pin or evidence-setting change.
 
+Occlusion-candidate discovery uses a fixed positive-overlap rule. At a candidate
+evidence frame, another track is eligible only when the maximum of bounding-box
+IoU, target-box covered fraction, and other-box covered fraction is strictly
+greater than zero. There is no configurable overlap cutoff.
+
+`cv_overlap_threshold` and `LAS_CV_OVERLAP_THRESHOLD` were obsolete no-op
+options and are no longer documented runtime controls. Remove the environment
+entry from managed service configuration. Direct `Settings(...)` callers must
+remove the keyword; it is now rejected as an extra field. Existing process
+environment loading behavior is otherwise unchanged.
+
 ## Final one-video smoke
 
 Choose one regular, non-symlink video beneath the allowed root. The smoke rejects

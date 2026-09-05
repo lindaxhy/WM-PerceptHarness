@@ -142,6 +142,41 @@ def available_result():
     return result, summary
 
 
+@pytest.mark.parametrize("fault", ["ordering", "provenance"])
+def test_scene_spatial_failure_survives_registry(available_result, fault):
+    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+    from las_repro.pipelines.embodied import _validated_stage_result
+
+    result, summary = available_result
+    scene = {key: copy.deepcopy(result[key]) for key in hybrid_result.SCENE_KEYS}
+    context = {
+        "duration": 1.0,
+        "require_observed_content": True,
+        "required_object_ids": ["cup"],
+        "segments": source_segments(),
+        "evidence_summary": summary.model_dump(mode="json"),
+    }
+    assert DEFAULT_OUTPUT_SCHEMAS.sanitize("SceneSemantics", scene, context) == scene
+    if fault == "ordering":
+        later = copy.deepcopy(scene["locations"][0])
+        later["start"] = 0.5
+        scene["locations"].insert(0, later)
+    else:
+        scene["locations"][0]["source_segment_indices"] = [5]
+    before = copy.deepcopy(scene)
+    sanitized = DEFAULT_OUTPUT_SCHEMAS.sanitize("SceneSemantics", scene, context)
+    assert sanitized == {
+        "_schema_validation": {
+            "schema_name": "SceneSemantics",
+            "status": "invalid",
+            "issue_codes": ["SCENE_SPATIAL_INVALID"],
+        }
+    }
+    assert scene == before
+    _, codes, _ = _validated_stage_result("SceneSemantics", sanitized, context)
+    assert list(codes) == ["SCENE_SPATIAL_INVALID"]
+
+
 @pytest.mark.parametrize(
     "field,value",
     [

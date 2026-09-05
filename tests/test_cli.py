@@ -996,10 +996,19 @@ def test_hybrid_gpu_defaults_are_three_qwen_plus_one_cv() -> None:
     assert settings.cv_min_confidence == 0.5
     assert settings.cv_min_area_fraction == 0.01
     assert settings.cv_occlusion_visibility_drop == 0.5
-    assert settings.cv_overlap_threshold == 0.1
     assert settings.cv_execution_chunk_frames == 8
     assert settings.cv_timeout_seconds == 300.0
     assert settings.cv_compile_model is False
+
+
+def test_removed_overlap_option_is_not_a_runtime_control():
+    with pytest.raises(ValidationError) as error:
+        Settings(_env_file=None, cv_overlap_threshold=0.1)
+    assert any(
+        item["loc"] == ("cv_overlap_threshold",)
+        and item["type"] == "extra_forbidden"
+        for item in error.value.errors()
+    )
 
 
 @pytest.mark.parametrize("provider", ["disabled", "fake"])
@@ -1151,7 +1160,6 @@ def test_cv_checkpoint_digest_requires_exact_sha256_syntax(digest: str) -> None:
         ("cv_min_confidence", 1.1),
         ("cv_min_area_fraction", math.inf),
         ("cv_occlusion_visibility_drop", 0.0),
-        ("cv_overlap_threshold", 1.1),
     ],
 )
 def test_cv_settings_reject_nonpositive_nonfinite_or_unbounded_numbers(

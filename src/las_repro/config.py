@@ -134,7 +134,6 @@ class Settings(BaseSettings):
     cv_min_confidence: PositiveFraction = 0.5
     cv_min_area_fraction: PositiveFraction = 0.01
     cv_occlusion_visibility_drop: PositiveFraction = 0.5
-    cv_overlap_threshold: PositiveFraction = 0.1
     cv_execution_chunk_frames: PositiveInteger = 8
     cv_timeout_seconds: PositiveFinite = 300.0
     cv_compile_model: StrictEnvironmentBool = False
