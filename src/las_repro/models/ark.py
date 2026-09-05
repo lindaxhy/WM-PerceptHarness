@@ -194,7 +194,10 @@ def _strict_no_duplicates(text: Any, max_chars: int) -> dict[str, Any]:
         raise ModelOutputError("model output contains trailing prose or multiple JSON values")
     if not isinstance(value, dict):
         raise ModelOutputError("model output must be a JSON object")
-    _require_finite(value)
+    try:
+        _require_finite(value)
+    except RecursionError:
+        raise ModelOutputError("model output is not valid JSON") from None
     return value
 
 

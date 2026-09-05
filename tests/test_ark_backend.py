@@ -162,3 +162,10 @@ def test_injected_client_still_uses_configured_timeout_and_refuses_redirect(tmp_
     assert len(calls) == 1
     assert calls[0].extensions["timeout"]["read"] == 3.5
     client.close()
+
+
+def test_deeply_nested_json_is_a_repairable_model_output_error(tmp_path):
+    text = '{"value":' + "[" * 997 + "0" + "]" * 997 + "}"
+    model = _model(lambda request: httpx.Response(200, json=_envelope(text)))
+    with pytest.raises(ModelOutputError, match="valid JSON"):
+        model.generate(_request(tmp_path))
