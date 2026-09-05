@@ -581,6 +581,22 @@ def test_poll_preserves_validated_hybrid_provenance_and_usage(
     assert len(list(iter_action_captions("poll", body["data"], source_fps=10.0))) == 1
 
 
+def test_poll_preserves_valid_hybrid_result_with_null_provider_metrics(
+    client, store, auth_header
+):
+    original = _hybrid_result(available=True)
+    original["performance"]["stages"][0]["provider_metrics"] = None
+    validate_hybrid_result(original)
+    stored_snapshot = copy.deepcopy(original)
+    task_id = _complete_result(store, original)
+
+    response = _poll(client, auth_header, task_id)
+
+    assert response.status_code == 200
+    assert response.json()["data"] == stored_snapshot
+    assert store.get_task(task_id).result == stored_snapshot
+
+
 @pytest.mark.parametrize(
     "mutation",
     [

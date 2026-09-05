@@ -158,13 +158,12 @@ def _public_completed_result(original: Any) -> Any:
     for original_stage, public_stage in zip(
         original["performance"]["stages"], public["performance"]["stages"]
     ):
-        if "provider_metrics" not in original_stage:
+        provider_metrics = original_stage.get("provider_metrics")
+        if provider_metrics is None:
             continue
         for key in ("input_tokens", "output_tokens"):
-            if key in original_stage["provider_metrics"]:
-                public_stage["provider_metrics"][key] = original_stage[
-                    "provider_metrics"
-                ][key]
+            if key in provider_metrics:
+                public_stage["provider_metrics"][key] = provider_metrics[key]
     return public
 
 
