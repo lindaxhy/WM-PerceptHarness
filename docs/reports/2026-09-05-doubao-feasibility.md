@@ -70,3 +70,14 @@ The scene branch remained unavailable after its single repair attempt:
 This demonstrates failure isolation, not complete semantic success or final
 five-demo acceptance. The canonical result SHA-256 is
 `f13f6c27eb0d30f9e192d7ff1a4916c5d91eb95abfe9723e433bbfe37699ffeb`.
+
+Follow-up inspection found that the CV-disabled Doubao scene responses emitted
+spatial rows and nested their provenance, which the existing flat scene schema
+correctly rejected before the conservative fallback. A single diagnostic prompt
+append that explicitly declared CV unavailable produced structurally valid
+output. The production prompt now supplies a server-owned availability boolean
+and schema-derived flat spatial field lists for both initial and repair requests.
+This is a contract clarification only: the validator, single-repair limit,
+fallbacks, model settings, sampling, thresholds, metrics, mapping, and public
+result schema are unchanged. A controller live no-override replay is still
+required; this diagnostic does not establish semantic or five-demo acceptance.

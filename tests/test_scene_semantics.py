@@ -95,6 +95,24 @@ def test_spatial_lists_are_required_and_cannot_claim_without_evidence():
         validate_scene_semantics(SceneSemantics.model_validate(value), 2.0)
 
 
+def test_scene_location_rejects_nested_provenance_fields() -> None:
+    value = valid_scene_semantics()
+    value["locations"] = [{
+        "object_id": "panel", "location": "left side", "start": 0.0,
+        "end": 1.0, "visual_evidence": "panel visible at left",
+        "confidence": 0.8,
+        "provenance": {
+            "branch": "scene", "model_stage": "scene_semantics",
+            "evidence_mode": "hybrid", "source_track_ids": ["panel_track"],
+            "source_keyframe_ids": [], "source_segment_indices": [0],
+            "repair_history": ["initial"], "review_status": "not_required",
+        },
+    }]
+
+    with pytest.raises(ValidationError):
+        SceneSemantics.model_validate(value)
+
+
 def test_scene_semantics_accepts_overlapping_action_and_occlusion_events():
     """Forcing a single non-overlapping track would preserve the main LAS gap."""
     parsed = SceneSemantics.model_validate(valid_scene_semantics())

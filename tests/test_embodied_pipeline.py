@@ -105,6 +105,42 @@ def _enrichment_requirements(prompt: str) -> dict[str, Any]:
     return json.loads(requirements_text)
 
 
+def test_scene_prompt_declares_cv_availability_and_flat_spatial_fields(
+    renderer: PromptRenderer,
+) -> None:
+    expected_fields = {
+        "location_fields": [
+            "object_id", "location", "start", "end", "visual_evidence",
+            "confidence", "evidence_mode", "source_track_ids",
+            "source_keyframe_ids", "branch", "model_stage",
+            "source_segment_indices", "repair_history", "review_status",
+        ],
+        "relation_fields": [
+            "subject_object_id", "relation", "object_object_id", "start", "end",
+            "visual_evidence", "confidence", "evidence_mode", "source_track_ids",
+            "source_keyframe_ids", "branch", "model_stage",
+            "source_segment_indices", "repair_history", "review_status",
+        ],
+    }
+
+    initial = renderer.scene_semantics([], video_duration=2.0)
+    repair = renderer.scene_semantics(
+        [],
+        video_duration=2.0,
+        repair={"issue_codes": ["SCENE_SPATIAL_INVALID"]},
+    )
+
+    for prompt in (initial, repair):
+        assert '[CV_EVIDENCE_AVAILABILITY_JSON]\n{"available":false}' in prompt
+        assert (
+            "[SCENE_SPATIAL_FIELDS_JSON]\n"
+            + json.dumps(expected_fields, separators=(",", ":"))
+        ) in prompt
+        assert "provenance" not in expected_fields["location_fields"]
+        assert "provenance" not in expected_fields["relation_fields"]
+    assert '"issue_codes":["SCENE_SPATIAL_INVALID"]' in repair
+
+
 def test_pass_b_prompt_injects_plan_as_canonical_json(
     renderer: PromptRenderer, coarse_plan: CoarsePlan
 ) -> None:
@@ -1887,6 +1923,12 @@ def test_hybrid_optional_branches_complete_independently(tmp_path, monkeypatch, 
         if request.stage in {"embodied_enrichment", "scene_semantics"}:
             assert ("[CV_EVIDENCE_SUMMARY_JSON]" in request.prompt) is not unavailable
             assert "masks/" not in request.prompt
+        if request.stage == "scene_semantics":
+            assert (
+                '[CV_EVIDENCE_AVAILABILITY_JSON]\n{"available":'
+                + ("false" if unavailable else "true")
+                + "}"
+            ) in request.prompt
     assert len(list(iter_action_captions("hybrid", result, source_fps=10.0))) == len(result["segments"])
 
 

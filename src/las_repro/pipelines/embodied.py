@@ -33,6 +33,8 @@ from .output_validation import DEFAULT_OUTPUT_SCHEMAS, NormalizedSchemaOutput
 from .occlusion import OcclusionDecisionSet, project_occlusion_events
 from .hybrid_result import build_hybrid_result, validate_hybrid_result, build_performance
 from .scene_semantics import (
+    SceneLocation,
+    SceneRelation,
     SceneSemantics,
     trusted_target_skeleton,
     unavailable_scene_semantics,
@@ -740,6 +742,13 @@ class PromptRenderer:
                 "VIDEO_DURATION_SECONDS_JSON": _prompt_video_duration(video_duration),
                 "SEGMENTS_JSON": table,
                 "KNOWN_TARGETS_JSON": trusted_target_skeleton(table),
+                "CV_EVIDENCE_AVAILABILITY_JSON": {
+                    "available": evidence_summary is not None,
+                },
+                "SCENE_SPATIAL_FIELDS_JSON": {
+                    "location_fields": list(SceneLocation.model_fields),
+                    "relation_fields": list(SceneRelation.model_fields),
+                },
                 "VALIDATION_REPAIR_JSON": repair,
             },
         ), evidence_summary)
