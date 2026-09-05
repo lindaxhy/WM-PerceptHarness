@@ -248,9 +248,28 @@ zero positive events. No passing timing or semantic gate is claimed.
 - Manifest SHA-256: `c0fcb5ff666002111e9784c2b2ca1ee499a3df39434123156179154e2d4093f6`.
 - Canonical result SHA-256: `21082453b5d3f8ce42ed86d8fec35609884cc28108eb9b03026620e56a74317d`.
 
+An independent local artifact load verified all referenced file hashes and the
+exact 328-frame source timeline, with 15 tracks, 2,768 observations and 24
+overlays. This is the actual cold result, distinct from the earlier diagnostic
+request's 14 tracks and 2,440 observations.
+
+`full_0002` subsequently completed in **819.382 seconds**, also failing the
+720-second gate. CV succeeded in 462.971 seconds with 441 frames, four prompts,
+10 tracks, no cache hit or OOM retry, and peak allocation of 22,780,049,408 bytes.
+It produced ten action events and 18 fine rows. Scene and occlusion both
+degraded after their single repairs (two repairs and two degradations total).
+Scene initial/repair jobs took 71.014/75.423 seconds with
+`SCENE_SEMANTICS_SCHEMA_INVALID`. Occlusion jobs took 55.986/50.000 seconds;
+both returned missing-field and extra-field diagnostics. No positive occlusion
+event survived validation; this is unavailable output, not a negative verdict.
+
+- Artifact key: `09f229034adfbaa98d39cf70ccaa85b40ab72d11924874cc98b54555a76547de`.
+- Manifest SHA-256: `b2743cfb9d38dd040954c67290fdca51f20b6fb2bd974985393c5aca3140c71f`.
+- Canonical result SHA-256: `aa868fee043fc87b405fbd027147eb6d3e9370dc697d7fc3ed403adc61704af4`.
+
 The same immutable release/configuration continues through the remaining
-samples; `full_0002` is running. This failure is preserved before any further
-diagnosis or changes. Whole-cohort metrics are not yet available.
+samples; `full_0024` is running. These failures are preserved before changes.
+Whole-cohort metrics are not yet available.
 
 Fresh local verification on the complete sentinel test revision passed all
 1,690 Python tests in 80.39 seconds with 85.80% coverage and the same two

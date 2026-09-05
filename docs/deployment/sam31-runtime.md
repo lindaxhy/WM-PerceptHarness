@@ -136,6 +136,22 @@ acceptance. Unit tests inject the GPU boundary and are not GPU acceptance.
 
 ## Start, stop, restart, and rollback
 
+`LAS_CV_TIMEOUT_SECONDS` bounds how long the coordinator waits for CV evidence;
+it is not a provider execution deadline. A timed-out caller degrades to
+unavailable CV, but a still-running provider can continue occupying the worker
+and GPU. There is no automatic process watchdog or restart. TERM/INT requests
+unwind Python worker execution and expire its owned lease when the signal
+handler can run; an indefinitely blocked native operation may delay that
+handler. The graceful shutdown sequence below is not a bounded recovery
+guarantee for such a hang.
+
+Operators must supervise shutdown, verify the exact owned process before any
+escalation, and confirm process exit and GPU release before starting a
+replacement. After an abrupt exit, allow the old lease to expire and check the
+cache/staging state; do not assume Python cleanup ran, delete a shared cache,
+or run two replacement workers on the same occupied GPU. Record any escalation
+and recovery separately from ordinary task timing.
+
 Primary ARK+SAM launch (ARK uses its server-owned remote credential; SAM alone
 occupies physical GPU 3). Run this in the configured service shell above; the
 commands deliberately fail earlier if the ARK secret or API-key hash is absent:
