@@ -34,6 +34,22 @@ deployment change is claimed. The implementation plan retains the original
 acceptance gates and adds a Doubao-only control to distinguish the model
 replacement from SAM's contribution.
 
+## Production adapter probe
+
+At commit `0fd6bf8`, the actual `ArkVideoModel` implementation completed the same
+frozen `full_0001` Pass A request in 29.109 seconds (including frame extraction).
+Its strict response checks accepted the exact configured model identity and
+completed response; `CoarsePlan` and temporal/entity validation passed without
+repair. It returned four actions and eight entity candidates, with 44,616 input
+and 593 output tokens. The source digest is unchanged from the table above.
+This run used the normal adapter, not the earlier hand-built HTTP probe.
+
+The adapter is opt-in and does not change deployment by itself. Complete
+Doubao-only and Doubao+SAM five-demo runs remain required. A subsequent review
+identified a malformed deep-JSON recursion error classification edge case;
+commit `718a9ff` fixed it, with a RED/GREEN regression and clean scoped review.
+Controller verification passed all 26 backend tests on that final fix.
+
 Provider request formats were checked against the official SDK's
 [image input type](https://github.com/volcengine/volcengine-python-sdk/blob/master/volcenginesdkarkruntime/types/responses/response_input_image_param.py)
 and [video input type](https://github.com/volcengine/volcengine-python-sdk/blob/master/volcenginesdkarkruntime/types/responses/response_input_video_param.py).
