@@ -2,8 +2,8 @@
 
 Status: **in progress, not accepted**. Recorded on 2026-09-05.
 
-The final tool/runtime smoke below passed. Five-demo control/treatment and
-cache-hit runs, recovery, human review, quantitative gates, actual viewer
+The final tool/runtime smoke and five-demo Doubao-only control below passed.
+Treatment and cache-hit runs, recovery, human review, quantitative gates, actual viewer
 publication and final branch review remain pending. No new PR is claimed.
 
 ## Immutable runtime
@@ -143,15 +143,46 @@ canonical structures, fixed configuration and unchanged reference/mapping:
 This supports a diagnostic semantic-backend comparison, not a dataset-wide
 quality claim or a claim about SAM's contribution. The separate Doubao+SAM
 cold run has started with the same semantic settings and a fresh CV cache.
-Its CV worker runs the unmodified installed CLI under standard-library cProfile
-to record actual provider `analyze` calls for cold/cache comparison; measured
-hybrid timings will include that profiling overhead. GPUs 0–2 remained unused
-at startup, while SAM loaded on physical GPU 3.
+Its CV worker ran the unmodified installed CLI under standard-library cProfile;
+hybrid timings include profiling overhead. GPUs 0–2 remained unused at startup,
+while SAM loaded on physical GPU 3. The resulting profile does not contain the
+expected `analyze` entries despite actual inference, so it cannot prove zero
+provider calls or a cache hit. Call-count instrumentation still needs validation.
+
+## First hybrid cold attempt — CV failures preserved
+
+The driver stopped submitting work after the first two samples. Both tasks
+completed, but neither is accepted hybrid evidence:
+
+| Sample | Task seconds | CV job seconds | CV status | Degradations | Occlusions |
+| --- | ---: | ---: | --- | ---: | ---: |
+| `full_0001` | 132.142 | 7.350 | failed / unavailable | 2 | 0 |
+| `full_0002` | 415.838 | 397.330 | failed / unavailable | 2 | 0 |
+
+An observation-only pass captured both authenticated terminal Polls and stored
+results without submitting new tasks. All tasks/jobs were terminal before the
+six verified owned roles were stopped; original logs, database and results are
+preserved. GPUs returned to idle. A separate exact-request replay on GPU 3,
+using unchanged production provider/settings and no paid semantic calls,
+reproduced a probability-range validation failure. Root-cause investigation is
+ongoing; these failures are not replaced by the earlier one-prompt smoke.
+
+## Actual control viewer compatibility
+
+The actual five controls exposed production Fine boundary IDs rejected by the
+projector and the canonical `unknown` scene target rejected by the browser
+model. Repair `ec5fe50` preserves source hashes and the closed display schema.
+Independent review found no issues; 1,673 Python tests passed at 85.75% coverage
+(two existing warnings), plus 20 Node tests. All five original controls export
+and normalize with Fine enabled; independent recomputation with Fine off/on
+verified exact output/digest bindings and input immutability. Frozen Qwen and
+demo manifest remain unchanged. Generated variant is not yet bound/published;
+no browser or human acceptance is claimed.
 
 ## Remaining acceptance
 
-The isolated authenticated loopback service is running the Doubao-only control
-with three remote semantic workers and no CV worker. Original media, query and
-sampling settings are preserved. Treatment, cache, recovery, metrics and human
+The isolated control completed; hybrid services are stopped for CV diagnosis.
+Original media, query and sampling settings are preserved. Treatment, cache,
+recovery, metrics and human
 review evidence will be added from actual terminal jobs; no passing gate or
 human verdict is inferred from this smoke or from unit tests.

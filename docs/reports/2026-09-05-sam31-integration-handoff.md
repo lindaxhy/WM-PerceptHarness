@@ -40,8 +40,18 @@ has now completed all five samples with no degradation and all below 12 minutes.
 Strict frozen-reference evaluation gives action F1@0.3 0.48 and F1@0.5 0.32,
 versus frozen Qwen 0.13636 and 0.09091; occlusion remains zero. The acceptance
 report records immutable metadata/report digests and per-sample timings. The
-separate Doubao+SAM cold run has started; full Task 15 acceptance remains
-incomplete.
+separate Doubao+SAM cold attempt stopped after two completed tasks with failed
+CV jobs. Both results truthfully report unavailable CV and two degradations;
+their original results/jobs/logs are preserved. All six owned services were
+retired only after terminal-state checks. An exact first-request SAM replay
+reproduced a probability-range validation failure; diagnosis continues before
+resuming treatment. Full Task 15 acceptance remains incomplete.
+The actual control exporter exposed two existing viewer contract mismatches:
+production fine boundary metadata and the canonical scene-target `unknown`
+sentinel. The bounded repair at `ec5fe50` passed independent review, 1,673 Python
+tests (85.75% coverage), 20 Node tests and all five actual projection/normalization
+checks. Source/result digests and the closed display schema are preserved;
+generated control data remains unbound pending Task 15 publication.
 Task 13 adds verified projection,
 variant selection and bounded overlay access; its actual five-demo data and
 acceptance publication remain Task 15 work. Focused verification passed 152
