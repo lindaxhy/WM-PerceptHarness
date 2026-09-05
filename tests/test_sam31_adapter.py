@@ -836,6 +836,20 @@ def test_removed_sentinel_does_not_admit_other_invalid_scores_and_closes(
     "response",
     [
         pytest.param(
+            frame_output(1, probabilities=[-10000.0]),
+            id="invalid-frame",
+        ),
+        pytest.param(
+            {
+                **frame_output(0, probabilities=[-10000.0]),
+                "outputs": {
+                    **frame_output(0, probabilities=[-10000.0])["outputs"],
+                    "out_probs": array([[-10000.0]], (1, 1), "f"),
+                },
+            },
+            id="malformed-probability-shape",
+        ),
+        pytest.param(
             frame_output(
                 0,
                 probabilities=[-10000.0],
