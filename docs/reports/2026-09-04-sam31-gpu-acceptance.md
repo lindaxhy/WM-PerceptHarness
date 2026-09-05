@@ -207,10 +207,28 @@ were installed without dependency resolution; all 46 installed product files
 match the wheel, and ARK's dependency check remains clean. Only the SAM adapter
 and viewer projector differ from the previous repaired runtime's Python files;
 models, prompts and pipeline semantics are unchanged. The original Qwen
-environment remains untouched. An exact first-request replay now exercises
-analysis, actual artifact publication and reload on physical GPU 3. Its outcome
-is pending; neither hardware acceptance nor a passing treatment gate is inferred
-from the unit tests. The old attempt is still preserved.
+environment remains untouched. An exact first-request replay exercised analysis,
+actual artifact publication and reload on physical GPU 3, with no provider,
+sampler or model override. It completed in 411.510 seconds: 328 exact source
+frames, eight prompts, 14 tracks and 2,440 observations; peak Torch allocation
+was 21,729,006,592 bytes. The low-overhead exact-code observer recorded one
+`analyze` invocation and clean closure. A separate installed-store load verified
+the same 14 tracks and 2,440 observations. All four GPUs returned to 1 MiB.
+
+- Artifact key: `62ada2c09478d92e5872dce6f0616ecf3b85e3741302503626226d50ec9302ba`.
+- Manifest SHA-256: `1b3801a579f7f0f557f04cbc05aacaa2989270d5c15742f24cc45619c317b520`.
+- Diagnostic report SHA-256: `f4c63d892b2709ee62332719fe1aebcd427e6ed41bc2b6f9d4ac4742cd801440`.
+
+The SSH observation connection reset; a new read-only connection retrieved the
+persisted complete report and independently verified the artifact. This is not
+recorded as a model failure or used to justify rerunning inference.
+
+The entire original hybrid attempt, including its database, failed results,
+logs and configuration, was archived without alteration. A second attempt now
+uses a fresh database/cache and the disclosed 600-second CV wait. Six owned
+roles were verified before submitting its first cold sample. A durable remote
+observer records Submit/Poll progress and exit status independent of SSH.
+Five-demo treatment, cached runs and the remaining acceptance gates are pending.
 
 ## Actual control viewer compatibility
 

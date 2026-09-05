@@ -48,7 +48,11 @@ reproduced the exact upstream `-10000` removed-object sentinel being rejected as
 a probability. The user approved precise sentinel handling; the repair and
 independent review completed at `54abe73`, including strict safety regressions.
 The verified new wheel is installed in both isolated environments and an exact
-first-request analysis/publication/reload check is running. The second request's
+first-request analysis/publication/reload check passed: 328 frames, 14 tracks,
+2,440 observations in 411.510 seconds, exact timeline, verified artifact reload
+and one measured provider invocation. The original failed hybrid attempt is
+archived; a new cold attempt has started with a fresh database/cache and durable
+remote observation. The second request's
 direct replay succeeded (441 frames, 10 tracks, 533.790 seconds); its historical
 worker failure was instead caused by the parent ending after the 300-second CV
 wait. The next identified attempt will allow a 600-second CV wait within the
