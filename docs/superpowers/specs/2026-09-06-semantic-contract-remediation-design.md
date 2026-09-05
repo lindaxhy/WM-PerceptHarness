@@ -118,7 +118,10 @@ Existing acceptance remains failed: zero positive occlusion events, two cold
 samples above 720 seconds, and a failed first cache-resubmission task with one
 new SAM analysis. Recovery passed independently. Human precision and browser
 interaction acceptance are not fabricated. The previous evidence snapshot's
-independent review is still pending; it did not produce completed checks.
+review was pending when this spec was written. The replacement review completed
+on 2026-09-06; its Qwen viewer identity finding was fixed and independently
+re-reviewed. See the
+[remediation checkpoint](../../reports/2026-09-06-semantic-contract-remediation.md).
 
 ## Workflow checklist
 
@@ -129,4 +132,4 @@ independent review is still pending; it did not produce completed checks.
 - [x] Write this spec and check scope, consistency and explicit exclusions.
 - [x] No visual companion needed: this is a textual contract decision.
 - [x] User reviews this written spec.
-- [ ] Write the implementation plan, then execute TDD and independent review.
+- [x] Write the implementation plan, then execute TDD and independent review.
