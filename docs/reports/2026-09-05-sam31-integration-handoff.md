@@ -44,8 +44,15 @@ separate Doubao+SAM cold attempt stopped after two completed tasks with failed
 CV jobs. Both results truthfully report unavailable CV and two degradations;
 their original results/jobs/logs are preserved. All six owned services were
 retired only after terminal-state checks. An exact first-request SAM replay
-reproduced a probability-range validation failure; diagnosis continues before
-resuming treatment. Full Task 15 acceptance remains incomplete.
+reproduced the exact upstream `-10000` removed-object sentinel being rejected as
+a probability. The user approved precise sentinel handling; the repair and
+independent review completed at `54abe73`, including strict safety regressions.
+The verified new wheel is installed in both isolated environments and an exact
+first-request analysis/publication/reload check is running. The second request's
+direct replay succeeded (441 frames, 10 tracks, 533.790 seconds); its historical
+worker failure was instead caused by the parent ending after the 300-second CV
+wait. The next identified attempt will allow a 600-second CV wait within the
+unchanged 720-second total gate. Full Task 15 acceptance remains incomplete.
 The actual control exporter exposed two existing viewer contract mismatches:
 production fine boundary metadata and the canonical scene-target `unknown`
 sentinel. The bounded repair at `ec5fe50` passed independent review, 1,673 Python

@@ -186,6 +186,32 @@ The first 300-second-wait attempt remains preserved. All GPUs were idle after
 the direct replay exited. This direct replay did not publish/reload the artifact
 through the store, so worker/cache acceptance is still pending.
 
+## Removed-object repair release
+
+The approved exact-sentinel normalization completed at `56c915f`; independent
+review requested two missing sentinel safety regressions, added at `54abe73`.
+Scoped re-review confirmed both addressed with no new breakage. Root verification:
+1,688 full-suite tests passed in 102.41 seconds at 85.80% coverage, followed by
+156 adapter tests on the final test-only revision, plus 20 Node tests. Two
+existing dependency deprecations and existing whole-file Ruff debt remain
+disclosed; the focused correctness lint is clean.
+
+| Input | Identity |
+| --- | --- |
+| Source commit | `54abe7383fda5a88b3c2192049a0611d41133851` |
+| Wheel SHA-256 | `ee6b737a2c70be9a2a142ea16cec32052fae3aee2afbd2db9681607957c39e03` |
+| Source archive SHA-256 | `c17e47ba87dc9bce41793762d8c4e157fdc9b5b4b56cb701cab67b186658341a` |
+
+The archive and wheel hashes matched on the isolated host. Both environments
+were installed without dependency resolution; all 46 installed product files
+match the wheel, and ARK's dependency check remains clean. Only the SAM adapter
+and viewer projector differ from the previous repaired runtime's Python files;
+models, prompts and pipeline semantics are unchanged. The original Qwen
+environment remains untouched. An exact first-request replay now exercises
+analysis, actual artifact publication and reload on physical GPU 3. Its outcome
+is pending; neither hardware acceptance nor a passing treatment gate is inferred
+from the unit tests. The old attempt is still preserved.
+
 ## Actual control viewer compatibility
 
 The actual five controls exposed production Fine boundary IDs rejected by the
