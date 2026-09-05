@@ -7,6 +7,39 @@ five-demo viewer, and SAM3.1-assisted alignment work discussed and implemented
 through 2026-09-05. It deliberately contains no credentials, private host
 address, temporary media URL, LAS task ID, or local absolute path.
 
+## Continuation status — 2026-09-05
+
+The original numbered sections below preserve the Tasks 1–9 checkpoint. The
+continuation has completed Tasks 10 and 11 with independent review, plus the
+Doubao backend and SAM runtime compatibility remediation. Task 12 is implemented
+at `865c430` and remains in its review/fix loop; Tasks 13–15 are not complete.
+No integration PR or production-service deployment is claimed at this point.
+
+The user explicitly authorized Doubao remote semantic inference. The
+[Doubao amendment](../superpowers/specs/2026-09-05-doubao-semantic-backend-design.md)
+therefore supersedes the historical Qwen-only/no-remote restrictions below.
+Preserve frozen Qwen output and English LAS references, and evaluate both
+Doubao-only and Doubao+SAM to distinguish model replacement from CV effects.
+
+The user's ModelScope alternative succeeded: the pinned SAM3.1 multiplex
+checkpoint was downloaded and hash-verified, and the corrected production
+adapter processed all 137 frames of `full_0024` on physical GPU 3 with exact PTS
+and digest-checked artifact reload. See the
+[runtime preflight report](2026-09-05-sam31-runtime-preflight.md) for pins,
+hashes, timings, and the distinction between diagnostics and acceptance.
+
+The real Doubao-only pipeline completed and exported six fine rows, but the
+scene branch degraded after its single repair. A bounded
+[scene prompt contract repair](../superpowers/plans/2026-09-05-scene-prompt-contract.md)
+is queued after Task 12 review; it clarifies existing flat provenance and
+no-CV spatial-list rules without relaxing validation. The
+[feasibility report](2026-09-05-doubao-feasibility.md) records the actual result.
+
+Continue using the per-plan SDD ledgers and committed history, not the historical
+"next Task 10" instruction below. Remaining acceptance still requires real
+five-demo control/treatment runs, cache verification, complete human occlusion
+review, truthful quantitative gates, viewer projection, and a new PR.
+
 ## 1. Resume here
 
 - GitHub repository: `lindaxhy/WM-PerceptHarness`
