@@ -168,10 +168,23 @@ reproduced a probability-range validation failure. A second exact replay capture
 `out_probs = -10000.0` at frame 27. Pinned upstream source explicitly assigns
 `-1e4` to removed objects retained in its score dictionary. The
 [bounded compatibility proposal](../superpowers/specs/2026-09-05-sam31-removed-object-compatibility-design.md)
-would omit only those removed detections; user confirmation is pending and no
-product change has been made. These failures are not replaced by the earlier
+will omit only those removed detections; the user approved continuation and the
+bounded implementation/review is in progress. These failures are not replaced by the earlier
 one-prompt smoke. The private diagnostic report SHA-256 is
 `37d972bd518852ffa15bd8aa9072fb9b5dd7981da1b2922e646ab399af4da58a`.
+
+The second request has a different cause. An unchanged exact provider replay
+completed all 441 frames with 10 tracks from four prompts in 533.790 seconds
+(including loading and cleanup), peak Torch allocation 22,780,819,456 bytes.
+The original second CV job's stored error is `parent task is terminal`, not the
+generic inference failure on sample one. The configured 300-second CV wait
+expired before the evidence was ready. The next separately identified treatment
+attempt will use a 600-second CV wait while retaining the unchanged 720-second
+end-to-end acceptance limit. This is a disclosed runtime wait-budget correction,
+not a model, sampling, confidence threshold, reference or mapping change.
+The first 300-second-wait attempt remains preserved. All GPUs were idle after
+the direct replay exited. This direct replay did not publish/reload the artifact
+through the store, so worker/cache acceptance is still pending.
 
 ## Actual control viewer compatibility
 
