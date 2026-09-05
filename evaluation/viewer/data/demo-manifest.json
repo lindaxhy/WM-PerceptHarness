@@ -1,5 +1,5 @@
 {
-  "schema_version": "comparison_viewer_manifest_v1",
+  "schema_version": "comparison_viewer_manifest_v2",
   "reference_set_id": "las_official_english_2026-09-04",
   "samples": [
     {
@@ -7,40 +7,185 @@
       "duration_seconds": 10.933333333333334,
       "media_path": "evaluation/viewer/media/full_0001.mp4",
       "las_path": "evaluation/references/las_official_english_2026-09-04/references/full_0001.json",
-      "local_path": "evaluation/viewer/data/local/full_0001.json",
-      "caveat": ""
+      "caveat": "",
+      "local_variants": [
+        {
+          "id": "qwen_only",
+          "label": "Qwen-only",
+          "path": "evaluation/viewer/data/local/full_0001.json",
+          "format": "comparison_viewer_local_v1",
+          "sha256": "43d7767221dd6f1d1cc89c2c49b4d48aa1f78fdc9cc7ad409c3b03c94c5e10f5",
+          "source_result_sha256": "78d0681c013fe12b632b641d0f4e33ffd4f67e29a97e43a47b893ed9732d666b"
+        },
+        {
+          "format": "comparison_viewer_hybrid_v1",
+          "id": "doubao_only",
+          "label": "Doubao-only",
+          "model_identity": "doubao-seed-2-1-pro-260628",
+          "path": "evaluation/viewer/data/doubao-only/full_0001.json",
+          "sha256": "a2a4b2634fc2dea2f042f9c2e7f3d4cd817df6d39b315f0f577d099e4d749018",
+          "source_result_sha256": "6fc9ecb6eeaa42fadf359be486c6e082e6c9fecd1306ec3c0de43eea9924fc58"
+        },
+        {
+          "format": "comparison_viewer_hybrid_v1",
+          "id": "doubao_sam31",
+          "label": "Doubao + SAM3.1",
+          "model_identity": "doubao-seed-2-1-pro-260628",
+          "path": "evaluation/viewer/data/hybrid/full_0001.json",
+          "sha256": "d5dbb56546a74171b59c75796c42713762f084e984ead4f5eb616509782de569",
+          "source_result_sha256": "21082453b5d3f8ce42ed86d8fec35609884cc28108eb9b03026620e56a74317d"
+        }
+      ],
+      "source_video_sha256": "c3243c46bad68d3b2772e82648e45b68e75a1893b0ce27edecd450226464c1e9",
+      "las_sha256": "2f00d8c3c6fd8ff3328531660a4b378018124b08d8d086abd4eb2cdcd15a040c"
     },
     {
       "sample_id": "full_0002",
       "duration_seconds": 14.7,
       "media_path": "evaluation/viewer/media/full_0002.mp4",
       "las_path": "evaluation/references/las_official_english_2026-09-04/references/full_0002.json",
-      "local_path": "evaluation/viewer/data/local/full_0002.json",
-      "caveat": "LAS reference 使用完整 14.7 秒、441 帧的 720p 无音轨转码；本地结果使用冻结原视频。"
+      "caveat": "LAS reference 使用完整 14.7 秒、441 帧的 720p 无音轨转码；本地结果使用冻结原视频。",
+      "local_variants": [
+        {
+          "id": "qwen_only",
+          "label": "Qwen-only",
+          "path": "evaluation/viewer/data/local/full_0002.json",
+          "format": "comparison_viewer_local_v1",
+          "sha256": "4a24733588c56f189503a665fe618fef5cf66ee2e75e619fedbc868f4d2be464",
+          "source_result_sha256": "55422790b4b66d7409aeec052a2b5bbc71f0babd07ded2efa4b2b0641101a13f"
+        },
+        {
+          "format": "comparison_viewer_hybrid_v1",
+          "id": "doubao_only",
+          "label": "Doubao-only",
+          "model_identity": "doubao-seed-2-1-pro-260628",
+          "path": "evaluation/viewer/data/doubao-only/full_0002.json",
+          "sha256": "122d587ef0e5b74a528d22b3142f6189a72e2158fe32e0359c843caf82b5d431",
+          "source_result_sha256": "9ac2b49bcf17c98d0c4138460bb2d2ea125aeaf196474735fda7ae3681f9913d"
+        },
+        {
+          "format": "comparison_viewer_hybrid_v1",
+          "id": "doubao_sam31",
+          "label": "Doubao + SAM3.1",
+          "model_identity": "doubao-seed-2-1-pro-260628",
+          "path": "evaluation/viewer/data/hybrid/full_0002.json",
+          "sha256": "7b77fb5bcc25c640aa6dff0381c7b16bc04e25ce73b563e10bd3a7654813cfb8",
+          "source_result_sha256": "aa868fee043fc87b405fbd027147eb6d3e9370dc697d7fc3ed403adc61704af4"
+        }
+      ],
+      "source_video_sha256": "6741b6184b847b6096e4282b1e0f76142714870b258ca16a19606e0441f0973f",
+      "las_sha256": "783a9b6338c5329a84293d33c3d5e60c3ef5e7ec81c9b740fee5fc28c5349bca"
     },
     {
       "sample_id": "full_0024",
       "duration_seconds": 4.566666666666666,
       "media_path": "evaluation/viewer/media/full_0024.mp4",
       "las_path": "evaluation/references/las_official_english_2026-09-04/references/full_0024.json",
-      "local_path": "evaluation/viewer/data/local/full_0024.json",
-      "caveat": ""
+      "caveat": "",
+      "local_variants": [
+        {
+          "id": "qwen_only",
+          "label": "Qwen-only",
+          "path": "evaluation/viewer/data/local/full_0024.json",
+          "format": "comparison_viewer_local_v1",
+          "sha256": "f64b924b4efe2d3e59c755dfb9fd524e073cdefc37e788b6c90459e03f835ce5",
+          "source_result_sha256": "18ce8fded6d1b13a06063826aa5b55e6f086056df61d276ccd01d47c3f7b4f1e"
+        },
+        {
+          "format": "comparison_viewer_hybrid_v1",
+          "id": "doubao_only",
+          "label": "Doubao-only",
+          "model_identity": "doubao-seed-2-1-pro-260628",
+          "path": "evaluation/viewer/data/doubao-only/full_0024.json",
+          "sha256": "8985256ee01dac907d3c6bda291b85dda40f0a5939f9418dc08f84f30bcbddcf",
+          "source_result_sha256": "b1831e0735778818cc4ea98019c0acf76e735b3a07b117c35ee7b49969c4a436"
+        },
+        {
+          "format": "comparison_viewer_hybrid_v1",
+          "id": "doubao_sam31",
+          "label": "Doubao + SAM3.1",
+          "model_identity": "doubao-seed-2-1-pro-260628",
+          "path": "evaluation/viewer/data/hybrid/full_0024.json",
+          "sha256": "6dd4e8cccc2e2fea725a1b7f80d4fdef93669ffd19b78c967253a31d11c80556",
+          "source_result_sha256": "2cfb84ae8209f1d0e32270f9c2ee665600698fb5c2256bd216383a1d9b79eacb"
+        }
+      ],
+      "source_video_sha256": "a7a696bcdd835c083b27ca3705d13a2f22e069ebec9038581354fed39e6fbbe8",
+      "las_sha256": "d5e5ef1718539c00c8a0846ea2b3fd082c873b1f25cef84e63c176956a6ecba1"
     },
     {
       "sample_id": "full_0021",
       "duration_seconds": 7.3,
       "media_path": "evaluation/viewer/media/full_0021.mp4",
       "las_path": "evaluation/references/las_official_english_2026-09-04/references/full_0021.json",
-      "local_path": "evaluation/viewer/data/local/full_0021.json",
-      "caveat": "LAS 输出含 3 条 occlusions records，但没有对应的 occlusion semantic events。"
+      "caveat": "LAS 输出含 3 条 occlusions records，但没有对应的 occlusion semantic events。",
+      "local_variants": [
+        {
+          "id": "qwen_only",
+          "label": "Qwen-only",
+          "path": "evaluation/viewer/data/local/full_0021.json",
+          "format": "comparison_viewer_local_v1",
+          "sha256": "301bdcaa1de89d74cd9b556efcf88946580de73b9f723faee6faa7fe0ae22472",
+          "source_result_sha256": "d36fed02d8f904af390b95e52a2e894dc28ea63c91d7e3e875072dd8d82a7886"
+        },
+        {
+          "format": "comparison_viewer_hybrid_v1",
+          "id": "doubao_only",
+          "label": "Doubao-only",
+          "model_identity": "doubao-seed-2-1-pro-260628",
+          "path": "evaluation/viewer/data/doubao-only/full_0021.json",
+          "sha256": "306cdc985a886ae8ff85bfc9e0dd129a3b1addbe6dd1a79577218daafd79ed58",
+          "source_result_sha256": "b764ca7b345acd44bb3ad542b74b24218bcf2016d253be08bccf3d54cb85cd35"
+        },
+        {
+          "format": "comparison_viewer_hybrid_v1",
+          "id": "doubao_sam31",
+          "label": "Doubao + SAM3.1",
+          "model_identity": "doubao-seed-2-1-pro-260628",
+          "path": "evaluation/viewer/data/hybrid/full_0021.json",
+          "sha256": "ae22d4db8e8a4af3a281e6ce2089cc675a11a2a355049b51abdd81855d90080b",
+          "source_result_sha256": "155ffe4f798a2f71c310f1e5b8e78a00eb649ea641b7a59bf471e7b7da27c4e8"
+        }
+      ],
+      "source_video_sha256": "1cd6b0752bd3b7f1ca987d470d8e65d9247a4f0751c7f891c6824b63751eff05",
+      "las_sha256": "cd950704134ef90051d7b78ca9e7f73bb6883c7c69670d3c065b92f0c2d2fb69"
     },
     {
       "sample_id": "full_0004",
       "duration_seconds": 8.8,
       "media_path": "evaluation/viewer/media/full_0004.mp4",
       "las_path": "evaluation/references/las_official_english_2026-09-04/references/full_0004.json",
-      "local_path": "evaluation/viewer/data/local/full_0004.json",
-      "caveat": "LAS 遮挡记录仅对应 occluded events，缺少 occlusion_enter/exit。"
+      "caveat": "LAS 遮挡记录仅对应 occluded events，缺少 occlusion_enter/exit。",
+      "local_variants": [
+        {
+          "id": "qwen_only",
+          "label": "Qwen-only",
+          "path": "evaluation/viewer/data/local/full_0004.json",
+          "format": "comparison_viewer_local_v1",
+          "sha256": "cea81d8c4b3e037c63533a5a83c770e0d7234cc716a1d8e0ee81840f8544133f",
+          "source_result_sha256": "8f21a5e194a4781c7f55787bdf7735a091c5d9205a5aa0ded010295309bf8eb1"
+        },
+        {
+          "format": "comparison_viewer_hybrid_v1",
+          "id": "doubao_only",
+          "label": "Doubao-only",
+          "model_identity": "doubao-seed-2-1-pro-260628",
+          "path": "evaluation/viewer/data/doubao-only/full_0004.json",
+          "sha256": "459f73c4a2478bcf9d247ee385dc4964eceaa3289d9c0742cba2bc801d1e5317",
+          "source_result_sha256": "66d10db20ded4807437acf4c6fc083e42f978a848bd3c652a080cca2baaade8c"
+        },
+        {
+          "format": "comparison_viewer_hybrid_v1",
+          "id": "doubao_sam31",
+          "label": "Doubao + SAM3.1",
+          "model_identity": "doubao-seed-2-1-pro-260628",
+          "path": "evaluation/viewer/data/hybrid/full_0004.json",
+          "sha256": "d83969d8f1719bbf6662aeb4d04da889bdc11ae33ab451d089ef6b117e3a89ab",
+          "source_result_sha256": "d3037938aefd10d47fa1eda760efb2e8d35ca47b52f7d05ba67246418b4bfd12"
+        }
+      ],
+      "source_video_sha256": "34bc1833f713419c694c97af544f5c4148f0b03e02913415f4a3eb2be8660d09",
+      "las_sha256": "6f3aea30354db726074f866fab0e7968b22e4929823c46207881aec6550639e6"
     }
   ]
 }

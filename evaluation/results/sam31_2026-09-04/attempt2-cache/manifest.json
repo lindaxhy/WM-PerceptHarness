@@ -1,0 +1,120 @@
+{
+  "analyze_calls_after": 6,
+  "analyze_calls_before": 5,
+  "artifact_keys": [
+    "077b324e5346ffc92d2f1297a0650508e177d7c4b1cc19129e44e3d42ef1de8c",
+    "214cb78a34ad22a0e11b36fb0a9392f50f9eca92ae7b548902811282bfab76d6"
+  ],
+  "changed_cv_request_fields": [
+    "entities"
+  ],
+  "cold_metadata_sha256": "8ee524719e9a304f0010867689f137c8af8fbbc45d7f256e9458e7378c97fb37",
+  "database_terminal_counts": {
+    "inference_jobs": {
+      "COMPLETED": 41
+    },
+    "tasks": {
+      "COMPLETED": 5,
+      "FAILED": 1
+    }
+  },
+  "entity_counts": [
+    8,
+    6
+  ],
+  "entity_sha256": [
+    "66de2a092fd0f5741fd348e74914ee3ba66c069c0a6de2fe0b837a185be36133",
+    "12ba76e4f9339f812045d1663993f5df0fb58fe36fb4c27a8031b4aeebd85a41"
+  ],
+  "environment_sha256": "5b26fd468380a8a266f9ffd13ab94b54c6e6ffda1339c56d763759bd40be808f",
+  "jobs": [
+    {
+      "artifact_key": "214cb78a34ad22a0e11b36fb0a9392f50f9eca92ae7b548902811282bfab76d6",
+      "manifest_sha256": "2535c6abeada003e54739c9888a6c74af81a03040a579ce40db377b95be530b1",
+      "metrics": {
+        "cache_hit": false,
+        "entity_prompts": 6,
+        "execution_chunk_frames": 8,
+        "inference_seconds": 292.1761933960079,
+        "oom_retry": false,
+        "peak_allocated_bytes": 21738604544,
+        "processed_frames": 328,
+        "track_count": 13
+      },
+      "ordinal": 0,
+      "stage": "cv_evidence",
+      "status": "COMPLETED",
+      "validation": null,
+      "wall_seconds": 292.4589161872864
+    },
+    {
+      "metrics": {
+        "inference_seconds": 15.492852305993438,
+        "input_tokens": 30194,
+        "output_tokens": 522
+      },
+      "ordinal": 0,
+      "stage": "embodied_pass_a",
+      "status": "COMPLETED",
+      "validation": null,
+      "wall_seconds": 15.498610019683838
+    },
+    {
+      "metrics": {
+        "inference_seconds": 45.46096022502752,
+        "input_tokens": 32965,
+        "output_tokens": 2796
+      },
+      "ordinal": 0,
+      "stage": "embodied_pass_b",
+      "status": "COMPLETED",
+      "validation": {
+        "issue_codes": [
+          "SEGMENT_DESCRIPTION_INVALID"
+        ],
+        "schema_name": "BoundaryPlan",
+        "status": "invalid"
+      },
+      "wall_seconds": 45.466835737228394
+    },
+    {
+      "metrics": {
+        "inference_seconds": 39.45673003801494,
+        "input_tokens": 32976,
+        "output_tokens": 2790
+      },
+      "ordinal": 1,
+      "stage": "embodied_pass_b",
+      "status": "COMPLETED",
+      "validation": {
+        "issue_codes": [
+          "SEGMENT_DESCRIPTION_INVALID"
+        ],
+        "schema_name": "BoundaryPlan",
+        "status": "invalid"
+      },
+      "wall_seconds": 39.46241617202759
+    }
+  ],
+  "limitations": [
+    "Resubmission failed after the second invalid Pass B response; remaining samples were not submitted.",
+    "The changed semantic entity inventory changes the legitimate CV cache key; this does not isolate cache storage correctness.",
+    "No valid canonical result exists for the failed task; no complete cached quality report or speedup is claimed."
+  ],
+  "new_analyze_calls": 1,
+  "observer_closed": true,
+  "observer_returncode": 1,
+  "phase": "cache",
+  "planned_samples": 5,
+  "remaining_samples_not_submitted": 4,
+  "same_submit_payload_bytes": true,
+  "sample_id": "full_0001",
+  "schema_version": "sam31_cache_attempt_v1",
+  "source_commit": "54abe7383fda5a88b3c2192049a0611d41133851",
+  "sqlite_integrity": "ok",
+  "status": "failed",
+  "submitted_samples": 1,
+  "task_status": "FAILED",
+  "wall_seconds": 396.99292850494385,
+  "zero_call_gate": false
+}

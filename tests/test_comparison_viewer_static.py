@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from functools import partial
@@ -81,7 +82,18 @@ def test_viewer_route_and_all_committed_assets_resolve_over_http() -> None:
             .decode("utf-8")
         )
         for sample in manifest["samples"]:
-            expected_assets.extend([sample["las_path"], sample["local_path"]])
+            expected_assets.append(sample["las_path"])
+            for variant in sample["local_variants"]:
+                with urlopen(f"{base_url}{variant['path']}", timeout=5) as response:
+                    payload = response.read()
+                assert hashlib.sha256(payload).hexdigest() == variant["sha256"]
+                projection = json.loads(payload)
+                for overlay in projection.get("provenance", {}).get("overlays", []):
+                    with urlopen(f"{base_url}{overlay['path']}", timeout=5) as response:
+                        image = response.read()
+                    assert len(image) == overlay["size_bytes"]
+                    assert hashlib.sha256(image).hexdigest() == overlay["sha256"]
+                    assert image.startswith(b"\x89PNG\r\n\x1a\n")
         for path in expected_assets:
             with urlopen(f"{base_url}{path}", timeout=5) as response:
                 assert response.status == 200, path

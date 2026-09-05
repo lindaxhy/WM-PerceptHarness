@@ -1,0 +1,87 @@
+{
+  "ark_module_sha256": "c04a4dbb65e5fcf62ef9b136eebcba4d7d56ec503bfd02985a8f2f50353243f6",
+  "diagnostic_only": true,
+  "elapsed_seconds": 51.255,
+  "issues": [
+    {
+      "location": [
+        "decisions",
+        14,
+        "events",
+        0,
+        "start"
+      ],
+      "type": "missing"
+    },
+    {
+      "location": [
+        "decisions",
+        14,
+        "events",
+        0,
+        "end"
+      ],
+      "type": "missing"
+    },
+    {
+      "location": [
+        "decisions",
+        14,
+        "events",
+        0,
+        "timestamp"
+      ],
+      "type": "extra_forbidden"
+    },
+    {
+      "location": [
+        "decisions",
+        14,
+        "events",
+        1,
+        "start"
+      ],
+      "type": "missing"
+    },
+    {
+      "location": [
+        "decisions",
+        14,
+        "events",
+        1,
+        "end"
+      ],
+      "type": "missing"
+    },
+    {
+      "location": [
+        "decisions",
+        14,
+        "events",
+        1,
+        "timestamp"
+      ],
+      "type": "extra_forbidden"
+    }
+  ],
+  "model_identity": "doubao-seed-2-1-pro-260628",
+  "original_job_payload_sha256": "bc1f320629e27378cd920bbfff275a3ed68431ae42b6ef146450325db955d58e",
+  "pipeline_issue_codes": [
+    "OCCLUSION_DECISION_SET_MISSING_FIELD",
+    "OCCLUSION_DECISION_SET_EXTRA_FIELD"
+  ],
+  "pipeline_valid": false,
+  "prompt_override": false,
+  "response_sha256": "d02b97c560860153577a9abba49bb54419e73985b4c8522a873cf5fdaadfa26f",
+  "sample_id": "full_0002",
+  "schema_valid": false,
+  "source_commit": "54abe7383fda5a88b3c2192049a0611d41133851",
+  "source_video_sha256": "6741b6184b847b6096e4282b1e0f76142714870b258ca16a19606e0441f0973f",
+  "stage": "occlusion_semantics",
+  "usage": {
+    "input_tokens": 150995,
+    "output_tokens": 1513
+  },
+  "validator_module_sha256": "8063350b0664cadcaaa3641c75eecb5806528fe253849f2f79393d44ae6280ba",
+  "wheel_sha256": "ee6b737a2c70be9a2a142ea16cec32052fae3aee2afbd2db9681607957c39e03"
+}

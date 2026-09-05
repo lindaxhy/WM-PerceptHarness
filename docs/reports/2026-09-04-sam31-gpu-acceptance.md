@@ -2,9 +2,13 @@
 
 Status: **in progress, not accepted**. Recorded on 2026-09-05.
 
-The final tool/runtime smoke and five-demo Doubao-only control below passed.
-Treatment and cache-hit runs, recovery, human review, quantitative gates, actual viewer
-publication and final branch review remain pending. No new PR is claimed.
+The final tool/runtime smoke, five-demo Doubao-only control and isolated process
+recovery passed. The second cold treatment completed all five samples but failed
+quality and timing acceptance. Full-pipeline cache resubmission failed on its
+first task and made one new SAM call; the other four were not submitted.
+The local viewer now contains all three real variants. Human precision review,
+live browser-interaction acceptance and the final independent PR remain open.
+No new PR is claimed. Historical checkpoints below retain their original scope.
 
 ## Immutable runtime
 
@@ -230,7 +234,7 @@ roles were verified before submitting its first cold sample. A durable remote
 observer records Submit/Poll progress and exit status independent of SSH.
 Five-demo treatment, cached runs and the remaining acceptance gates are pending.
 
-### Second cold attempt: first terminal sample
+### Second cold attempt: terminal samples
 
 `full_0001` completed in **744.250 seconds**, failing the unchanged 720-second
 end-to-end limit. Its CV branch succeeded: 328 source frames, eight prompts,
@@ -267,15 +271,130 @@ event survived validation; this is unavailable output, not a negative verdict.
 - Manifest SHA-256: `b2743cfb9d38dd040954c67290fdca51f20b6fb2bd974985393c5aca3140c71f`.
 - Canonical result SHA-256: `aa868fee043fc87b405fbd027147eb6d3e9370dc697d7fc3ed403adc61704af4`.
 
-The same immutable release/configuration continues through the remaining
-samples; `full_0024` is running. These failures are preserved before changes.
-Whole-cohort metrics are not yet available.
+The same immutable release/configuration continued through all remaining
+samples. These failures were preserved before changes.
 
 Fresh local verification on the complete sentinel test revision passed all
 1,690 Python tests in 80.39 seconds with 85.80% coverage and the same two
 third-party deprecation warnings. All 20 Node viewer tests, JavaScript syntax
 validation and branch/current whitespace checks passed. This does not replace
 the unfinished runtime gates.
+
+## Completed second cold treatment — acceptance failed
+
+All five tasks and all 37 inference jobs reached `COMPLETED`; SQLite integrity,
+authenticated Poll/stored-result equality, canonical source bytes, exact media
+timelines, artifact hashes and the frozen evaluator's provenance checks passed.
+The durable observer exited 0 and measured exactly five SAM `analyze` calls.
+No CV job used a cache hit or OOM retry. Semantic schema failures remain explicit
+branch degradations; a completed job is not necessarily valid semantic output.
+
+| Sample | End-to-end seconds | CV job seconds | Actions / fine rows | Scene | Occlusion |
+| --- | ---: | ---: | ---: | --- | --- |
+| full_0001 | 744.250 | 413.567 | 8 / 14 | unavailable | available, 0 events |
+| full_0002 | 819.382 | 462.971 | 10 / 18 | unavailable | unavailable |
+| full_0024 | 211.745 | 67.484 | 3 / 6 | unavailable | available, 0 candidates |
+| full_0021 | 559.703 | 281.334 | 7 / 10 | available after repair | available, 0 events |
+| full_0004 | 677.696 | 383.119 | 6 / 11 | unavailable | available, 0 events |
+
+Three of five meet the unchanged 720-second guardrail. Every sample used at
+least one semantic repair (eight repairs total); four scene branches and one
+occlusion branch degraded. The final sample's scene initial/repair jobs both
+failed the generic schema check, taking 83.828/82.153 seconds. Its occlusion
+branch returned one `unknown` decision, as did `full_0021`.
+
+| Run | Action F1@0.3 | Action F1@0.5 | Occlusion F1@0.3 |
+| --- | ---: | ---: | ---: |
+| Frozen Qwen | 6/44 = 0.13636 | 4/44 = 0.09091 | 0/13 = 0 |
+| Doubao-only | 24/50 = 0.48000 | 16/50 = 0.32000 | 0/13 = 0 |
+| Doubao + SAM3.1 | 24/52 = 0.46154 | 18/52 = 0.34615 | 0/13 = 0 |
+
+Hybrid action F1@0.3 is 0.01846 below the same-model control, within the allowed
+0.05 decrease; this is not an action improvement at that threshold. At tIoU
+0.5 it has nine matches versus eight for the control. Zero positive occlusion
+events means the required improvement is absent and human factual precision is
+undefined, not 100%. No human review was performed or invented. The evaluator's
+zero-claim coverage check is vacuously true; its precision and positive-occlusion
+gates fail, so `accepted=false`. The separate engineering timing gate also fails.
+
+The immutable [failed evaluation report](../../evaluation/results/sam31_2026-09-04/attempt2-cold/las-alignment-report.json)
+was written before any subsequent diagnostic call. Report SHA-256:
+`127cc30f6051e961725356f5321e7f65c6d6a9e661c0fd31225cf47d8af8dc72`.
+Hybrid metadata SHA-256:
+`8ee524719e9a304f0010867689f137c8af8fbbc45d7f256e9458e7378c97fb37`;
+configuration SHA-256:
+`1b81930c5b6146fbdd784649f510142f95de1c139f8b2609860f4b88b4bd4b09`.
+References and mapping remain unchanged. The subsequent checks below do not
+change this frozen failed cohort or make it satisfy the goal.
+
+## Post-cold semantic diagnostics
+
+After preserving the failed evaluation, two separately identified paid calls
+replayed an original scene job and an original occlusion job using the same
+installed wheel, source media and production prompt, without overrides. They
+are diagnostic responses, not replacements for the cold outputs. Original raw
+rejected cold responses were not retained, so these probes cannot establish
+their exact field-level causes.
+
+The `full_0001` scene probe took 51.729 seconds. Its JSON schema passed but the
+pipeline rejected spatial facts: out-of-order intervals and invalid source
+segment overlap provenance. Direct validation identifies `SCENE_SPATIAL_INVALID`;
+the declared scene code registry omits that existing code and folds it into
+`SCENE_SEMANTICS_SCHEMA_INVALID`, reducing the repair prompt's specificity.
+The [sanitized scene probe](../../evaluation/results/sam31_2026-09-04/post-cold-diagnostics/scene-full_0001-report.json)
+has SHA-256 `905fd419cd8477a788ff74d82051d12cc05c647fbd974b0c8bec7fa49fec8e7a`.
+
+The `full_0002` occlusion probe took 51.255 seconds. Two events in decision 14
+used `timestamp` instead of the required `start` and `end`, producing missing-
+and extra-field errors. The prompt's example has only an empty `events` list;
+no automatic interval fabrication or relaxed validation was applied.
+The [sanitized occlusion probe](../../evaluation/results/sam31_2026-09-04/post-cold-diagnostics/occlusion-full_0002-report.json)
+has SHA-256 `7e778aa2bfbcdf35ea4529551d23b3c30b4388f5d3d62f1039eb273cab73832c`.
+No semantic prompt/code repair is included in this evidence publication.
+
+## Full-pipeline cache resubmission — failed
+
+The first resubmitted task used byte-identical Submit payload and unchanged
+service configuration, but Pass A generated six entities instead of eight.
+Read-only comparison of the derived CV requests found only `entities` changed.
+The valid cache identity therefore changed from
+`077b324e5346ffc92d2f1297a0650508e177d7c4b1cc19129e44e3d42ef1de8c`
+to `214cb78a34ad22a0e11b36fb0a9392f50f9eca92ae7b548902811282bfab76d6`.
+SAM completed 328 frames and 13 tracks in 292.176 seconds inference time, with
+`cache_hit=false`. The closed call observer counted six cumulative calls versus
+five before resubmission: **one new call, zero-call gate failed**. This is not an
+isolated demonstration that cache storage is broken, nor a cached speedup.
+
+Both Pass B responses failed with `SEGMENT_DESCRIPTION_INVALID`, and the parent
+task became `FAILED` after 396.993 seconds. The durable driver exited 1 and did
+not submit the remaining four samples. All four jobs themselves completed;
+there is no valid canonical result or complete five-sample cached quality report.
+The [sanitized cache-attempt manifest](../../evaluation/results/sam31_2026-09-04/attempt2-cache/manifest.json)
+records actual stage timings, hashes, counts and failure scope. The database
+contains five completed tasks, one failed task and 41 completed jobs; integrity
+is `ok`. The six exact owned service processes were retired only after verifying
+zero nonterminal work, preserving their logs and runtime records.
+
+## Isolated real CV-worker recovery — passed
+
+After service retirement and GPU 3 idle verification, a disposable database and
+fresh cache replayed the exact cold `full_0024` CV request. The unmodified
+installed worker was sent SIGTERM only after observed real SAM propagation.
+It exited 0, expired its lease, cleaned staging and published nothing. A second
+installed worker completed the same job at attempt 2 under new ownership, with
+one digest-verified artifact and no staging leftovers. Each worker's closed
+observer recorded one analysis entry; this test is **not a cache-hit test**.
+
+Total diagnostic time was 127.999 seconds; recovered inference took 72.244
+seconds, processed 137 exact source frames and three tracks, with no OOM retry
+and peak Torch allocation 16,421,372,928 bytes. The manifest SHA-256 matches the
+original cold artifact: `0b97bddae4e71ed5e5aedfe343adc57746961b3fa93ab70a072ca86c6a5d4611`.
+An independent installed-store reload verified the timeline, single publication
+and terminal database. The diagnostic uses a disclosed 15-second worker lease
+and an administratively held parent, not a new semantic-caption result.
+All four RTX 5090 devices returned to 1 MiB with no compute processes reported.
+The [recovery report](../../evaluation/results/sam31_2026-09-04/recovery/report.json)
+SHA-256 is `fbd52b48ab8625e3fd3bcfb5c74d91d67a3abf7004908290bec9aa6468671392`.
 
 ## Actual control viewer compatibility
 
@@ -285,14 +404,36 @@ model. Repair `ec5fe50` preserves source hashes and the closed display schema.
 Independent review found no issues; 1,673 Python tests passed at 85.75% coverage
 (two existing warnings), plus 20 Node tests. All five original controls export
 and normalize with Fine enabled; independent recomputation with Fine off/on
-verified exact output/digest bindings and input immutability. Frozen Qwen and
-demo manifest remain unchanged. Generated variant is not yet bound/published;
-no browser or human acceptance is claimed.
+verified exact output/digest bindings and input immutability. Frozen Qwen bytes
+remain unchanged. The version-2 demo manifest now binds those five controls and
+all five second-cold treatment projections alongside frozen Qwen, retaining LAS
+paths and caveats. The existing selector defaults to Doubao+SAM; results retain
+unavailable branches, warnings and null review provenance. Only referenced,
+bounded digest-named overlays are included; no full masks or raw model replies
+are published. Model normalization, file hashes and local HTTP asset checks are
+used; no live browser interaction or human acceptance is claimed.
+
+## Evidence-publication verification
+
+With the real version-2 data in place, the full Python suite passed **1,690
+tests** in 76.76 seconds at **85.80%** branch-enabled combined coverage, with
+the same two dependency deprecation warnings. The 96 focused viewer/export/HTTP
+tests and all 20 Node model tests passed; JavaScript syntax and whitespace
+checks passed. Independent recomputation normalized all 15 projections without
+input mutation, verified all five media/reference bindings and eight referenced
+PNG hashes/sizes/dimensions, and confirmed the existing Doubao+SAM default.
+No product implementation, frozen Qwen output, reference or mapping changed.
+Generated-data scans found no credential names, task IDs, service URLs or private
+absolute paths. These engineering checks do not reverse the failed acceptance.
 
 ## Remaining acceptance
 
-The isolated control completed; the second hybrid cold cohort is running.
-Original media, query and sampling settings are preserved. Treatment, cache,
-recovery, metrics and human
-review evidence will be added from actual terminal jobs; no passing gate or
-human verdict is inferred from this smoke or from unit tests.
+The isolated control and second hybrid cold cohort completed; treatment failed
+the quantitative occlusion and engineering timing requirements.
+Original media, query, sampling, reference and mapping settings are preserved.
+The cache cohort also failed; recovery passed independently. Resolving the
+semantic contract failures and cache-repeatability requirement needs a bounded
+next design, not relabeling these failed runs. No positive claim currently exists
+for human precision review. The ineffective overlap setting awaits disposition;
+no algorithm or threshold change was made. Final independent review and the new
+PR are still pending.

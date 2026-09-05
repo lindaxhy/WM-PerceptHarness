@@ -1,0 +1,24 @@
+{
+  "ark_module_sha256": "c04a4dbb65e5fcf62ef9b136eebcba4d7d56ec503bfd02985a8f2f50353243f6",
+  "diagnostic_only": true,
+  "elapsed_seconds": 51.729,
+  "model_identity": "doubao-seed-2-1-pro-260628",
+  "original_job_payload_sha256": "e585bbe0b5a5ee4a1cea1a3155bfc9b4b900a16923efe41aca164097ede39129",
+  "pipeline_issue_codes": [
+    "SCENE_SEMANTICS_SCHEMA_INVALID"
+  ],
+  "pipeline_valid": false,
+  "prompt_override": false,
+  "response_sha256": "5298b028cdfa3cb3bd99a0c38571bff52db899ff0d2e3a5ef9736d3c931514df",
+  "sample_id": "full_0001",
+  "schema_valid": true,
+  "source_commit": "54abe7383fda5a88b3c2192049a0611d41133851",
+  "source_video_sha256": "c3243c46bad68d3b2772e82648e45b68e75a1893b0ce27edecd450226464c1e9",
+  "stage": "scene_semantics",
+  "usage": {
+    "input_tokens": 155427,
+    "output_tokens": 2999
+  },
+  "validator_module_sha256": "8063350b0664cadcaaa3641c75eecb5806528fe253849f2f79393d44ae6280ba",
+  "wheel_sha256": "ee6b737a2c70be9a2a142ea16cec32052fae3aee2afbd2db9681607957c39e03"
+}

@@ -6,8 +6,13 @@ annotation on the right. Both panels and the shared timeline follow the same
 video clock. The right panel selects frozen Qwen-only, Doubao-only, or a
 SAM3.1-assisted variant when published. Action, Occlusion, Scene, and optional
 Fine layers remain separate; unavailable layers are disabled and failed loads
-clear the previous local result. The committed version-1 manifest still selects
-only the frozen Qwen data until real five-demo acceptance publishes version 2.
+clear the previous local result. The version-2 manifest binds all five frozen
+Qwen, Doubao-only, and second-cold-attempt Doubao+SAM results, with Fine enabled.
+The default is Doubao+SAM. These are diagnostic results, **not accepted output**:
+the treatment has zero positive occlusion events, five degraded branches and
+two samples above 12 minutes. See the
+[acceptance report](../../docs/reports/2026-09-04-sam31-gpu-acceptance.md).
+No human review or live browser-interaction acceptance is claimed.
 
 ## Start the viewer
 

@@ -764,7 +764,7 @@ def test_repository_viewer_data_is_complete() -> None:
         "full_0004": 8.8,
     }
 
-    assert manifest["schema_version"] == "comparison_viewer_manifest_v1"
+    assert manifest["schema_version"] == "comparison_viewer_manifest_v2"
     assert manifest["reference_set_id"] == "las_official_english_2026-09-04"
     assert [item["sample_id"] for item in manifest["samples"]] == list(expected)
     assert {
@@ -774,12 +774,34 @@ def test_repository_viewer_data_is_complete() -> None:
     result_hashes = comparison["local_artifact"]["result_sha256"]
     for item in manifest["samples"]:
         assert not Path(item["las_path"]).is_absolute()
-        assert not Path(item["local_path"]).is_absolute()
         las_path = repository / item["las_path"]
-        local_path = repository / item["local_path"]
         assert las_path.is_file()
+        assert hashlib.sha256(las_path.read_bytes()).hexdigest() == item["las_sha256"]
+        variants = {row["id"]: row for row in item["local_variants"]}
+        assert len(item["local_variants"]) == len(variants) == 3
+        assert set(variants) == {"qwen_only", "doubao_only", "doubao_sam31"}
+        for variant in variants.values():
+            path = Path(variant["path"])
+            assert not path.is_absolute() and ".." not in path.parts
+            assert hashlib.sha256((repository / path).read_bytes()).hexdigest() == variant["sha256"]
+        local_path = repository / variants["qwen_only"]["path"]
         local = json.loads(local_path.read_text(encoding="utf-8"))
         assert local["schema_version"] == "comparison_viewer_local_v1"
         assert local["sample_id"] == item["sample_id"]
         assert local["duration_seconds"] == item["duration_seconds"]
         assert local["source_result_sha256"] == result_hashes[item["sample_id"]]
+        for variant_id, metadata_name in (
+            ("doubao_only", "doubao"), ("doubao_sam31", "hybrid")
+        ):
+            metadata = json.loads((repository / (
+                "evaluation/results/sam31_2026-09-04/attempt2-cold/"
+                f"{metadata_name}-metadata.json"
+            )).read_bytes())
+            source = next(row for row in metadata["samples"] if row["sample_id"] == item["sample_id"])
+            variant = variants[variant_id]
+            projection = json.loads((repository / variant["path"]).read_bytes())
+            assert projection["sample"]["sample_id"] == item["sample_id"]
+            assert variant["source_result_sha256"] == source["result_sha256"]
+            assert projection["provenance"]["source_result_sha256"] == source["result_sha256"]
+            assert projection["provenance"]["source_video_sha256"] == item["source_video_sha256"]
+            assert variant["model_identity"] == "doubao-seed-2-1-pro-260628"

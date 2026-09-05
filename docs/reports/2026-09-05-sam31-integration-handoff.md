@@ -52,17 +52,35 @@ first-request analysis/publication/reload check passed: 328 frames, 14 tracks,
 2,440 observations in 411.510 seconds, exact timeline, verified artifact reload
 and one measured provider invocation. The original failed hybrid attempt is
 archived; a new cold attempt has started with a fresh database/cache and durable
-remote observation. The second request's
+remote observation. That second cold cohort completed all five tasks and 37
+jobs with verified provenance and five successful SAM calls. Action F1@0.3 is
+24/52 (0.46154), within 0.05 of the Doubao-only 0.48; occlusion remains 0/13.
+Four scene branches and one occlusion branch degraded. Two samples exceeded
+720 seconds, and no positive claim exists for human precision review; the
+preserved evaluation report is explicitly not accepted. Full-pipeline cache
+resubmission then failed its first task after two invalid Pass B responses;
+Pass A also changed the entity inventory (8 to 6), changing the valid CV cache
+key and causing one new SAM call. The remaining four were not submitted.
+All owned services were retired with terminal work verified and logs preserved.
+The isolated real-worker SIGTERM/restart recovery test passed, including lease
+expiration, attempt-2 ownership, single publication and exact artifact reload;
+all GPUs returned to idle. The local version-2 viewer now binds all three real
+variants for all five samples, preserving frozen Qwen and LAS caveats. The
+acceptance report links immutable cold, failed-cache, recovery and two post-cold
+semantic-probe records. No semantic prompt/config changes were applied.
+Human precision and live browser-interaction acceptance, disposition of the
+ineffective overlap option, final review and the new PR remain open.
+The second request's
 direct replay succeeded (441 frames, 10 tracks, 533.790 seconds); its historical
 worker failure was instead caused by the parent ending after the 300-second CV
-wait. The next identified attempt will allow a 600-second CV wait within the
+wait. The second cold attempt used a 600-second CV wait within the
 unchanged 720-second total gate. Full Task 15 acceptance remains incomplete.
 The actual control exporter exposed two existing viewer contract mismatches:
 production fine boundary metadata and the canonical scene-target `unknown`
 sentinel. The bounded repair at `ec5fe50` passed independent review, 1,673 Python
 tests (85.75% coverage), 20 Node tests and all five actual projection/normalization
 checks. Source/result digests and the closed display schema are preserved;
-generated control data remains unbound pending Task 15 publication.
+the generated control data is now bound alongside the real cold treatment.
 Task 13 adds verified projection,
 variant selection and bounded overlay access; its actual five-demo data and
 acceptance publication remain Task 15 work. Focused verification passed 152
