@@ -21,7 +21,7 @@ from typing import Annotated, Any, Iterator, Literal
 from pydantic import Field, StrictBool, StrictStr, field_validator, model_validator
 
 from .identity import (
-    IdentityEvidence, derive_identity_evidence, identity_record, identity_bytes,
+    IdentityEvidence, derive_identity_evidence, fit_identity_evidence, identity_record, identity_bytes,
     preflight_identity, MAX_IDENTITY_ROWS, MAX_IDENTITY_BYTES,
 )
 
@@ -1343,6 +1343,13 @@ def summarize_cv_evidence(
     observation_cap = minimum_observation_cap
     relation_cap = minimum_relation_cap
     overlay_cap = minimum_overlay_cap
+    # Optional cues must not force required tracks out when the retained scalar
+    # evidence has already reached its useful floor. Higher-density acceptance
+    # above always reserves the actual full bounded identity allocation.
+    summary = assemble()
+    if _summary_fits(summary, max_prompt_chars, validated_thresholds, require_full_identity=False):
+        summary.prompt_record()
+        return summary
     # If the shared evidence floor cannot fit, drop whole, stably ordered tracks
     # before sacrificing the context inside every retained track.
     original_track_cap = track_cap
@@ -1354,7 +1361,7 @@ def summarize_cv_evidence(
         track_cap = candidate_cap
         candidate_summary = assemble()
         if _summary_fits(
-            candidate_summary, max_prompt_chars, validated_thresholds
+            candidate_summary, max_prompt_chars, validated_thresholds, require_full_identity=False
         ):
             best_track_summary = candidate_summary
             low = candidate_cap + 1
@@ -1368,20 +1375,20 @@ def summarize_cv_evidence(
     for reduced_observation_cap in range(min(observation_cap, 2), 0, -1):
         observation_cap = reduced_observation_cap
         summary = assemble()
-        if _summary_fits(summary, max_prompt_chars, validated_thresholds):
+        if _summary_fits(summary, max_prompt_chars, validated_thresholds, require_full_identity=False):
             summary.prompt_record()
             return summary
 
     relation_cap = 0
     overlay_cap = 0
     summary = assemble()
-    if _summary_fits(summary, max_prompt_chars, validated_thresholds):
+    if _summary_fits(summary, max_prompt_chars, validated_thresholds, require_full_identity=False):
         summary.prompt_record()
         return summary
 
     track_cap = 0
     summary = assemble()
-    if _summary_fits(summary, max_prompt_chars, validated_thresholds):
+    if _summary_fits(summary, max_prompt_chars, validated_thresholds, require_full_identity=False):
         summary.prompt_record()
         return summary
 
@@ -1519,9 +1526,18 @@ def validate_candidate_identity_evidence(summary, candidates):
                for p in candidate.possible_occluders for frame in p.supporting_frames):
             raise ValueError("identity occluder lacks positive relation support")
     expected = derive_identity_evidence(trusted, candidates)
-    if any(c.identity_evidence is not None and c.identity_evidence != cue
-           for c,cue in zip(candidates,expected)):
-        raise ValueError("identity cues are not authenticated by the retained source")
+    for candidate, cue in zip(candidates, expected):
+        provided = candidate.identity_evidence
+        if provided is None:
+            continue
+        if cue is None or any(row not in trusted_rows
+                              for rows, trusted_rows in (
+                                  (provided.continuation_cues, cue.continuation_cues),
+                                  (provided.cross_label_cues, cue.cross_label_cues))
+                              for row in rows):
+            raise ValueError("identity cues are not authenticated by the retained source")
+        if provided.complete and provided != cue:
+            raise ValueError("incomplete identity selection cannot claim completeness")
 
 
 def _with_identity(candidate, evidence):
@@ -1622,28 +1638,41 @@ def _expected_bundle_components(
     *,
     candidate_limit: int,
     prompt_char_limit: int,
+    require_full_identity: bool = False,
 ) -> _ExpectedBundleComponents:
-    candidates, generation_truncated = _canonical_candidates(summary, thresholds, include_identity=False)
+    candidates, generation_truncated = _canonical_candidates(
+        summary, thresholds, include_identity=False
+    )
     count_truncated = len(candidates) > candidate_limit
     initially_kept = candidates[:candidate_limit]
-    cues = derive_identity_evidence(summary, initially_kept)
-    initially_kept = tuple(_with_identity(c, cue) for c, cue in zip(initially_kept, cues))
     source_search_complete = summary.candidate_search_complete
 
     def codes(*, prompt_truncated: bool) -> tuple[str, ...]:
         return tuple(
             code
             for code, enabled in (
-                (
-                    "SUMMARY_CANDIDATE_SEARCH_INCOMPLETE",
-                    not source_search_complete,
-                ),
+                ("SUMMARY_CANDIDATE_SEARCH_INCOMPLETE", not source_search_complete),
                 ("CANDIDATE_SOURCE_TRUNCATED", generation_truncated),
                 ("CANDIDATE_COUNT_TRUNCATED", count_truncated),
                 ("CANDIDATE_PROMPT_TRUNCATED", prompt_truncated),
             )
             if enabled
         )
+
+    def with_identity(kept, remaining_chars):
+        # Derive once, after determining the required candidate set. Global
+        # allocation and source authentication therefore use the same prefix.
+        cues = derive_identity_evidence(summary, kept)
+        full = tuple(_with_identity(c, cue) for c, cue in zip(kept, cues))
+        # All optional identity strings are closed ASCII identifiers/enum values.
+        # Each non-null payload replaces the four characters in JSON null.
+        extra_chars = sum(identity_bytes(cue)-4 for cue in cues if cue is not None)
+        if extra_chars <= remaining_chars:
+            return full
+        if require_full_identity:
+            raise ValueError("full bounded identity evidence exceeds the joint prompt allowance")
+        fitted = fit_identity_evidence(full, remaining_chars)
+        return tuple(_with_identity(c, cue) for c, cue in zip(kept, fitted))
 
     initial_codes = codes(prompt_truncated=False)
     initial_complete = not (generation_truncated or count_truncated)
@@ -1652,37 +1681,24 @@ def _expected_bundle_components(
         for candidate in initially_kept
     )
     initial_total = _bundle_empty_candidates_char_count(
-        summary,
-        thresholds,
-        source_search_complete=source_search_complete,
-        candidates_complete=initial_complete,
-        truncation_codes=initial_codes,
+        summary, thresholds, source_search_complete=source_search_complete,
+        candidates_complete=initial_complete, truncation_codes=initial_codes,
     )
-    initial_total += sum(candidate_char_counts)
-    initial_total += max(0, len(candidate_char_counts) - 1)
-    if initial_total > prompt_char_limit and any(c.identity_evidence is not None for c in initially_kept):
-        # Whole optional sections yield before any required candidate content.
-        initially_kept = tuple(_with_identity(c, None) for c in initially_kept)
-        candidate_char_counts = tuple(_canonical_char_count(_candidate_projection(c)) for c in initially_kept)
-        initial_total = _bundle_empty_candidates_char_count(
-            summary, thresholds, source_search_complete=source_search_complete,
-            candidates_complete=initial_complete, truncation_codes=initial_codes)
-        initial_total += sum(candidate_char_counts) + max(0, len(candidate_char_counts)-1)
+    initial_total += sum(candidate_char_counts) + max(0, len(candidate_char_counts)-1)
     if initial_total <= prompt_char_limit:
         return _ExpectedBundleComponents(
-            candidates=initially_kept,
+            candidates=with_identity(initially_kept, prompt_char_limit-initial_total),
             source_search_complete=source_search_complete,
             candidates_complete=initial_complete,
             truncation_codes=initial_codes,
         )
+    if require_full_identity:
+        raise ValueError("required candidates exceed the joint prompt allowance")
 
     prompt_codes = codes(prompt_truncated=True)
     prompt_total = _bundle_empty_candidates_char_count(
-        summary,
-        thresholds,
-        source_search_complete=source_search_complete,
-        candidates_complete=False,
-        truncation_codes=prompt_codes,
+        summary, thresholds, source_search_complete=source_search_complete,
+        candidates_complete=False, truncation_codes=prompt_codes,
     )
     if prompt_total > prompt_char_limit:
         raise ValueError("CV summary leaves no room for an aggregate prompt bundle")
@@ -1694,7 +1710,7 @@ def _expected_bundle_components(
         prompt_total += added_chars
         kept_count += 1
     return _ExpectedBundleComponents(
-        candidates=initially_kept[:kept_count],
+        candidates=with_identity(initially_kept[:kept_count], prompt_char_limit-prompt_total),
         source_search_complete=source_search_complete,
         candidates_complete=False,
         truncation_codes=prompt_codes,
@@ -3939,6 +3955,8 @@ def _summary_fits(
     summary: CvEvidenceSummary,
     cap: int,
     thresholds: EvidenceThresholds | None = None,
+    *,
+    require_full_identity: bool = True,
 ) -> bool:
     # This public bundle envelope contains the complete public summary plus
     # substantially more than the summary's sole private integer field.
@@ -3952,6 +3970,7 @@ def _summary_fits(
             thresholds,
             candidate_limit=_MAX_BUNDLE_CANDIDATES,
             prompt_char_limit=cap,
+            require_full_identity=require_full_identity,
         )
     except ValueError:
         return False

@@ -1033,9 +1033,8 @@ def test_threshold_aware_summary_fits_complete_candidate_projection() -> None:
     bundle = summary_module.build_cv_prompt_bundle(summary, thresholds)
 
     assert len(raw_candidates) == 4
-    # Required options/provenance survive; optional identity sections may yield.
-    assert tuple(summary_module._with_identity(c, None) for c in bundle.candidates) == tuple(
-        summary_module._with_identity(c, None) for c in raw_candidates)
+    # Threshold-aware summary sizing reserves the full actual candidate record.
+    assert bundle.candidates == raw_candidates
     assert "CANDIDATE_PROMPT_TRUNCATED" not in bundle.truncation_codes
     assert len(
         json.dumps(
@@ -3098,8 +3097,8 @@ def test_aggregate_budget_streams_before_materializing_oversized_projection(
     )
 
     assert len(bundle.candidates) == 2  # Exact v2 record width fits two whole candidates.
-    assert len(encoded) == 199_679
-    assert materialized_sizes == [199_679]
+    assert len(encoded) == 199_919
+    assert materialized_sizes == [199_919]
     assert "CANDIDATE_PROMPT_TRUNCATED" in bundle.truncation_codes
 
 

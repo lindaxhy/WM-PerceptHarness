@@ -196,7 +196,11 @@ def test_optional_identity_sections_yield_before_basic_candidates():
     full_size=len(json.dumps(bundle.prompt_record(),separators=(',',':'),ensure_ascii=False))
     bounded=sm.build_cv_prompt_bundle(bundle.summary,_thresholds(),max_prompt_chars=full_size-1)
     assert len(bounded.candidates)==len(bundle.candidates)
-    assert all(c.identity_evidence is None for c in bounded.candidates)
+    assert any(c.identity_evidence is not None for c in bounded.candidates)
+    assert sum(len(c.identity_evidence.continuation_cues)+len(c.identity_evidence.cross_label_cues)
+               for c in bounded.candidates if c.identity_evidence) < sum(
+        len(c.identity_evidence.continuation_cues)+len(c.identity_evidence.cross_label_cues)
+        for c in bundle.candidates if c.identity_evidence)
     assert bounded.candidates_complete
     assert [(c.target_track_id,c.allowed_event_intervals,c.possible_occluders) for c in bounded.candidates]==[
         (c.target_track_id,c.allowed_event_intervals,c.possible_occluders) for c in bundle.candidates]

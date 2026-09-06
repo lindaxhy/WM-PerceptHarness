@@ -569,7 +569,8 @@ def test_per_entry_limit_bounds_combined_canonical_identity_and_result(store, tm
         assert db.execute("SELECT COUNT(*) FROM semantic_results").fetchone()[0] == 0
 
 
-def test_candidate_v2_validator_does_not_replay_v1_acceptance(store, tmp_path, monkeypatch):
+@pytest.mark.parametrize("prior_contract", ["embodied-output-v1", "embodied-output-v2"])
+def test_candidate_v2_validator_does_not_replay_prior_contract_acceptance(store, tmp_path, monkeypatch, prior_contract):
     from las_repro import semantic_cache
     from test_candidate_v2 import gap_bundle, decisions
     bundle = gap_bundle()
@@ -581,7 +582,7 @@ def test_candidate_v2_validator_does_not_replay_v1_acceptance(store, tmp_path, m
                  'schema_context':{'duration':.4, 'candidates':[candidate.model_dump(mode='json')],
                                    'evidence_summary':bundle.summary.model_dump(mode='json')}}
     with monkeypatch.context() as patch:
-        patch.setattr(semantic_cache, 'VALIDATOR_CONTRACT_VERSION', 'embodied-output-v1')
+        patch.setattr(semantic_cache, 'VALIDATOR_CONTRACT_VERSION', prior_contract)
         first = job(store,tmp_path,overrides=overrides,stage='occlusion_semantics')
         run(store,model)
     second = job(store,tmp_path,overrides=overrides,stage='occlusion_semantics')

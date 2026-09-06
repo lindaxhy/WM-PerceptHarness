@@ -267,12 +267,37 @@ def derive_identity_evidence(
             # Preserve a different time witness where available.
             selected_cross.append(next((c for c in ranked_conflicts[1:] if c.frame_index != selected_cross[0].frame_index), ranked_conflicts[1]))
         pools.append((continuations,selected_cross,complete))
+    return _allocate_identity(pools, candidates)
+
+
+def fit_identity_evidence(
+    candidates: tuple[OcclusionCandidate, ...], max_extra_chars: int
+) -> tuple[IdentityEvidence | None, ...]:
+    """Pack exact source-derived rows into the space above null sections.
+
+    Identifiers and closed field names are ASCII; serialized payload bytes are
+    therefore the exact character increment here, including JSON punctuation.
+    Required candidate fields and the summary are sized by the caller first.
+    """
+    if type(max_extra_chars) is not int or max_extra_chars < 0:
+        raise ValueError("identity prompt allowance must be a nonnegative integer")
+    pools = tuple((c.identity_evidence.continuation_cues,
+                   c.identity_evidence.cross_label_cues,
+                   c.identity_evidence.complete) if c.identity_evidence is not None
+                  else ((), (), False) for c in candidates)
+    return _allocate_identity(
+        pools, candidates, max_extra_chars=max_extra_chars,
+        eligible_empty=tuple(c.identity_evidence is not None for c in candidates),
+    )
+
+
+def _allocate_identity(pools, candidates, *, max_extra_chars=None, eligible_empty=None):
     order = sorted(range(len(candidates)), key=lambda i:(candidates[i].last_visible_frame,
                    candidates[i].target_entity_id,candidates[i].target_track_id,i))
     fair_order = [order[i] for i in _spread_indices(len(order))]
     kept = [[[],[]] for _ in candidates]
     result = [None]*len(candidates)
-    rows_used = bytes_used = 0
+    rows_used = bytes_used = extra_chars_used = 0
     # Interleave categories locally, then distribute one available row per
     # candidate per round, including candidates with only cross-label context.
     local_rows = [tuple((category, rows[category][offset])
@@ -289,15 +314,22 @@ def derive_identity_evidence(
                 cross_label_cues=tuple(sorted(selected[1],key=cross_label_key)),
                 complete=pools[i][2] and sum(map(len,selected)) == len(pools[i][0])+len(pools[i][1]))
             added = identity_bytes(evidence)-identity_bytes(result[i])
-            if rows_used < MAX_IDENTITY_ROWS and bytes_used+added <= MAX_IDENTITY_BYTES:
+            extra_added = added - (4 if result[i] is None else 0)
+            if (rows_used < MAX_IDENTITY_ROWS and bytes_used+added <= MAX_IDENTITY_BYTES
+                    and (max_extra_chars is None or extra_chars_used+extra_added <= max_extra_chars)):
                 kept[i]=selected
                 result[i]=evidence
                 rows_used+=1
                 bytes_used+=added
+                extra_chars_used+=extra_added
     for i in fair_order:
-        if result[i] is None and not pools[i][0] and not pools[i][1]:
+        if (result[i] is None and not pools[i][0] and not pools[i][1]
+                and (eligible_empty is None or eligible_empty[i])):
             evidence = IdentityEvidence(continuation_cues=(), cross_label_cues=(),complete=pools[i][2])
-            if bytes_used+identity_bytes(evidence) <= MAX_IDENTITY_BYTES:
+            added = identity_bytes(evidence)
+            if (bytes_used+added <= MAX_IDENTITY_BYTES
+                    and (max_extra_chars is None or extra_chars_used+added-4 <= max_extra_chars)):
                 result[i]=evidence
-                bytes_used+=identity_bytes(evidence)
+                bytes_used+=added
+                extra_chars_used+=added-4
     return tuple(result)
