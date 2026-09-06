@@ -161,7 +161,7 @@ def _public_completed_result(original: Any) -> Any:
         provider_metrics = original_stage.get("provider_metrics")
         if provider_metrics is None:
             continue
-        for key in ("input_tokens", "output_tokens"):
+        for key in ("input_tokens", "output_tokens", "semantic_cache_key"):
             if key in provider_metrics:
                 public_stage["provider_metrics"][key] = provider_metrics[key]
     return public

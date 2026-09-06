@@ -555,11 +555,28 @@ def _hybrid_result(*, available):
     return result
 
 
-@pytest.mark.parametrize("available", [False, True], ids=["disabled-cv", "available-cv"])
-def test_poll_preserves_validated_hybrid_provenance_and_usage(
-    client, store, auth_header, available
+@pytest.mark.parametrize(
+    ("available", "semantic_cache_hit", "semantic_cache_key"),
+    [
+        (False, False, "c" * 64),
+        (True, True, "d" * 64),
+    ],
+    ids=["disabled-cv-cache-miss", "available-cv-cache-hit"],
+)
+def test_poll_preserves_validated_hybrid_provenance_usage_and_cache_digest(
+    client,
+    store,
+    auth_header,
+    available,
+    semantic_cache_hit,
+    semantic_cache_key,
 ):
     original = _hybrid_result(available=available)
+    original["performance"]["stages"][0]["provider_metrics"].update(
+        semantic_cache_hit=semantic_cache_hit,
+        semantic_cache_published=not semantic_cache_hit,
+        semantic_cache_key=semantic_cache_key,
+    )
     validate_hybrid_result(original)
     stored_snapshot = copy.deepcopy(original)
     task_id = _complete_result(store, original)
@@ -577,6 +594,12 @@ def test_poll_preserves_validated_hybrid_provenance_and_usage(
         "progress": None,
     }
     validate_hybrid_result(body["data"])
+    assert (
+        body["data"]["performance"]["stages"][0]["provider_metrics"][
+            "semantic_cache_key"
+        ]
+        == semantic_cache_key
+    )
     assert body["data"] == stored_snapshot
     assert store.get_task(task_id).result == stored_snapshot
     assert len(list(iter_action_captions("poll", body["data"], source_fps=10.0))) == 1
@@ -658,6 +681,26 @@ def test_poll_does_not_restore_fields_from_invalid_hybrid_results(
     assert data["performance"]["stages"][0]["provider_metrics"]["input_tokens"] == "***"
 
 
+def test_poll_does_not_restore_malformed_semantic_cache_digest(
+    client, store, auth_header
+):
+    original = _hybrid_result(available=True)
+    original["performance"]["stages"][0]["provider_metrics"][
+        "semantic_cache_key"
+    ] = "A" * 64
+    with pytest.raises(ValueError, match="lowercase SHA256 digest"):
+        validate_hybrid_result(original)
+    stored_snapshot = copy.deepcopy(original)
+    task_id = _complete_result(store, original)
+
+    data = _poll(client, auth_header, task_id).json()["data"]
+
+    assert data["performance"]["stages"][0]["provider_metrics"][
+        "semantic_cache_key"
+    ] == "***"
+    assert store.get_task(task_id).result == stored_snapshot
+
+
 def test_poll_does_not_restore_sensitive_names_at_unapproved_paths(
     client, store, auth_header
 ):
@@ -668,7 +711,13 @@ def test_poll_does_not_restore_sensitive_names_at_unapproved_paths(
         "input_tokens": 12,
         "output_tokens": 7,
         "credential_password": "placeholder-value",
+        "nested": {
+            "semantic_cache_key": "e" * 64,
+            "api_token": "placeholder-token",
+        },
     }
+    with pytest.raises(ValueError):
+        validate_hybrid_result(original)
     task_id = _complete_result(store, original)
 
     data = _poll(client, auth_header, task_id).json()["data"]
@@ -679,6 +728,10 @@ def test_poll_does_not_restore_sensitive_names_at_unapproved_paths(
         "input_tokens": "***",
         "output_tokens": "***",
         "credential_password": "***",
+        "nested": {
+            "semantic_cache_key": "***",
+            "api_token": "***",
+        },
     }
 
 
