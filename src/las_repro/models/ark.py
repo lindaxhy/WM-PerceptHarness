@@ -31,6 +31,36 @@ class ArkBackendError(RuntimeError):
 class ArkVideoModel:
     """Send explicitly sampled JPEG frames to one allowlisted ARK model."""
 
+    supports_semantic_result_cache = True
+    # Bump these contracts when payload defaults or frame encoding/sampling change.
+    adapter_contract_version = "ark-responses-pixels-v1"
+    frame_extraction_contract_version = "extract-frames-jpeg-timestamps-v1"
+
+    def semantic_cache_identity(self, request: ModelRequest) -> dict[str, Any]:
+        """Effective request settings plus explicitly recorded, ignored hints."""
+        return {
+            "adapter_contract_version": self.adapter_contract_version,
+            "frame_extraction_contract_version": self.frame_extraction_contract_version,
+            "model_alias": request.model_name,
+            "resolved_model_id": self._registry[request.model_name],
+            "max_frames": self.max_frames,
+            "ark_max_request_bytes": self.max_request_bytes,
+            "ark_max_output_chars": self.max_output_chars,
+            "max_output_tokens": STAGE_MAX_NEW_TOKENS[request.stage],
+            "thinking": {"type": "disabled"},
+            "store": False,
+            "stream": False,
+            "image_pixel_limit": None if request.media_resolution is None else {
+                "min_pixels": 4096,
+                "max_pixels": _MEDIA_MAX_PIXELS[request.media_resolution],
+            },
+            "media_resolution": request.media_resolution,
+            "recorded_hints": {
+                "reasoning_effort": request.reasoning_effort,
+                "clip_context": request.clip_context,
+            },
+        }
+
     def __init__(self, *, api_key: str, model_registry: Mapping[str, str],
                  timeout_seconds: float = 180.0, max_frames: int = 128,
                  max_request_bytes: int = 32 * 1024 * 1024,

@@ -246,7 +246,8 @@ def _ark_worker(arguments: argparse.Namespace, settings: Settings, stop: threadi
         try:
             worker = GPUWorker(store, model, worker_id, "remote:ark",
                                model_name=arguments.model_name,
-                               lease_seconds=settings.lease_seconds)
+                               lease_seconds=settings.lease_seconds,
+                               semantic_cache_enabled=settings.ark_semantic_cache_enabled)
             if arguments.once: worker.run_once()
             else: worker.run_forever(stop)
         finally:

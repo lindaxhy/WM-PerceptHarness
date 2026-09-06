@@ -105,6 +105,7 @@ class Settings(BaseSettings):
     ark_max_request_bytes: PositiveInteger = 32 * 1024 * 1024
     ark_max_output_chars: PositiveInteger = 1_000_000
     ark_proxy: SecretStr | None = None
+    ark_semantic_cache_enabled: StrictEnvironmentBool = True
     backend: str = "qwen3_vl"
     api_key_sha256: str = ""
     api_host: str = "127.0.0.1"

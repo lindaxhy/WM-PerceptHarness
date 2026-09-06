@@ -107,24 +107,27 @@ def test_help_exposes_exact_process_roles_without_printing_secrets(tmp_path: Pat
     _assert_secret_absent(completed)
 
 
-def test_ark_worker_constructs_remote_worker_and_closes_lifecycle(tmp_path, monkeypatch):
+@pytest.mark.parametrize("cache_enabled", [True, False])
+def test_ark_worker_constructs_remote_worker_and_closes_lifecycle(tmp_path, monkeypatch, cache_enabled):
     media_root = tmp_path / "media"; media_root.mkdir()
     environment = _cli_environment(tmp_path, media_root)
     environment.update({"LAS_BACKEND": "ark", "LAS_ARK_API_KEY": "ark-secret",
                         "LAS_ARK_MODEL_REGISTRY": '{"doubao-pro":"doubao-seed-2-1-pro-260628"}'})
     for key, value in environment.items():
         if key.startswith("LAS_"): monkeypatch.setenv(key, value)
+    monkeypatch.setenv("LAS_ARK_SEMANTIC_CACHE_ENABLED", str(cache_enabled).lower())
     observed = {"model_close": 0, "worker_close": 0, "run": 0}
-    from las_repro.models.ark import ArkVideoModel
+    from las_repro.models import ark
     from las_repro import workers
     class Model:
         def close(self): observed["model_close"] += 1
     class Worker:
         def __init__(self, store, model, worker_id, device, **kwargs):
             assert (worker_id, device, kwargs["model_name"]) == ("ark-0", "remote:ark", "doubao-pro")
+            assert kwargs["semantic_cache_enabled"] is cache_enabled
         def run_once(self): observed["run"] += 1
         def close(self): observed["worker_close"] += 1
-    monkeypatch.setattr(ArkVideoModel, "__new__", lambda cls, **kwargs: Model())
+    monkeypatch.setattr(ark, "ArkVideoModel", lambda **kwargs: Model())
     monkeypatch.setattr(workers, "GPUWorker", Worker)
     assert cli.main(["ark-worker", "--model-name", "doubao-pro", "--worker-id", "ark-0", "--once"]) == 0
     assert observed == {"model_close": 1, "worker_close": 1, "run": 1}
@@ -132,7 +135,7 @@ def test_ark_worker_constructs_remote_worker_and_closes_lifecycle(tmp_path, monk
 
 def test_ark_worker_once_completes_exactly_one_matching_sqlite_job(tmp_path, monkeypatch):
     from las_repro.domain import InferenceJobSpec, InferenceStatus
-    from las_repro.models.ark import ArkVideoModel
+    from las_repro.models import ark
     from las_repro.models.fake import FakeVideoModel
     media_root = tmp_path / "media"; media_root.mkdir()
     video = media_root / "video.mp4"; video.write_bytes(b"video")
@@ -150,7 +153,7 @@ def test_ark_worker_once_completes_exactly_one_matching_sqlite_job(tmp_path, mon
         for index in range(2)])
     class Model(FakeVideoModel):
         def close(self): pass
-    monkeypatch.setattr(ArkVideoModel, "__new__", lambda cls, **kwargs: Model())
+    monkeypatch.setattr(ark, "ArkVideoModel", lambda **kwargs: Model())
     store.close()
     assert cli.main(["ark-worker", "--model-name", "doubao-pro", "--once"]) == 0
     check = SQLiteTaskStore(Path(environment["LAS_DATABASE_PATH"])); check.initialize()
@@ -168,7 +171,7 @@ def test_ark_worker_closes_model_when_worker_cleanup_raises(tmp_path, monkeypatc
     for key, value in environment.items():
         if key.startswith("LAS_"): monkeypatch.setenv(key, value)
     closed = 0
-    from las_repro.models.ark import ArkVideoModel
+    from las_repro.models import ark
     from las_repro import workers
     class Model:
         def close(self):
@@ -177,7 +180,7 @@ def test_ark_worker_closes_model_when_worker_cleanup_raises(tmp_path, monkeypatc
         def __init__(self, *args, **kwargs): pass
         def run_once(self): pass
         def close(self): raise RuntimeError("cleanup failed")
-    monkeypatch.setattr(ArkVideoModel, "__new__", lambda cls, **kwargs: Model())
+    monkeypatch.setattr(ark, "ArkVideoModel", lambda **kwargs: Model())
     monkeypatch.setattr(workers, "GPUWorker", Worker)
     assert cli.main(["ark-worker", "--model-name", "doubao-pro", "--once"]) == 1
     assert closed == 1
@@ -194,7 +197,7 @@ def test_ark_worker_closes_http_model_on_initialization_or_run_failure(
     for key, value in environment.items():
         if key.startswith("LAS_"): monkeypatch.setenv(key, value)
     observed = {"model": 0, "worker": 0}
-    from las_repro.models.ark import ArkVideoModel
+    from las_repro.models import ark
     from las_repro import workers
     class Model:
         def close(self): observed["model"] += 1
@@ -203,7 +206,7 @@ def test_ark_worker_closes_http_model_on_initialization_or_run_failure(
             if failure_point == "init": raise RuntimeError("init failed")
         def run_once(self): raise RuntimeError("run failed")
         def close(self): observed["worker"] += 1
-    monkeypatch.setattr(ArkVideoModel, "__new__", lambda cls, **kwargs: Model())
+    monkeypatch.setattr(ark, "ArkVideoModel", lambda **kwargs: Model())
     monkeypatch.setattr(workers, "GPUWorker", Worker)
     assert cli.main(["ark-worker", "--model-name", "doubao-pro", "--once"]) == 1
     assert observed == {"model": 1, "worker": int(failure_point == "run")}

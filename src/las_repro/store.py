@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import signal
 import sqlite3
 import stat
@@ -20,6 +21,7 @@ from typing import Any, Iterator
 
 from .domain import InferenceJob, InferenceJobSpec, InferenceStatus, TaskRecord, TaskStatus
 from .model_alias import DEFAULT_MODEL_ALIAS, validate_model_alias
+from . import semantic_cache as semantic
 
 
 class StoreError(RuntimeError):
@@ -32,6 +34,10 @@ class InvalidTransition(StoreError):
 
 class WorkerMismatch(StoreError):
     """Raised when a worker attempts to mutate another worker's lease."""
+
+
+class SemanticCachePublicationError(StoreError):
+    """Cache write failed; transaction rolled back and job completion may retry."""
 
 
 class DuplicateInferenceJob(StoreError):
@@ -61,14 +67,20 @@ _JOB_METRIC_KEYS = frozenset(
         "track_count",
         "cache_hit",
         "oom_retry",
+        "semantic_cache_hit",
+        "semantic_cache_published",
+        "semantic_cache_key",
+        "semantic_cache_result_sha256",
     }
 )
-_JOB_INTEGER_METRIC_KEYS = _JOB_METRIC_KEYS - {
-    "inference_seconds",
-    "cache_hit",
-    "oom_retry",
-}
-_JOB_BOOLEAN_METRIC_KEYS = frozenset({"cache_hit", "oom_retry"})
+_JOB_BOOLEAN_METRIC_KEYS = frozenset({
+    "cache_hit", "oom_retry", "semantic_cache_hit", "semantic_cache_published",
+})
+_JOB_DIGEST_METRIC_KEYS = frozenset({"semantic_cache_key", "semantic_cache_result_sha256"})
+_JOB_INTEGER_METRIC_KEYS = (
+    _JOB_METRIC_KEYS - _JOB_BOOLEAN_METRIC_KEYS - _JOB_DIGEST_METRIC_KEYS
+    - {"inference_seconds"}
+)
 
 
 class SQLiteTaskStore:
@@ -195,6 +207,15 @@ class SQLiteTaskStore:
                     finished_at REAL,
                     metrics TEXT,
                     UNIQUE(task_id, stage, ordinal)
+                );
+
+                CREATE TABLE IF NOT EXISTS semantic_results (
+                    cache_key TEXT PRIMARY KEY,
+                    schema_version INTEGER NOT NULL,
+                    identity_json TEXT NOT NULL,
+                    result_json TEXT NOT NULL,
+                    result_sha256 TEXT NOT NULL,
+                    created_at REAL NOT NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_tasks_claim
@@ -583,6 +604,9 @@ class SQLiteTaskStore:
         attempt: int,
         now: float | None = None,
         metrics: Mapping[str, Any] | None = None,
+        semantic_publication: tuple[
+            semantic.SemanticIdentity, semantic.ResultValidator
+        ] | None = None,
     ) -> InferenceJob:
         row = self._finish(
             table="inference_jobs",
@@ -596,8 +620,78 @@ class SQLiteTaskStore:
             now=self._now(now),
             completed_by=worker_id,
             metrics=metrics,
+            semantic_publication=semantic_publication,
         )
         return _job_from_row(row)
+
+    def lookup_semantic_result(
+        self, identity: semantic.SemanticIdentity, validate: semantic.ResultValidator
+    ) -> dict[str, Any] | None:
+        """Read only; corruption is repaired only by a fenced completion."""
+        try:
+            with self._connect() as connection:
+                return semantic.decode_entry(
+                    self._semantic_row(connection, identity.key), identity, validate
+                )
+        except (sqlite3.Error, StoreError, OSError):
+            return None
+
+    @staticmethod
+    def _semantic_row(
+        connection: sqlite3.Connection, key: str
+    ) -> sqlite3.Row | None:
+        # Check byte bounds in SQLite before materializing potentially damaged data.
+        return connection.execute(
+            """SELECT cache_key, schema_version, result_sha256, created_at,
+                CASE WHEN length(CAST(identity_json AS BLOB)) + length(CAST(result_json AS BLOB)) <= ?
+                    THEN identity_json END AS identity_json,
+                CASE WHEN length(CAST(identity_json AS BLOB)) + length(CAST(result_json AS BLOB)) <= ?
+                    THEN result_json END AS result_json
+                FROM semantic_results WHERE cache_key = ?""",
+            (semantic.MAX_ENTRY_BYTES, semantic.MAX_ENTRY_BYTES, key),
+        ).fetchone()
+
+    def _publish_semantic_result(
+        self,
+        connection: sqlite3.Connection,
+        identity: semantic.SemanticIdentity,
+        result: Mapping[str, Any],
+        validate: semantic.ResultValidator,
+        now: float,
+    ) -> bool:
+        """Called only inside the current job's owner/attempt-fenced transaction."""
+        encoded = semantic.canonical_json(result)
+        if (semantic.sha256(identity.json) != identity.key
+                or len(identity.json.encode()) + len(encoded.encode()) > semantic.MAX_ENTRY_BYTES
+                or not validate(result)):
+            return False
+        existing = self._semantic_row(connection, identity.key)
+        if semantic.decode_entry(existing, identity, validate) is not None:
+            return False
+        connection.execute("DELETE FROM semantic_results WHERE cache_key = ?", (identity.key,))
+        connection.execute(
+            """INSERT INTO semantic_results
+                (cache_key, schema_version, identity_json, result_json, result_sha256, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)""",
+            (identity.key, semantic.CACHE_SCHEMA_VERSION, identity.json,
+             encoded, semantic.sha256(encoded), now),
+        )
+        while True:
+            count, total = connection.execute(
+                """SELECT COUNT(*), COALESCE(SUM(
+                    length(CAST(identity_json AS BLOB)) + length(CAST(result_json AS BLOB))
+                ), 0) FROM semantic_results"""
+            ).fetchone()
+            if count <= semantic.MAX_ENTRIES and total <= semantic.MAX_TOTAL_BYTES:
+                break
+            connection.execute(
+                """DELETE FROM semantic_results WHERE cache_key = (
+                    SELECT cache_key FROM semantic_results ORDER BY created_at, cache_key LIMIT 1
+                )"""
+            )
+        return connection.execute(
+            "SELECT 1 FROM semantic_results WHERE cache_key = ?", (identity.key,)
+        ).fetchone() is not None
 
     def heartbeat_inference_job(
         self,
@@ -867,6 +961,9 @@ class SQLiteTaskStore:
         now: float,
         completed_by: str | None = None,
         metrics: Mapping[str, Any] | None = None,
+        semantic_publication: tuple[
+            semantic.SemanticIdentity, semantic.ResultValidator
+        ] | None = None,
     ) -> sqlite3.Row:
         result_json = _json_dump(result) if result is not None else None
         error_json = _json_dump(error) if error is not None else None
@@ -894,6 +991,26 @@ class SQLiteTaskStore:
             try:
                 current = _required_row(connection, table, identifier, value)
                 _require_running_owner(current, worker_id, attempt)
+                if semantic_publication is not None:
+                    identity, validate = semantic_publication
+                    try:
+                        published = self._publish_semantic_result(
+                            connection, identity, result, validate, now
+                        )
+                    except sqlite3.Error:
+                        raise SemanticCachePublicationError(
+                            "semantic cache publication failed"
+                        ) from None
+                    updated_metrics = dict(metrics or {})
+                    updated_metrics["semantic_cache_published"] = published
+                    # The digest always describes THIS job, including a losing publisher.
+                    updated_metrics["semantic_cache_result_sha256"] = semantic.sha256(
+                        semantic.canonical_json(result)
+                    )
+                    params = (
+                        status, now, result_json, error_json, completed_by, now,
+                        _validated_job_metrics_json(updated_metrics), value,
+                    )
                 changed = connection.execute(
                     f"""
                     UPDATE {table}
@@ -1461,6 +1578,10 @@ def _validated_job_metrics_json(metrics: Mapping[str, Any] | None) -> str | None
     for key in _JOB_BOOLEAN_METRIC_KEYS & values.keys():
         if type(values[key]) is not bool:
             raise ValueError(f"metrics {key} must be a boolean")
+    for key in _JOB_DIGEST_METRIC_KEYS & values.keys():
+        if (not isinstance(values[key], str)
+                or re.fullmatch(r"[0-9a-f]{64}", values[key]) is None):
+            raise ValueError(f"metrics {key} must be a lowercase SHA256 digest")
     encoded = _json_dump(values)
     if len(encoded.encode("utf-8")) > _MAX_JOB_METRICS_BYTES:
         raise ValueError("metrics canonical JSON exceeds 4096 bytes")
