@@ -20,6 +20,7 @@ from .base import ModelOutputError, ModelRequest
 from .qwen3_vl import STAGE_MAX_NEW_TOKENS
 
 ARK_RESPONSES_ENDPOINT = "https://ark.cn-beijing.volces.com/api/v3/responses"
+_MEDIA_MAX_PIXELS = {"low": 65_536, "medium": 131_072, "high": 262_144}
 FrameExtractor = Callable[[Path, TimeSpan, float, Path], list[FrameRef]]
 
 
@@ -111,9 +112,18 @@ class ArkVideoModel:
             previous = frame.timestamp
             try: jpeg = frame.path.read_bytes()
             except OSError: raise ArkBackendError("ARK extracted frame is unavailable") from None
+            visual: dict[str, Any] = {
+                "type": "input_image",
+                "image_url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii"),
+            }
+            if request.media_resolution is not None:
+                visual["image_pixel_limit"] = {
+                    "min_pixels": 4_096,
+                    "max_pixels": _MEDIA_MAX_PIXELS[request.media_resolution],
+                }
             content.extend((
                 {"type": "input_text", "text": f"Frame timestamp: {frame.timestamp:.6f} seconds"},
-                {"type": "input_image", "image_url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")},
+                visual,
             ))
         return content
 

@@ -65,6 +65,38 @@ def test_request_is_visual_only_bounded_and_strict(tmp_path):
     assert [part["text"] for part in content if part["type"] == "input_text"] == [
         "original prompt", "Frame timestamp: 2.000000 seconds", "Frame timestamp: 3.000000 seconds"]
     assert all(part["image_url"].startswith("data:image/jpeg;base64,") for part in content if part["type"] == "input_image")
+    assert all("image_pixel_limit" not in part for part in content)
+
+
+@pytest.mark.parametrize("resolution,maximum", [
+    ("low", 65536), ("medium", 131072), ("high", 262144),
+])
+def test_requested_resolution_reaches_ark_without_changing_frames(tmp_path, resolution, maximum):
+    """Ignoring the caller's resolution silently sends unrestricted image tokens."""
+    import base64
+
+    captured = {}
+    def handler(request):
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json=_envelope())
+
+    model = _model(handler)
+    try:
+        model.generate(_request(tmp_path, media_resolution=resolution))
+    finally:
+        model.close()
+    content = captured["input"][0]["content"]
+    images = [part for part in content if part["type"] == "input_image"]
+    assert [part.get("image_pixel_limit") for part in images] == [
+        {"min_pixels": 4096, "max_pixels": maximum},
+        {"min_pixels": 4096, "max_pixels": maximum},
+    ]
+    assert [base64.b64decode(part["image_url"].split(",", 1)[1]) for part in images] == [
+        b"jpeg-a", b"jpeg-b",
+    ]
+    assert [part["text"] for part in content if part["type"] == "input_text"] == [
+        "original prompt", "Frame timestamp: 2.000000 seconds", "Frame timestamp: 3.000000 seconds",
+    ]
 
 
 @pytest.mark.parametrize("envelope", [
