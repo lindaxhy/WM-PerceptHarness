@@ -25,6 +25,7 @@
 | 工作分支 | `feat/sam31-evidence-integration` |
 | 本地工作区（相对仓库根） | `.worktrees/sam31-evidence` |
 | PR 基础分支 | `main`，交接前核对远端为 `b9ac98b78383412bc60d3c56b608269916550b6c` |
+| Draft PR | [#4：SAM3.1 evidence and semantic contracts](https://github.com/lindaxhy/WM-PerceptHarness/pull/4) |
 | 已合并前置工作 | PR #3：五视频同步比较查看器；本次须新开 PR，不向 #3 追加 |
 | 最新产品提交 | `95807ee`：语义提示词对齐及具体封闭修复码 |
 | 分支规模快照 | 在 `95807ee` 相对远端 main 有 102 个提交、136 个文件变更 |
@@ -227,3 +228,7 @@ git diff --check
 76.71 秒，覆盖率 85.87%。Node 20 项、仓库政策 31 项、两个 JavaScript
 语法检查及 whitespace 检查通过；本文 11 个相对链接均存在。
 本轮无产品代码修改，历史验收结论不变。
+
+交付已创建 [Draft PR #4](https://github.com/lindaxhy/WM-PerceptHarness/pull/4)，
+来源为本工作分支、目标为 `main`。handoff 初始提交为 `e2edf36`；本段的后续
+文档提交补充 PR 关联。分支已推送并保留本地 worktree，未合并或部署。
