@@ -472,3 +472,79 @@ def test_output_prohibited_overlay_stem_is_not_offered_as_a_copyable_value():
     )
     assert envelope["options"]
     assert all(option["source_keyframe_ids"] == [] for option in envelope["options"])
+
+
+@pytest.mark.parametrize("count", [48, 64])
+def test_selection_covers_every_eligible_object_before_repeating_lexical_hubs(count):
+    summary, segments = source(count=count, frames=2)
+    envelope, prompt = options(summary, segments)
+    expected = {entity.entity_id for entity in summary.entities}
+    assert len(expected) == count
+    represented = {
+        object_id
+        for option in envelope["options"]
+        for object_id in option["object_ids"]
+    }
+    assert represented == expected
+    assert len(envelope["options"]) <= 64
+    assert {option["kind"] for option in envelope["options"]} == {
+        "location",
+        "relation",
+    }
+    encoded = json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode()
+    assert len(encoded) <= 24000
+    suffix = prompt.split("[CV_EVIDENCE_SUMMARY_JSON]\n")[1]
+    assert len(encoded) + len(suffix) <= summary.prompt_char_limit
+    assert envelope["options_complete"] is False
+    assert options(summary, segments)[0] == envelope
+    scene = scene_from(envelope)
+    assert (
+        DEFAULT_OUTPUT_SCHEMAS.sanitize(
+            "SceneSemantics", scene, context(summary, segments)
+        )
+        == scene
+    )
+
+    tracks = tuple(
+        _track(f"item_{i}_track", f"item_{i}", (_observation(0), _observation(1)))
+        for i in reversed(range(count))
+    )
+    reverse_summary = summarize_cv_evidence(
+        _artifact(tracks),
+        max_prompt_chars=200000,
+        max_relations=128,
+        max_observations_per_track=16,
+    )
+    assert options(reverse_summary, segments)[0] == envelope
+
+
+def test_unrepresented_object_gets_a_later_fitting_window_before_repeats():
+    tracks = (
+        _track("a_track", "a", tuple(_observation(f) for f in (0, 6, 7))),
+    ) + tuple(
+        _track(
+            f"item_{i}_track",
+            f"item_{i}",
+            tuple(_observation(f, bbox_xyxy=(0.6, 0.6, 0.8, 0.8)) for f in (6, 7)),
+        )
+        for i in range(63)
+    )
+    summary = summarize_cv_evidence(_artifact(tracks), max_relations=128)
+    segments = [
+        {"segment_index": i, "start": 0.0, "end": 0.5, "target": "unknown"}
+        for i in range(5000)
+    ]
+    segments.append(
+        {"segment_index": 5000, "start": 0.5, "end": 1.0, "target": "unknown"}
+    )
+    envelope, _ = options(summary, segments)
+    assert len(envelope["options"]) <= 64
+    assert {entity.entity_id for entity in summary.entities} == {
+        obj for option in envelope["options"] for obj in option["object_ids"]
+    }
+    assert any(
+        option["object_ids"] == ["a"]
+        and option["start"] >= 0.5
+        and option["source_segment_indices"] == [5000]
+        for option in envelope["options"]
+    )

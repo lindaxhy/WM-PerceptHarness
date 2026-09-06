@@ -11,7 +11,7 @@ import hashlib
 import json
 import math
 from bisect import bisect_left, bisect_right
-from collections import defaultdict
+from collections import Counter, defaultdict
 from copy import deepcopy
 from pathlib import PurePosixPath
 from typing import Any
@@ -261,7 +261,6 @@ def scene_spatial_prompt_data(
     selected = []
     identities = {}
     attempts = 0
-    max_depth = max((len(intervals) for _, intervals in queues), default=0)
     clock = {
         frame.frame_index: frame.timestamp_seconds for frame in summary.observed_clock
     }
@@ -276,61 +275,91 @@ def scene_spatial_prompt_data(
             # an empty keyframe subset is legal, an uncopyable stem is not.
             continue
         overlays.append((overlay, stem))
-    for depth in range(max_depth):
-        for key, intervals in queues:
-            if depth >= len(intervals):
-                continue
-            if len(selected) >= MAX_OPTIONS or attempts >= MAX_SELECTION_ATTEMPTS:
-                break
-            attempts += 1
-            start, end = intervals[depth]
-            track_ids = groups[key][(start, end)]
-            option = {
-                "kind": key[0],
-                "object_ids": list(key[1]),
-                "object_names": [names[i] for i in key[1]],
-                "start": start,
-                "end": end,
-                "source_track_ids": sorted(track_ids),
-                "source_keyframe_ids": sorted(
-                    {
-                        stem
-                        for o, stem in overlays
-                        if o.track_id in track_ids
-                        and start <= clock[o.frame_index] < end
-                    }
-                )[:2],
-                "source_segment_indices": [
-                    s["segment_index"]
-                    for s in segments
-                    if s["start"] < end and s["end"] > start
-                ],
-            }
-            canonical = _json(option, sort_keys=True)
-            identity = "spv_" + hashlib.sha256(canonical.encode()).hexdigest()
-            if identity in identities and identities[identity] != canonical:
-                raise ValueError("spatial option identity collision")
-            option["option_id"] = identity
-            trial = dict(
-                envelope,
-                options=selected + [option],
-                field_shape_example=_claim_shape(selected[0] if selected else option),
-            )
-            if len(_json(trial).encode()) > budget:
-                continue
-            claim = _claim_shape(option)
-            validate_event_provenance(
-                claim,
-                segments=segments,
-                summary=summary,
-                frame_pts=None,
-                spatial=True,
-                expected_names=option["object_names"],
-            )
-            identities[identity] = canonical
-            selected.append(option)
+    participant_counts = Counter()
+    last_kind = None
+
+    def priority(item):
+        ordinal, (key, _, depth) = item
+        counts = [participant_counts[obj] for obj in key[1]]
+        uncovered = sum(count == 0 for count in counts)
+        return (
+            not uncovered,
+            depth,
+            -uncovered,
+            max(counts),
+            key[0] == last_kind,
+            sum(counts),
+            ordinal,
+        )
+
+    # Keep one head per retained group. Unrepresented objects can advance to
+    # a later fitting window before any already-covered group consumes repeats.
+    # Once coverage is equal, temporal round depth balances pairs and windows.
+    pending = {
+        ordinal: (key, intervals, 0)
+        for ordinal, (key, intervals) in enumerate(queues)
+        if intervals
+    }
+    while pending:
         if len(selected) >= MAX_OPTIONS or attempts >= MAX_SELECTION_ATTEMPTS:
             break
+
+        # Rank only retained groups, never synthesized object pairs. The
+        # 512-attempt cap limits scans over the already bounded source groups.
+        # Coverage counts change only after an option fits and validates,
+        # so rejected large rows cannot falsely mark an object represented.
+        ordinal, _ = min(pending.items(), key=priority)
+        key, intervals, depth = pending.pop(ordinal)
+        if depth + 1 < len(intervals):
+            pending[ordinal] = (key, intervals, depth + 1)
+        attempts += 1
+        start, end = intervals[depth]
+        track_ids = groups[key][(start, end)]
+        option = {
+            "kind": key[0],
+            "object_ids": list(key[1]),
+            "object_names": [names[i] for i in key[1]],
+            "start": start,
+            "end": end,
+            "source_track_ids": sorted(track_ids),
+            "source_keyframe_ids": sorted(
+                {
+                    stem
+                    for o, stem in overlays
+                    if o.track_id in track_ids and start <= clock[o.frame_index] < end
+                }
+            )[:2],
+            "source_segment_indices": [
+                s["segment_index"]
+                for s in segments
+                if s["start"] < end and s["end"] > start
+            ],
+        }
+        canonical = _json(option, sort_keys=True)
+        identity = "spv_" + hashlib.sha256(canonical.encode()).hexdigest()
+        if identity in identities and identities[identity] != canonical:
+            raise ValueError("spatial option identity collision")
+        option["option_id"] = identity
+        trial = dict(
+            envelope,
+            options=selected + [option],
+            field_shape_example=_claim_shape(selected[0] if selected else option),
+        )
+        if len(_json(trial).encode()) > budget:
+            continue
+        claim = _claim_shape(option)
+        validate_event_provenance(
+            claim,
+            segments=segments,
+            summary=summary,
+            frame_pts=None,
+            spatial=True,
+            expected_names=option["object_names"],
+        )
+        identities[identity] = canonical
+        selected.append(option)
+        participant_counts.update(key[1])
+        last_kind = key[0]
     example = _claim_shape(selected[0]) if selected else None
     selected.sort(
         key=lambda o: (
