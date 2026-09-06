@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 CACHE_SCHEMA_VERSION = 1
 # Bump when trusted schema validation or normalization semantics change.
-VALIDATOR_CONTRACT_VERSION = "embodied-output-v3"
+VALIDATOR_CONTRACT_VERSION = "embodied-output-v4"
 MAX_ENTRY_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_ENTRIES = 256
@@ -22,7 +22,7 @@ STAGE_SCHEMAS = {
     "embodied_pass_a": "CoarsePlan",
     "embodied_pass_b": "BoundaryPlan",
     "embodied_enrichment": "EnrichmentResult",
-    "scene_semantics": "SceneSemantics",
+    "scene_semantics": "SceneSemanticsChoices",
     "occlusion_semantics": "OcclusionDecisionSet",
 }
 ResultValidator = Callable[[Mapping[str, Any]], bool]

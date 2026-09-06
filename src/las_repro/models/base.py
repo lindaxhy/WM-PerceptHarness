@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
 
+from .response_contract import ModelResponseContract
+
 from ..media import FrameRef, TimeSpan, VideoMetadata
 from ..model_alias import DEFAULT_MODEL_ALIAS, validate_model_alias
 
@@ -54,6 +56,7 @@ class ModelRequest:
     reasoning_effort: TuningLevel | None = None
     clip_context: TuningLevel | None = None
     video_session: VideoSession | None = None
+    response_contract: ModelResponseContract | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.stage, str) or not self.stage.strip():

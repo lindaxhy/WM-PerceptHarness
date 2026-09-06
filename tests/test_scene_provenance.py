@@ -48,7 +48,14 @@ def options(summary, segments, duration=None):
     )
     marker = "[SCENE_SPATIAL_PROVENANCE_OPTIONS_JSON]\n"
     assert marker in prompt, "trusted provenance choices must precede inference"
-    return json.JSONDecoder().raw_decode(prompt.split(marker, 1)[1])[0], prompt
+    from las_repro.pipelines.scene_provenance import scene_spatial_prompt_data
+    envelope, _ = scene_spatial_prompt_data(
+        summary, segments, duration=duration or segments[-1]["end"])
+    compact = json.JSONDecoder().raw_decode(prompt.split(marker, 1)[1])[0]
+    assert compact is None if envelope is None else compact["options"] == [
+        {k: o[k] for k in ("option_id", "kind", "object_ids", "object_names", "start", "end")}
+        for o in envelope["options"]]
+    return envelope, prompt
 
 
 def scene_from(envelope):
@@ -182,7 +189,7 @@ def test_general_visibility_and_inventory_rules():
     )
     scene = read("scene_semantics")
     assert "provenance choices, not facts" in scene
-    assert "global" in scene and "across objects" in scene
+    assert "Selection order is irrelevant" in scene
     occ = read("occlusion_semantics")
     assert "inspection cues, not proof" in occ
     assert "edge_departure" in occ
@@ -388,7 +395,8 @@ def test_generated_options_validate_source_only_once(monkeypatch):
         return original(self)
 
     monkeypatch.setattr(CvEvidenceSummary, "prompt_record", counted)
-    envelope, _ = options(summary, segments)
+    from las_repro.pipelines.scene_provenance import scene_spatial_prompt_data
+    envelope, _ = scene_spatial_prompt_data(summary, segments, duration=segments[-1]["end"])
     assert len(envelope["options"]) > 1
     assert len(calls) == 1
 

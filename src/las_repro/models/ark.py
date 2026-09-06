@@ -42,13 +42,15 @@ class ArkVideoModel:
 
     supports_semantic_result_cache = True
     # Bump these contracts when payload defaults or frame encoding/sampling change.
-    adapter_contract_version = "ark-responses-scene-budget-v2"
+    adapter_contract_version = "ark-responses-scene-choices-v3"
     frame_extraction_contract_version = "extract-frames-jpeg-timestamps-v1"
 
     def semantic_cache_identity(self, request: ModelRequest) -> dict[str, Any]:
         """Effective request settings plus explicitly recorded, ignored hints."""
         return {
             "adapter_contract_version": self.adapter_contract_version,
+            "response_format": (request.response_contract.cache_identity()
+                                if request.response_contract is not None else None),
             "frame_extraction_contract_version": self.frame_extraction_contract_version,
             "model_alias": request.model_name,
             "resolved_model_id": self._registry[request.model_name],
@@ -121,6 +123,8 @@ class ArkVideoModel:
                        "thinking": {"type": "disabled"},
                        "max_output_tokens": max_output_tokens,
                        "input": [{"role": "user", "content": content}]}
+            if request.response_contract is not None:
+                payload["text"] = {"format": request.response_contract.format()}
             encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
             if len(encoded) > self.max_request_bytes:
                 raise ArkBackendError("ARK request exceeds configured size limit")

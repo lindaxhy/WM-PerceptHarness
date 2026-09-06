@@ -594,3 +594,57 @@ def test_candidate_v2_validator_does_not_replay_prior_contract_acceptance(store,
     assert [r.metrics['semantic_cache_hit'] for r in records] == [False,False,True]
     assert all(r.result == positive for r in records)
     assert records[0].metrics['semantic_cache_key'] != records[1].metrics['semantic_cache_key']
+
+
+def test_scene_choices_worker_persists_dto_and_replays_equal_public_scene(store, tmp_path):
+    from test_scene_choices import fixture
+    from las_repro.pipelines.scene_choices import project_scene_choices
+    draft, context = fixture()
+    provider = Provider(response=draft)
+    model = provider.model()
+    overrides = dict(schema_name='SceneSemanticsChoices', schema_context=context,
+                     end=context['duration'], prompt='sealed scene choices',
+                     response_contract={'name': 'injected', 'schema': {'type': 'string'}})
+    first = job(store, tmp_path, stage='scene_semantics', overrides=overrides)
+    run(store, model)
+    second = job(store, tmp_path, stage='scene_semantics', overrides=overrides)
+    run(store, model)
+    rows = [store.get_inference_job(j.job_id) for j in (first, second)]
+    assert provider.calls == 1
+    assert [r.metrics['semantic_cache_hit'] for r in rows] == [False, True]
+    assert rows[0].result == rows[1].result == draft
+    assert project_scene_choices(rows[0].result, context) == project_scene_choices(rows[1].result, context)
+    assert provider.request['text']['format']['name'] == 'scene-spatial-choice-refs-v1'
+    with sqlite3.connect(store.database_path) as db:
+        identity = json.loads(db.execute('SELECT identity_json FROM semantic_results').fetchone()[0])
+    assert identity['schema_name'] == 'SceneSemanticsChoices'
+    assert 'response_format' in canonical(identity)
+    assert 'injected' not in canonical(identity)
+
+
+@pytest.mark.parametrize('change', ['source_budget', 'schema', 'validator', 'format'])
+def test_scene_cache_changes_miss_before_inference(store, tmp_path, monkeypatch, change):
+    from test_scene_choices import fixture
+    from las_repro import semantic_cache
+    from las_repro.cv.summary import CvEvidenceSummary, _summary_identity
+    from las_repro.pipelines.scene_choices import prepare_scene_choices
+    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+    draft, context = fixture()
+    draft['locations'] = []; draft['relations'] = []
+    provider = Provider(response=draft); model = provider.model()
+    overrides = dict(schema_name='SceneSemanticsChoices', schema_context=context,
+                     end=context['duration'], prompt='unchanged prompt')
+    first = job(store, tmp_path, stage='scene_semantics', overrides=overrides)
+    run(store, model)
+    if change == 'source_budget':
+        summary = CvEvidenceSummary.model_validate(context['evidence_summary'])
+        summary = summary.model_copy(update={'prompt_char_limit': summary.prompt_char_limit - 1})
+        summary = summary.model_copy(update={'summary_id': _summary_identity(summary)})
+        overrides['schema_context'] = prepare_scene_choices(summary, context['segments'], duration=context['duration']).context()
+    if change == 'schema': overrides['schema_name'] = 'SceneSemantics'
+    if change == 'validator': monkeypatch.setattr(semantic_cache, 'VALIDATOR_CONTRACT_VERSION', 'embodied-output-v3')
+    if change == 'format':
+        monkeypatch.setattr(DEFAULT_OUTPUT_SCHEMAS, 'model_response_contract', lambda n, c: None)
+    second = job(store, tmp_path, stage='scene_semantics', overrides=overrides)
+    run(store, model)
+    assert provider.calls == 2

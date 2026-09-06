@@ -13,6 +13,7 @@ from pydantic import BaseModel, ValidationError
 from ..cv.summary import OcclusionCandidate
 from .occlusion import OcclusionDecisionSet, validate_occlusion_decisions
 from .scene_semantics import SceneSemantics, validate_scene_semantics
+from .scene_choices import CHOICE_CODES, validate_scene_choices, scene_response_contract
 from .validators import (
     BoundaryPlan,
     CoarsePlan,
@@ -56,6 +57,7 @@ _SCHEMA_ERROR_SUFFIX_BY_ERROR_TYPE = (
     ("greater_than_equal", "NUMBER_RANGE"),
     ("less_than_equal", "NUMBER_RANGE"),
     ("enum", "ENUM_VALUE"),
+    ("literal_error", "ENUM_VALUE"),
     ("value_error", "BLANK_STRING"),
 )
 
@@ -219,6 +221,7 @@ class _SchemaEntry:
     allowed_issue_codes: tuple[str, ...]
     generic_issue_code: str
     preserve_issue_code_order: bool
+    response_contract_factory: Callable | None = None
 
 
 class OutputSchemaRegistry:
@@ -240,6 +243,7 @@ class OutputSchemaRegistry:
         allowed_issue_codes: tuple[str, ...],
         generic_issue_code: str,
         preserve_issue_code_order: bool = False,
+        response_contract_factory: Callable | None = None,
     ) -> None:
         if not isinstance(schema_name, str) or not schema_name.strip():
             raise ValueError("schema_name must be a non-blank string")
@@ -264,7 +268,15 @@ class OutputSchemaRegistry:
             allowed_issue_codes=allowed_issue_codes,
             generic_issue_code=generic_issue_code,
             preserve_issue_code_order=preserve_issue_code_order,
+            response_contract_factory=response_contract_factory,
         )
+
+    def model_response_contract(self, schema_name, authenticated_context):
+        """Compile only the registered server-owned scene response contract."""
+        entry = self._entries.get(schema_name)
+        if entry is None or entry.response_contract_factory is None:
+            return None
+        return entry.response_contract_factory(authenticated_context)
 
     def sanitize(
         self,
@@ -1351,4 +1363,13 @@ DEFAULT_OUTPUT_SCHEMAS.register(
     allowed_issue_codes=_schema_codes("GENERAL_SUMMARY")
     + _GENERAL_SUMMARY_TEMPORAL_CODES,
     generic_issue_code="GENERAL_SUMMARY_SCHEMA_INVALID",
+)
+
+
+DEFAULT_OUTPUT_SCHEMAS.register(
+    "SceneSemanticsChoices", validate_scene_choices,
+    allowed_issue_codes=_schema_codes("SCENE_SEMANTICS_CHOICES") + CHOICE_CODES
+        + _schema_codes("SCENE_SEMANTICS") + _SCENE_TEMPORAL_CODES,
+    generic_issue_code="SCENE_SEMANTICS_CHOICES_SCHEMA_INVALID",
+    response_contract_factory=scene_response_contract,
 )

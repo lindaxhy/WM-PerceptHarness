@@ -8,6 +8,8 @@ prompts, payloads, and responses stay in the owner-only output directory.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import argparse
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
@@ -30,7 +32,10 @@ from las_repro.models.ark import ArkVideoModel
 from las_repro.pipelines.embodied import PromptRenderer, _validated_stage_result
 from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
 from las_repro.pipelines.scene_semantics import trusted_target_skeleton
-from las_repro.pipelines.scene_provenance import scene_spatial_prompt_data
+from las_repro.pipelines.scene_choices import (
+    authenticate_scene_context, compact_scene_options, project_scene_choices,
+    SceneLocationChoice, SceneRelationChoice,
+)
 from las_repro.workers import _model_request
 
 
@@ -38,7 +43,7 @@ BUNDLE_SCHEMA = "semantic_reverification_input_v1"
 MODEL_IDENTITY = "doubao-seed-2-1-pro-260628"
 MODEL_ALIAS = "doubao-pro"
 _STAGE_PAIRS = (
-    ("full_0001", "scene_semantics", "SceneSemantics"),
+    ("full_0001", "scene_semantics", "SceneSemanticsChoices"),
     ("full_0002", "occlusion_semantics", "OcclusionDecisionSet"),
 )
 _SETTINGS_KEYS = {
@@ -303,6 +308,7 @@ def _planned_paths(stage_record: Mapping[str, Any], output_dir: Path) -> tuple[P
         "call-2.payload.private.json",
         "call-2.raw.private.json",
         "validated.private.json",
+        "projected-public-scene.private.json",
         "report.json",
     ]
     return tuple(output_dir / _private_name(stage_record, suffix) for suffix in suffixes)
@@ -413,6 +419,8 @@ def run_stage(
         "stable_data_sha256": stable_data_digest,
         "attempts": [],
     }
+    if schema_name == "SceneSemanticsChoices":
+        report.update(model_contract_valid=False, public_projection_valid=None)
     repair_codes: tuple[str, ...] | None = None
     for call_index in (1, 2):
         call_payload = dict(payload)
@@ -427,6 +435,8 @@ def run_stage(
         )
         try:
             request = _model_request(job)
+            request = replace(request, response_contract=
+                DEFAULT_OUTPUT_SCHEMAS.model_response_contract(schema_name, schema_context))
         except Exception:
             report["error_code"] = "MODEL_REQUEST_INVALID"
             return _write_report(stage_record, output_dir, report)
@@ -441,11 +451,15 @@ def run_stage(
         _write_json_exclusive(payload_path, call_payload)
         attempt: dict[str, Any] = {
             "ordinal": call_index - 1,
+            "response_format": (request.response_contract.cache_identity()
+                                if request.response_contract is not None else None),
             "request_sha256": _hash_json(
                 {
                     "stage": stage,
                     "model_name": stage_record["model_name"],
                     "payload": call_payload,
+                    "response_format": (request.response_contract.format()
+                                        if request.response_contract is not None else None),
                 }
             ),
         }
@@ -498,6 +512,18 @@ def run_stage(
             report["attempts"].append(attempt)
             report["status"] = "valid"
             report.update(_result_counts(stage, validated))
+            if schema_name == "SceneSemanticsChoices":
+                public = project_scene_choices(validated, schema_context,
+                    repair_history=("initial",) if call_index == 1 else ("initial", "repair"))
+                report.update(model_contract_valid=True, public_projection_valid=True,
+                    validated_dto_sha256=_hash_json(validated),
+                    projected_scene_sha256=_hash_json(public),
+                    choice_location_count=len(validated["locations"]),
+                    choice_relation_count=len(validated["relations"]),
+                    projected_location_count=len(public["locations"]),
+                    projected_relation_count=len(public["relations"]))
+                _write_json_exclusive(output_dir / _private_name(stage_record,
+                    "projected-public-scene.private.json"), public)
             _write_json_exclusive(
                 output_dir / _private_name(stage_record, "validated.private.json"),
                 validated,
@@ -652,15 +678,10 @@ def _validate_settings(value: Any) -> dict[str, Any]:
 def _validate_scene_alignment(
     values: Mapping[str, Any], suffix: Any | None, context: Mapping[str, Any]
 ) -> None:
-    required = {
-        "duration",
-        "require_observed_content",
-        "required_object_ids",
-        "evidence_summary",
-        "segments",
-    }
-    if set(context) != required:
-        raise OperatorError("SCENE_CONTEXT_INVALID")
+    try:
+        context = authenticate_scene_context(context)
+    except Exception:
+        raise OperatorError("SCENE_CONTEXT_INVALID") from None
     summary_value = context["evidence_summary"]
     summary = None
     if summary_value is None:
@@ -676,13 +697,15 @@ def _validate_scene_alignment(
     segments = context["segments"]
     try:
         targets = trusted_target_skeleton(segments)
-        expected_options, _ = scene_spatial_prompt_data(
-            summary, segments, duration=context["duration"]
-        )
+        expected_options = compact_scene_options(context)
     except Exception:
         raise OperatorError("SCENE_CONTEXT_INVALID") from None
     if (
-        values.get("SCENE_SPATIAL_PROVENANCE_OPTIONS_JSON") != expected_options
+        values.get("SCENE_SPATIAL_FIELDS_JSON") != {
+            "location_fields": list(SceneLocationChoice.model_fields),
+            "relation_fields": list(SceneRelationChoice.model_fields),
+        }
+        or values.get("SCENE_SPATIAL_PROVENANCE_OPTIONS_JSON") != expected_options
         or values.get("SEGMENTS_JSON") != segments
         or values.get("KNOWN_TARGETS_JSON") != targets
         or values.get("VIDEO_DURATION_SECONDS_JSON") != context["duration"]

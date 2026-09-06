@@ -31,11 +31,12 @@ from ..store import SQLiteTaskStore
 from ..workers import InferenceJobFailed, JobWaitTimeout, wait_for_jobs
 from .output_validation import DEFAULT_OUTPUT_SCHEMAS, NormalizedSchemaOutput
 from .occlusion import OcclusionDecisionSet, project_occlusion_events
-from .scene_provenance import scene_spatial_prompt_data
 from .hybrid_result import build_hybrid_result, validate_hybrid_result, build_performance
+from .scene_choices import (
+    SceneInputPackage, SceneLocationChoice, SceneRelationChoice,
+    prepare_scene_choices, authenticate_scene_context, compact_scene_options, project_scene_choices,
+)
 from .scene_semantics import (
-    SceneLocation,
-    SceneRelation,
     SceneSemantics,
     trusted_target_skeleton,
     unavailable_scene_semantics,
@@ -288,7 +289,7 @@ class EmbodiedActionPipeline:
         if enrichment_normalization is not None:
             warnings.append(_enrichment_normalization_warning(enrichment_normalization))
         segments = _merge_enrichment(segment_table, enrichment)
-        trusted_targets = trusted_target_skeleton(segments)
+        scene_input = prepare_scene_choices(summary, segments, duration=span.end)
         scene_status = "available"
         scene_history = ("initial",)
         try:
@@ -299,26 +300,21 @@ class EmbodiedActionPipeline:
                 span,
                 fps,
                 stage="scene_semantics",
-                schema_name="SceneSemantics",
-                schema_context={
-                    "duration": span.end,
-                    "require_observed_content": bool(trusted_targets),
-                    "required_object_ids": [
-                        target["object_id"] for target in trusted_targets
-                    ],
-                    "evidence_summary": summary.model_dump(mode="json") if summary is not None else None,
-                    "segments": segments,
-                },
+                schema_name="SceneSemanticsChoices",
+                schema_context=scene_input.context(),
                 render_prompt=lambda repair: self._renderer.scene_semantics(
                     segments,
                     video_duration=span.end,
                     evidence_summary=summary,
+                    scene_input=scene_input,
                     repair=repair,
                 ),
                 affinity_anchor=pass_a_job,
                 metadata=metadata,
             )
             scene_history = ("initial", "repair") if scene_job.ordinal else ("initial",)
+            scene_data = project_scene_choices(scene_data, scene_input.context(),
+                                               repair_history=scene_history)
         except (TemporalValidationError, EmbodiedActionPipelineError):
             scene_data = unavailable_scene_semantics()
             scene_status = "unavailable"
@@ -728,6 +724,7 @@ class PromptRenderer:
         video_duration: Any,
         evidence_summary: CvEvidenceSummary | None = None,
         repair: Mapping[str, Any] | None = None,
+        scene_input: SceneInputPackage | None = None,
     ) -> str:
         """Render full-video scene facts with the validated segment table as data."""
         if isinstance(segments, (str, bytes, bytearray)) or not isinstance(
@@ -743,9 +740,17 @@ class PromptRenderer:
         if any(not isinstance(item, Mapping) for item in table):
             raise PromptRenderError("segments must be a sequence of JSON records")
         try:
-            spatial_options, summary_json = scene_spatial_prompt_data(
-                evidence_summary, table, duration=float(video_duration)
-            )
+            package = scene_input or prepare_scene_choices(
+                evidence_summary, table, duration=float(video_duration))
+            trusted = authenticate_scene_context(package.context())
+            if trusted["segments"] != table or trusted["duration"] != float(video_duration):
+                raise ValueError("scene input does not match renderer arguments")
+            if trusted["evidence_summary"] != (evidence_summary.model_dump(mode="json")
+                                               if evidence_summary is not None else None):
+                raise ValueError("scene input does not match renderer evidence")
+            spatial_options = compact_scene_options(trusted)
+            summary_json = (_canonical_json(evidence_summary.prompt_record())
+                            if evidence_summary is not None else None)
         except ValueError as error:
             raise PromptRenderError(str(error)) from None
         prompt = self.render(
@@ -759,8 +764,8 @@ class PromptRenderer:
                 },
                 "SCENE_SPATIAL_PROVENANCE_OPTIONS_JSON": spatial_options,
                 "SCENE_SPATIAL_FIELDS_JSON": {
-                    "location_fields": list(SceneLocation.model_fields),
-                    "relation_fields": list(SceneRelation.model_fields),
+                    "location_fields": list(SceneLocationChoice.model_fields),
+                    "relation_fields": list(SceneRelationChoice.model_fields),
                 },
                 "VALIDATION_REPAIR_JSON": repair,
             },

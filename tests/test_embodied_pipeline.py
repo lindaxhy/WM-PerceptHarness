@@ -109,18 +109,8 @@ def test_scene_prompt_declares_cv_availability_and_flat_spatial_fields(
     renderer: PromptRenderer,
 ) -> None:
     expected_fields = {
-        "location_fields": [
-            "object_id", "location", "start", "end", "visual_evidence",
-            "confidence", "evidence_mode", "source_track_ids",
-            "source_keyframe_ids", "branch", "model_stage",
-            "source_segment_indices", "repair_history", "review_status",
-        ],
-        "relation_fields": [
-            "subject_object_id", "relation", "object_object_id", "start", "end",
-            "visual_evidence", "confidence", "evidence_mode", "source_track_ids",
-            "source_keyframe_ids", "branch", "model_stage",
-            "source_segment_indices", "repair_history", "review_status",
-        ],
+        "location_fields": ["option_id", "location", "visual_evidence", "confidence"],
+        "relation_fields": ["option_id", "direction", "relation", "visual_evidence", "confidence"],
     }
 
     initial = renderer.scene_semantics([], video_duration=2.0)
@@ -131,7 +121,7 @@ def test_scene_prompt_declares_cv_availability_and_flat_spatial_fields(
     )
 
     for prompt in (initial, repair):
-        assert prompt.startswith("[prompt_version]\n0906-spatial-options-v2\n")
+        assert prompt.startswith("[prompt_version]\n0906-scene-choice-refs-v1\n")
         assert '[CV_EVIDENCE_AVAILABILITY_JSON]\n{"available":false}' in prompt
         assert (
             "[SCENE_SPATIAL_FIELDS_JSON]\n"
@@ -1873,7 +1863,7 @@ def test_disabled_cv_has_canonical_branches_and_immutable_performance(tmp_path):
     assert len(list(iter_action_captions("hybrid_disabled", result, source_fps=10.0))) == len(result["segments"])
 
 
-@pytest.mark.parametrize("mode", ["available", "cache", "timeout", "failed", "corrupt", "zero", "scene", "occlusion", "both", "repair"])
+@pytest.mark.parametrize("mode", ["available", "cache", "timeout", "failed", "corrupt", "zero", "scene", "occlusion", "both", "repair", "choices", "choices_repair"])
 def test_hybrid_optional_branches_complete_independently(tmp_path, monkeypatch, mode):
     from las_repro.cv.artifacts import CvArtifactStore
     from las_repro.cv.base import FakeCvEvidenceProvider
@@ -1886,7 +1876,25 @@ def test_hybrid_optional_branches_complete_independently(tmp_path, monkeypatch, 
         script["occlusion_semantics"] = [{}, {}]
     if mode == "repair":
         script["embodied_enrichment"] = [{}]
-    harness = _ActionHarness(tmp_path, FakeVideoModel(failure_script=script))
+    class ChoiceModel(FakeVideoModel):
+        scene_attempts = 0
+
+        def generate(self, request):
+            value = super().generate(request)
+            if request.stage == "scene_semantics" and mode in {"choices", "choices_repair"}:
+                self.scene_attempts += 1
+                if mode == "choices_repair" and self.scene_attempts == 1:
+                    return {}
+                options = json.JSONDecoder().raw_decode(request.prompt.split(
+                    "[SCENE_SPATIAL_PROVENANCE_OPTIONS_JSON]\n", 1)[1])[0]
+                option = next(o for o in options["options"] if o["kind"] == "location")
+                assert option["object_ids"] == ["red_container"]
+                value["locations"] = [{"option_id": option["option_id"],
+                    "location": "right side", "visual_evidence": "red container visible",
+                    "confidence": 0.8}]
+            return value
+
+    harness = _ActionHarness(tmp_path, ChoiceModel(failure_script=script))
     harness.settings = harness.settings.model_copy(update={
         "cv_provider": "fake", "cv_cache_root": tmp_path / "cv-cache",
         "cv_timeout_seconds": 9.0})
@@ -1945,6 +1953,18 @@ def test_hybrid_optional_branches_complete_independently(tmp_path, monkeypatch, 
     assert branches["occlusion"]["status"] == ("unavailable" if unavailable or mode in {"occlusion", "both"} else "available")
     assert branches["occlusion"]["events"] == []
     assert branches["action_events"][0]["evidence_mode"] == ("vlm_only" if unavailable or mode == "zero" else "hybrid")
+    if mode in {"choices", "choices_repair"}:
+        assert len(result["locations"]) == 1
+        location = result["locations"][0]
+        assert location["location"] == "right side"
+        assert location["repair_history"] == (["initial", "repair"]
+            if mode == "choices_repair" else ["initial"])
+        jobs = [j for j in harness.store.list_inference_jobs(completed.task_id)
+                if j.stage == "scene_semantics"]
+        assert all(j.payload["schema_name"] == "SceneSemanticsChoices" for j in jobs)
+        assert all(j.payload["schema_context"] == jobs[0].payload["schema_context"] for j in jobs)
+        assert "option_id" in jobs[-1].result["locations"][0]
+        assert "option_id" not in location
     if mode == "cache":
         assert result["cv_evidence"]["cache_hit"] is True
     if mode == "repair":
@@ -2118,7 +2138,7 @@ def test_embodied_action_pipeline_runs_four_complete_video_passes(
         "CoarsePlan",
         "BoundaryPlan",
         "EnrichmentResult",
-        "SceneSemantics",
+        "SceneSemanticsChoices",
     ]
     assert all(call.video_session_id == completed.task_id for call in harness.model.calls)
     assert all(call.video_session is not None for call in harness.model.calls)

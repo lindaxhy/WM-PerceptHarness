@@ -29,6 +29,7 @@ from las_repro.cv.summary import (
     summarize_cv_evidence,
 )
 from las_repro.pipelines.embodied import PromptRenderer
+from las_repro.pipelines.scene_choices import prepare_scene_choices
 from scripts.reverify_semantic_stages import (
     OperatorError,
     main,
@@ -117,19 +118,8 @@ def _scene_variables(summary: CvEvidenceSummary | None = None) -> dict[str, obje
         "CV_EVIDENCE_AVAILABILITY_JSON": {"available": summary is not None},
         "SCENE_SPATIAL_PROVENANCE_OPTIONS_JSON": {"options": [], "options_complete": True},
         "SCENE_SPATIAL_FIELDS_JSON": {
-            "location_fields": [
-                "object_id", "location", "start", "end", "visual_evidence",
-                "confidence", "evidence_mode", "source_track_ids",
-                "source_keyframe_ids", "branch", "model_stage",
-                "source_segment_indices", "repair_history", "review_status",
-            ],
-            "relation_fields": [
-                "subject_object_id", "relation", "object_object_id", "start",
-                "end", "visual_evidence", "confidence", "evidence_mode",
-                "source_track_ids", "source_keyframe_ids", "branch",
-                "model_stage", "source_segment_indices", "repair_history",
-                "review_status",
-            ],
+            "location_fields": ["option_id", "location", "visual_evidence", "confidence"],
+            "relation_fields": ["option_id", "direction", "relation", "visual_evidence", "confidence"],
         },
         "VALIDATION_REPAIR_JSON": None,
     }
@@ -206,19 +196,14 @@ def _scene_stage(tmp_path: Path, *, summary: CvEvidenceSummary | None = None) ->
     video = tmp_path / "private-video.mp4"
     video.write_bytes(b"trusted-video")
     template, prompt, _ = _scene_prompt_pair(summary)
-    context: dict[str, object] = {
-        "duration": 2.0,
-        "require_observed_content": False,
-        "required_object_ids": [],
-        "evidence_summary": summary.model_dump(mode="json") if summary else None,
-        "segments": _scene_variables(summary)["SEGMENTS_JSON"],
-    }
+    context = prepare_scene_choices(summary, _scene_variables(summary)["SEGMENTS_JSON"],
+                                    duration=2.0).context()
     payload = {
         "video_path": str(video.resolve()),
         "span": {"start": 0.0, "end": 2.0},
         "fps": 2.0,
         "prompt": prompt,
-        "schema_name": "SceneSemantics",
+        "schema_name": "SceneSemanticsChoices",
         "schema_context": context,
         "video_session_id": "private-database-id",
     }
@@ -396,8 +381,8 @@ def test_run_stage_repairs_once_using_only_closed_codes(tmp_path: Path) -> None:
     assert report["status"] == "valid"
     assert report["call_count"] == 2
     assert report["repair_issue_codes"] == [
-        "SCENE_SEMANTICS_MISSING_FIELD",
-        "SCENE_SEMANTICS_EXTRA_FIELD",
+        "SCENE_SEMANTICS_CHOICES_MISSING_FIELD",
+        "SCENE_SEMANTICS_CHOICES_EXTRA_FIELD",
     ]
     assert "raw first output" not in _canonical(report)
     assert model.requests[0].prompt != model.requests[1].prompt
@@ -421,7 +406,7 @@ def test_run_stage_final_invalid_is_failed_after_exactly_two_calls(tmp_path: Pat
 
     assert report["status"] == "invalid"
     assert report["call_count"] == 2
-    assert report["final_issue_codes"] == ["SCENE_SEMANTICS_MISSING_FIELD"]
+    assert report["final_issue_codes"] == ["SCENE_SEMANTICS_CHOICES_MISSING_FIELD"]
     assert len(model.requests) == 2
 
 
@@ -647,9 +632,43 @@ def test_scene_alignment_rejects_tampered_generation_choices():
     from scripts.reverify_semantic_stages import _validate_scene_alignment
     summary = _summary()
     values = _scene_variables(summary)
-    context = dict(duration=2.0, require_observed_content=False, required_object_ids=[],
-                   evidence_summary=summary.model_dump(mode="json"), segments=values["SEGMENTS_JSON"])
+    context = prepare_scene_choices(summary, values["SEGMENTS_JSON"], duration=2.0).context()
     _validate_scene_alignment(values, summary.prompt_record(), context)
     values["SCENE_SPATIAL_PROVENANCE_OPTIONS_JSON"]["options"] = [{"option_id": "forged"}]
     with pytest.raises(OperatorError, match="SCENE_PROMPT_CONTEXT_MISMATCH"):
         _validate_scene_alignment(values, summary.prompt_record(), context)
+
+
+def test_scene_operator_persists_distinct_dto_and_public_projection(tmp_path):
+    from test_scene_choices import fixture
+    from las_repro.pipelines.scene_choices import SceneInputPackage, canonical
+    draft, context = fixture()
+    output = tmp_path / 'private'; output.mkdir(mode=0o700)
+    stage = _scene_stage(tmp_path)
+    summary = CvEvidenceSummary.model_validate(context['evidence_summary'])
+    stage['payload'].update(schema_name='SceneSemanticsChoices', schema_context=context,
+        span={'start': 0.0, 'end': context['duration']},
+        prompt=PromptRenderer().scene_semantics(context['segments'],
+            video_duration=context['duration'], evidence_summary=summary,
+            scene_input=SceneInputPackage(canonical(context))))
+    stage['original_template'] = _current_template('scene_semantics')
+    model = _Model([{}, draft])
+    report = run_stage(stage, output_dir=output, model=model)
+    assert report['model_contract_valid'] is True
+    assert report['public_projection_valid'] is True
+    assert report['validated_dto_sha256'] != report['projected_scene_sha256']
+    dto = json.loads((output / 'full_0001.scene_semantics.validated.private.json').read_text())
+    scene = json.loads((output / 'full_0001.scene_semantics.projected-public-scene.private.json').read_text())
+    assert dto == draft
+    assert scene['locations'][0]['repair_history'] == ['initial', 'repair']
+    assert model.requests[0].response_contract == model.requests[1].response_contract
+
+
+def test_scene_operator_reports_response_contract_identity_and_invalid_status(tmp_path):
+    output = tmp_path / 'private'; output.mkdir(mode=0o700)
+    model = _Model([{}, {}])
+    report = run_stage(_scene_stage(tmp_path), output_dir=output, model=model)
+    assert report['model_contract_valid'] is False
+    assert report['public_projection_valid'] is None
+    for attempt, request in zip(report['attempts'], model.requests):
+        assert attempt['response_format'] == request.response_contract.cache_identity()

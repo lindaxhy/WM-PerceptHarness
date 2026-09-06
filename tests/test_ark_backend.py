@@ -107,7 +107,7 @@ def test_ark_cache_identity_uses_the_scene_budget_contract(tmp_path):
         _request(tmp_path, stage="scene_semantics")
     )
 
-    assert identity["adapter_contract_version"] == "ark-responses-scene-budget-v2"
+    assert identity["adapter_contract_version"] == "ark-responses-scene-choices-v3"
 
 
 def test_unknown_stage_fails_before_visual_extraction_or_transport(tmp_path):
@@ -281,3 +281,57 @@ def test_deeply_nested_json_is_a_repairable_model_output_error(tmp_path):
     model = _model(lambda request: httpx.Response(200, json=_envelope(text)))
     with pytest.raises(ModelOutputError, match="valid JSON"):
         model.generate(_request(tmp_path))
+
+
+def test_scene_wire_contract_and_identity_are_exact_and_rejection_has_no_fallback(tmp_path):
+    from las_repro.models.ark import ArkBackendError
+    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+    from las_repro.pipelines.scene_choices import prepare_scene_choices
+    contract = DEFAULT_OUTPUT_SCHEMAS.model_response_contract(
+        'SceneSemanticsChoices', prepare_scene_choices(None, [], duration=4.0).context())
+    request = _request(tmp_path, stage='scene_semantics', schema_name='SceneSemanticsChoices',
+                       response_contract=contract)
+    captured = []
+    def handler(req):
+        captured.append(json.loads(req.content))
+        return httpx.Response(400, json={'error': 'schema rejected'})
+    model = _model(handler)
+    with pytest.raises(ArkBackendError): model.generate(request)
+    assert len(captured) == 1
+    assert captured[0]['text']['format'] == {
+        'type': 'json_schema', 'name': 'scene-spatial-choice-refs-v1',
+        'schema': json.loads(contract.schema_json), 'strict': True}
+    assert model.semantic_cache_identity(request)['response_format'] == {
+        'type': 'json_schema', 'name': contract.name,
+        'schema_sha256': contract.schema_sha256, 'strict': True}
+    assert model.semantic_cache_identity(_request(tmp_path))['response_format'] is None
+
+
+def test_scene_schema_bytes_count_in_http_request_limit(tmp_path):
+    from las_repro.models.ark import ArkBackendError
+    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+    from las_repro.pipelines.scene_choices import prepare_scene_choices
+    request_sizes = []
+    def handler(req):
+        request_sizes.append(len(req.content))
+        return httpx.Response(200, json=_envelope())
+    model = _model(handler)
+    model.generate(_request(tmp_path, stage='scene_semantics'))
+    contract = DEFAULT_OUTPUT_SCHEMAS.model_response_contract('SceneSemanticsChoices',
+        prepare_scene_choices(None, [], duration=4.0).context())
+    bounded = _model(handler, max_request_bytes=request_sizes[0])
+    with pytest.raises(ArkBackendError, match='size limit'):
+        bounded.generate(_request(tmp_path, stage='scene_semantics',
+            schema_name='SceneSemanticsChoices', response_contract=contract))
+    assert len(request_sizes) == 1
+
+
+def test_response_descriptor_rejects_stale_digest_and_noncanonical_schema():
+    from dataclasses import replace
+    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+    from las_repro.pipelines.scene_choices import prepare_scene_choices
+    contract = DEFAULT_OUTPUT_SCHEMAS.model_response_contract('SceneSemanticsChoices',
+        prepare_scene_choices(None, [], duration=4.0).context())
+    with pytest.raises(ValueError): replace(contract, schema_sha256='0' * 64)
+    with pytest.raises(ValueError): replace(contract, schema_json='{}')
+    with pytest.raises(ValueError): replace(contract, schema_json=contract.schema_json + ' ')

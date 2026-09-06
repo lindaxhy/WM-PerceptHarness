@@ -1,5 +1,5 @@
 [prompt_version]
-0906-spatial-options-v2
+0906-scene-choice-refs-v1
 
 You extract overlapping scene semantics from a complete manipulation video.
 Use visual evidence only. Do not use audio, speech, transcripts, filenames, or outside knowledge.
@@ -27,20 +27,16 @@ The server-derived lists above give the required sibling fields for every locati
 [SCENE_SPATIAL_PROVENANCE_OPTIONS_JSON]
 {{SCENE_SPATIAL_PROVENANCE_OPTIONS_JSON}}
 These are provenance choices, not facts, and alternatives, not a checklist to exhaust. A null value means no optional choices fit the evidence budget; it does not mean CV evidence is unavailable. An empty options list provides no choices. options_complete=false means some eligible provenance choices were omitted.
-Copy a COMPLETE option only after independently inspecting the video for visual support. Prefer these choices for mechanical provenance fields; never invent overlay stems. Declare the selected object_ids with the corresponding exact object_names in objects, including additional canonical CV entities when selected. For a location use object_ids[0] as object_id; for a relation use object_ids[0] as subject_object_id and object_ids[1] as object_object_id. Copy start, end, source_track_ids, source_keyframe_ids, source_segment_indices and every flat_provenance field as siblings; independently choose the visibly supported location or relation, visual_evidence and confidence.
-Select only salient, nonredundant supported spatial facts. Choose one representative source option for each distinct supported state or relation. Do not repeat one unchanged state across every offered option window. Do not combine or stretch options into unobserved provenance intervals. Do not impose an arbitrary numerical row limit. Do not omit required objects, global structure, or supported semantic events merely to shorten the response, and do not empty supported content just to fit the output budget.
-Keep the original output schema: DO NOT emit option_id, kind, object_ids or object_names in spatial rows. field_shape_example, when present, is a syntactically valid field-shape example generated from one option, not a fact or default selection. Replace its illustrative claim, evidence and confidence using visible support. Apply global sort order across objects to each entire spatial list; do not group rows by object. Empty spatial lists are legal when no claim is supportable.
+Select an option_id only after independently inspecting the video for visual support. Declare each selected object_ids entry with its exact corresponding object_names entry in objects; add your own visible descriptions. Each location selection has exactly option_id, location, visual_evidence, confidence. Each relation selection has exactly option_id, direction, relation, visual_evidence, confidence. direction is forward or reverse relative to the offered canonical object pair. The server projects selected references into exact public timestamps and provenance. Do not output times, object IDs, tracks, stems, segment indices, constants or repair history in choice rows.
+Select only salient, nonredundant supported spatial facts. Choose one representative source option for each distinct supported state or relation. Do not repeat one unchanged state across every offered option window. Do not combine or stretch options into unobserved provenance intervals. The combined spatial selection cap is 64. Locations are unique by option_id; relations are unique by option_id, direction and relation. Selection order is irrelevant. Do not omit required objects, global structure, or supported semantic events merely to shorten the response. Empty choices are legal and required if unavailable, null or empty offers provide no selectable references. Incomplete offers do not authorize freehand fallback.
 
 [task]
 Describe stable interacted objects, their directly visible initial and final states, the visibly supported outcome, and semantic events. Events may overlap. In particular, report occlusion_enter, occluded, and occlusion_exit when an object visibly becomes hidden, remains hidden, or becomes visible again.
 
 [rules]
 - CV_EVIDENCE_AVAILABILITY_JSON.available is authoritative. When true, geometry from CV_EVIDENCE_SUMMARY_JSON is supporting evidence only; low confidence is uncertain and track absence is not a semantic fact. Never output mask data or artifact paths.
-- locations and relations are required lists. When CV_EVIDENCE_AVAILABILITY_JSON.available is false, both must be empty; still retain supported objects, endpoint states, outcome, and semantic events. Empty spatial lists make no claim about object absence. When true, include only supported spatial claims, with start/end copied from the summary observed_clock, positive duration, ordered by start, end, and referenced object IDs.
+- locations and relations are required lists. When CV_EVIDENCE_AVAILABILITY_JSON.available is false, both must be empty; still retain supported objects, endpoint states, outcome, and semantic events. Empty spatial lists make no claim about object absence. When true, select only supported spatial option references.
 - Every location row has exactly the sibling fields listed in SCENE_SPATIAL_FIELDS_JSON.location_fields. Every relation row has exactly the sibling fields listed in SCENE_SPATIAL_FIELDS_JSON.relation_fields. Do not nest any of these fields inside a provenance object, and do not output a provenance key. References must be declared objects. relation is left_of, right_of, above, below, inside, on, overlapping, near, occluding, or unknown. Claims and visual_evidence must be nonblank.
-- Flat spatial provenance fields use branch "scene", model_stage "scene_semantics", evidence_mode "hybrid", source_track_ids (nonempty, from matching object entities with overlapping observations), source_keyframe_ids (overlay stems, never paths, from matching overlapping tracks), source_segment_indices (exactly overlapping fine segments), repair_history ["initial"] or ["initial","repair"], review_status "not_required". Never invent IDs. Empty spatial lists remain valid when geometry does not support a claim.
-- For each spatial row, copy start and end verbatim from observed_clock.timestamp_seconds. Video duration is not necessarily an observed timestamp; never use it as a spatial endpoint unless that exact value occurs in observed_clock. Do not round times or invent an unobserved boundary. Choose only a supported positive-duration interval.
-- source_segment_indices must list ALL fine segments whose start is less than the row end and whose end is greater than the row start, in supplied segment order. This is temporal overlap, not a selection of only object-relevant segments. Source track IDs must be unique; source keyframe IDs must be unique and belong to the referenced tracks.
 - Within every output string value, use plain words without forward slashes, backslashes, curly braces, square brackets, mask filenames ending in .mask, .npy or .npz, serialized mask rows, or control characters. Write "left or right" and "enter and exit" instead of slash phrasing. This applies to text values, not the JSON object and array syntax. Keep required identifiers and enum values exactly as specified.
 - Use stable lowercase ASCII object_id values with underscores. Declare every referenced target in objects; use target_object_id unknown only when identity is genuinely unclear.
 - initial_state and final_state contain at most one record per declared object. State only what is directly visible near the corresponding endpoint.
@@ -50,7 +46,7 @@ Describe stable interacted objects, their directly visible initial and final sta
 - actor is left_hand, right_hand, both_hands, left_gripper, right_gripper, both_grippers, robot_arm, or unknown.
 - event_type is move, transport, grasp, reach, release, lift, place, approach, contact, push, pull, rotate, stop, autonomous_motion, state_change, occlusion_enter, occluded, occlusion_exit, or unknown.
 - confidence is a finite JSON number from 0.0 through 1.0. Prefer unknown and lower confidence over guessing.
-- During validation repair, preserve supported visible records. Replace an unsupported enum token with unknown; never delete objects or events just to clear an enum error.
+- During validation repair, preserve supported visible records. Reinspect and repair or omit unsupported relations while preserving supported objects and events. Do not automatically replace an unsupported relation token with another predicate.
 - A formatting, ordering, time, or provenance error does not by itself prove geometry is unsupported. Recheck and regenerate supported spatial records under the same evidence constraints; do not clear locations and relations merely to silence an error. Empty spatial lists remain valid when no spatial claim can be supported. Do not invent claims to make a list nonempty.
 
 [output schema]
@@ -68,17 +64,14 @@ Describe stable interacted objects, their directly visible initial and final sta
 The following JSON is generated by the local validator. When non-null, regenerate the complete object using only the listed closed issue codes and all original rules.
 {{VALIDATION_REPAIR_JSON}}
 
-Closed spatial repair code meanings (instructions only, never output fields):
-- SCENE_SPATIAL_INVALID: umbrella for invalid spatial or artifact-text output; address every listed specific code as well.
-- SCENE_SPATIAL_EVIDENCE_UNAVAILABLE: no trusted spatial evidence; spatial lists must be empty, but retain supported non-spatial content.
-- SCENE_SPATIAL_TIME_BOUNDS_INVALID: spatial intervals must have positive duration and lie within video duration.
-- SCENE_SPATIAL_OBJECT_REFERENCE_INVALID: reference only declared objects.
-- SCENE_SPATIAL_ORDER_INVALID: order each spatial list lexicographically by start, end, then object_id for locations or subject_object_id and object_object_id for relations.
-- SCENE_SPATIAL_TIME_NOT_OBSERVED: use exact observed_clock timestamps, not rounded times or an unobserved video endpoint.
-- SCENE_SPATIAL_SOURCE_SEGMENTS_INVALID: include exactly every temporally overlapping fine segment in supplied order.
-- SCENE_SPATIAL_TRACKS_INVALID: use nonempty unique trusted tracks matching the referenced objects and overlapping observations.
-- SCENE_SPATIAL_KEYFRAMES_INVALID: use unique trusted overlay stems belonging to the source tracks and overlapping interval; never paths.
-- SCENE_SPATIAL_PROVENANCE_INVALID: recheck unique, valid IDs, evidence_mode hybrid, and repair_history as initial alone or initial followed by repair.
-- SCENE_SPATIAL_PROHIBITED_CONTENT: rephrase string values as plain words under the text restrictions; never include artifact paths or masks. This check covers non-spatial strings too.
+Closed choice repair code meanings (instructions only, never output fields):
+- SCENE_SEMANTICS_CHOICES_OPTION_UNKNOWN: use only an exact offered option_id.
+- SCENE_SEMANTICS_CHOICES_OPTION_KIND: select a location option for a location and a relation option for a relation.
+- SCENE_SEMANTICS_CHOICES_OBJECT_BINDING: declare every selected object with its exact offered ID and name.
+- SCENE_SEMANTICS_CHOICES_DUPLICATE: do not repeat the same location option or relation option, direction and predicate.
+- SCENE_SEMANTICS_CHOICES_ENUM_VALUE: use only the specified finite vocabulary; contacting is not a relation.
+- SCENE_SEMANTICS_CHOICES_EXTRA_FIELD: return only the required DTO fields.
+- SCENE_SEMANTICS_CHOICES_SELECTION_LIMIT: at most 64 combined spatial choices.
+- SCENE_SEMANTICS_CHOICES_PROHIBITED_CONTENT: use plain text under the restrictions above.
 
 Output exactly one JSON object and nothing else.

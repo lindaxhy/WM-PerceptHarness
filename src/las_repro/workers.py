@@ -193,6 +193,8 @@ class GPUWorker:
                 publication = None
                 try:
                     context = _schema_validation_context(job.payload, request)
+                    request = replace(request, response_contract=
+                        self._output_schemas.model_response_contract(request.schema_name, context))
                     identity = (
                         semantic.make_identity(self.model, request, context)
                         if self.semantic_cache_enabled else None
