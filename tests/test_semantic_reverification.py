@@ -114,6 +114,7 @@ def _scene_variables(summary: CvEvidenceSummary | None = None) -> dict[str, obje
         ],
         "KNOWN_TARGETS_JSON": [],
         "CV_EVIDENCE_AVAILABILITY_JSON": {"available": summary is not None},
+        "SCENE_SPATIAL_PROVENANCE_OPTIONS_JSON": {"options": [], "options_complete": True},
         "SCENE_SPATIAL_FIELDS_JSON": {
             "location_fields": [
                 "object_id", "location", "start", "end", "visual_evidence",
@@ -640,3 +641,15 @@ def test_cli_rejects_wheel_package_drift_before_model(tmp_path: Path) -> None:
         model_factory=lambda **kwargs: calls.append(kwargs),
     ) == 2
     assert calls == []
+
+
+def test_scene_alignment_rejects_tampered_generation_choices():
+    from scripts.reverify_semantic_stages import _validate_scene_alignment
+    summary = _summary()
+    values = _scene_variables(summary)
+    context = dict(duration=2.0, require_observed_content=False, required_object_ids=[],
+                   evidence_summary=summary.model_dump(mode="json"), segments=values["SEGMENTS_JSON"])
+    _validate_scene_alignment(values, summary.prompt_record(), context)
+    values["SCENE_SPATIAL_PROVENANCE_OPTIONS_JSON"]["options"] = [{"option_id": "forged"}]
+    with pytest.raises(OperatorError, match="SCENE_PROMPT_CONTEXT_MISMATCH"):
+        _validate_scene_alignment(values, summary.prompt_record(), context)

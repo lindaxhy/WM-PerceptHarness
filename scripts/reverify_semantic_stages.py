@@ -30,6 +30,7 @@ from las_repro.models.ark import ArkVideoModel
 from las_repro.pipelines.embodied import PromptRenderer, _validated_stage_result
 from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
 from las_repro.pipelines.scene_semantics import trusted_target_skeleton
+from las_repro.pipelines.scene_provenance import scene_spatial_prompt_data
 from las_repro.workers import _model_request
 
 
@@ -661,11 +662,13 @@ def _validate_scene_alignment(
     if set(context) != required:
         raise OperatorError("SCENE_CONTEXT_INVALID")
     summary_value = context["evidence_summary"]
+    summary = None
     if summary_value is None:
         expected_suffix = None
     else:
         try:
-            expected_suffix = CvEvidenceSummary.model_validate(summary_value).prompt_record()
+            summary = CvEvidenceSummary.model_validate(summary_value)
+            expected_suffix = summary.prompt_record()
         except Exception:
             raise OperatorError("SCENE_CONTEXT_INVALID") from None
     if suffix != expected_suffix:
@@ -673,10 +676,14 @@ def _validate_scene_alignment(
     segments = context["segments"]
     try:
         targets = trusted_target_skeleton(segments)
+        expected_options, _ = scene_spatial_prompt_data(
+            summary, segments, duration=context["duration"]
+        )
     except Exception:
         raise OperatorError("SCENE_CONTEXT_INVALID") from None
     if (
-        values.get("SEGMENTS_JSON") != segments
+        values.get("SCENE_SPATIAL_PROVENANCE_OPTIONS_JSON") != expected_options
+        or values.get("SEGMENTS_JSON") != segments
         or values.get("KNOWN_TARGETS_JSON") != targets
         or values.get("VIDEO_DURATION_SECONDS_JSON") != context["duration"]
         or values.get("CV_EVIDENCE_AVAILABILITY_JSON")

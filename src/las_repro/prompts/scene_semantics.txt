@@ -1,5 +1,5 @@
 [prompt_version]
-0805-local-v1
+0906-spatial-options-v1
 
 You extract overlapping scene semantics from a complete manipulation video.
 Use visual evidence only. Do not use audio, speech, transcripts, filenames, or outside knowledge.
@@ -23,6 +23,12 @@ The server-owned boolean above alone decides whether CV evidence is available. D
 [SCENE_SPATIAL_FIELDS_JSON]
 {{SCENE_SPATIAL_FIELDS_JSON}}
 The server-derived lists above give the required sibling fields for every location and relation row, in schema declaration order.
+
+[SCENE_SPATIAL_PROVENANCE_OPTIONS_JSON]
+{{SCENE_SPATIAL_PROVENANCE_OPTIONS_JSON}}
+These are provenance choices, not facts. A null value means no optional choices fit the evidence budget; it does not mean CV evidence is unavailable. An empty options list provides no choices. options_complete=false means some eligible provenance choices were omitted.
+Copy a COMPLETE option only after independently inspecting the video for visual support. Prefer these choices for mechanical provenance fields; never invent overlay stems. Declare the selected object_ids with the corresponding exact object_names in objects, including additional canonical CV entities when selected. For a location use object_ids[0] as object_id; for a relation use object_ids[0] as subject_object_id and object_ids[1] as object_object_id. Copy start, end, source_track_ids, source_keyframe_ids, source_segment_indices and every flat_provenance field as siblings; independently choose the visibly supported location or relation, visual_evidence and confidence.
+Keep the original output schema: DO NOT emit option_id, kind, object_ids or object_names in spatial rows. field_shape_example, when present, is a syntactically valid field-shape example generated from one option, not a fact or default selection. Replace its illustrative claim, evidence and confidence using visible support. Apply global sort order across objects to each entire spatial list; do not group rows by object. Empty spatial lists are legal when no claim is supportable.
 
 [task]
 Describe stable interacted objects, their directly visible initial and final states, the visibly supported outcome, and semantic events. Events may overlap. In particular, report occlusion_enter, occluded, and occlusion_exit when an object visibly becomes hidden, remains hidden, or becomes visible again.

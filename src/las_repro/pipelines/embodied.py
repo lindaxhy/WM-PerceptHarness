@@ -31,6 +31,7 @@ from ..store import SQLiteTaskStore
 from ..workers import InferenceJobFailed, JobWaitTimeout, wait_for_jobs
 from .output_validation import DEFAULT_OUTPUT_SCHEMAS, NormalizedSchemaOutput
 from .occlusion import OcclusionDecisionSet, project_occlusion_events
+from .scene_provenance import scene_spatial_prompt_data
 from .hybrid_result import build_hybrid_result, validate_hybrid_result, build_performance
 from .scene_semantics import (
     SceneLocation,
@@ -740,7 +741,13 @@ class PromptRenderer:
         ]
         if any(not isinstance(item, Mapping) for item in table):
             raise PromptRenderError("segments must be a sequence of JSON records")
-        return _with_cv_summary(self.render(
+        try:
+            spatial_options, summary_json = scene_spatial_prompt_data(
+                evidence_summary, table, duration=float(video_duration)
+            )
+        except ValueError as error:
+            raise PromptRenderError(str(error)) from None
+        prompt = self.render(
             "scene_semantics",
             {
                 "VIDEO_DURATION_SECONDS_JSON": _prompt_video_duration(video_duration),
@@ -749,13 +756,17 @@ class PromptRenderer:
                 "CV_EVIDENCE_AVAILABILITY_JSON": {
                     "available": evidence_summary is not None,
                 },
+                "SCENE_SPATIAL_PROVENANCE_OPTIONS_JSON": spatial_options,
                 "SCENE_SPATIAL_FIELDS_JSON": {
                     "location_fields": list(SceneLocation.model_fields),
                     "relation_fields": list(SceneRelation.model_fields),
                 },
                 "VALIDATION_REPAIR_JSON": repair,
             },
-        ), evidence_summary)
+        )
+        if summary_json is None:
+            return prompt
+        return prompt + "\n\n[CV_EVIDENCE_SUMMARY_JSON]\n" + summary_json
 
     def occlusion_semantics(
         self,

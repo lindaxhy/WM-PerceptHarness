@@ -17,6 +17,7 @@ The following JSON value is optional caller data. Use it only for consistent Eng
 Output the global task, visible/action-relevant entity evidence requests, and coarse physical action phases only. Do not output fine segments in this pass.
 
 [entity candidate rules]
+- Audit the whole video, including later entrants, for visible or action-relevant entities. Distinct visibly different occluders and objects must stay distinct canonical entities when supported; do not merge them merely because they share a generic type. Use concise distinguishing visible descriptions in their canonical names.
 - entity_candidates is required. Output an empty list only when no target-bearing action has a visible or action-relevant concrete target.
 - Output at most 64 raw candidates. Each candidate must contain exactly name, aliases, and role.
 - name is one concise English canonical_label for one visible or action-relevant entity; name must not normalize to unknown after whitespace and case normalization.
