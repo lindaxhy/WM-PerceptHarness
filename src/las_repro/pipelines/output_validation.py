@@ -177,6 +177,19 @@ _ENRICHMENT_ENUM_FIELD_CODES = {
     "skill": "ENRICHMENT_RESULT_SKILL_ENUM_VALUE",
     "visual_motion_state": "ENRICHMENT_RESULT_VISUAL_MOTION_STATE_ENUM_VALUE",
 }
+# Match only the known Pydantic kind and complete schema path shape.
+# None marks a nonnegative list index; no path or raw input enters feedback.
+_SCENE_CHOICE_ENUM_FIELDS = (
+    ("enum", ("semantic_events", None, "event_type"), "EVENT_TYPE"),
+    ("enum", ("semantic_events", None, "actor"), "ACTOR"),
+    ("enum", ("outcome", "status"), "OUTCOME_STATUS"),
+    ("literal_error", ("relations", None, "direction"), "RELATION_DIRECTION"),
+    ("literal_error", ("relations", None, "relation"), "RELATION_PREDICATE"),
+)
+_SCENE_CHOICE_ENUM_CODES = tuple(
+    f"SCENE_SEMANTICS_CHOICES_{suffix}_ENUM_VALUE"
+    for _, _, suffix in _SCENE_CHOICE_ENUM_FIELDS
+)
 _BOUNDARY_NORMALIZABLE_CODES = (
     "SEGMENT_TOO_LONG",
     "SEGMENT_BOUNDARY_NOT_ADJACENT",
@@ -527,6 +540,28 @@ def _pydantic_issue_codes(error: ValidationError, prefix: str) -> tuple[str, ...
     if error_types - known_types:
         codes.append(f"{prefix}_SCHEMA_INVALID")
     return tuple(codes or [f"{prefix}_SCHEMA_INVALID"])
+
+
+def _scene_choice_pydantic_issue_codes(error: ValidationError) -> tuple[str, ...]:
+    """Return closed field feedback without copying model paths or values."""
+    prefix = "SCENE_SEMANTICS_CHOICES"
+    found: set[str] = set()
+    for issue in error.errors(include_url=False, include_context=False, include_input=False):
+        kind = issue["type"]
+        path = issue.get("loc", ())
+        code = _pydantic_issue_codes_for_type(kind, prefix)
+        for (expected_kind, shape, _), field_code in zip(
+            _SCENE_CHOICE_ENUM_FIELDS, _SCENE_CHOICE_ENUM_CODES
+        ):
+            if kind == expected_kind and len(path) == len(shape) and all(
+                (type(part) is int and part >= 0) if expected is None else part == expected
+                for part, expected in zip(path, shape)
+            ):
+                code = field_code
+                break
+        found.add(code)
+    order = _schema_codes(prefix) + _SCENE_CHOICE_ENUM_CODES
+    return tuple(code for code in order if code in found) or (f"{prefix}_SCHEMA_INVALID",)
 
 
 def _coarse_pydantic_issue_codes(error: ValidationError) -> tuple[str, ...]:
@@ -1368,8 +1403,8 @@ DEFAULT_OUTPUT_SCHEMAS.register(
 
 DEFAULT_OUTPUT_SCHEMAS.register(
     "SceneSemanticsChoices", validate_scene_choices,
-    allowed_issue_codes=_schema_codes("SCENE_SEMANTICS_CHOICES") + CHOICE_CODES
-        + _schema_codes("SCENE_SEMANTICS") + _SCENE_TEMPORAL_CODES,
+    allowed_issue_codes=_schema_codes("SCENE_SEMANTICS_CHOICES")
+        + _SCENE_CHOICE_ENUM_CODES + CHOICE_CODES + _schema_codes("SCENE_SEMANTICS") + _SCENE_TEMPORAL_CODES,
     generic_issue_code="SCENE_SEMANTICS_CHOICES_SCHEMA_INVALID",
     response_contract_factory=scene_response_contract,
 )

@@ -1,5 +1,5 @@
 [prompt_version]
-0906-scene-choice-refs-v1
+0906-scene-choice-refs-v2
 
 You extract overlapping scene semantics from a complete manipulation video.
 Use visual evidence only. Do not use audio, speech, transcripts, filenames, or outside knowledge.
@@ -69,7 +69,12 @@ Closed choice repair code meanings (instructions only, never output fields):
 - SCENE_SEMANTICS_CHOICES_OPTION_KIND: select a location option for a location and a relation option for a relation.
 - SCENE_SEMANTICS_CHOICES_OBJECT_BINDING: declare every selected object with its exact offered ID and name.
 - SCENE_SEMANTICS_CHOICES_DUPLICATE: do not repeat the same location option or relation option, direction and predicate.
-- SCENE_SEMANTICS_CHOICES_ENUM_VALUE: use only the specified finite vocabulary; contacting is not a relation.
+- SCENE_SEMANTICS_CHOICES_EVENT_TYPE_ENUM_VALUE: re-evaluate event_type using only move, transport, grasp, reach, release, lift, place, approach, contact, push, pull, rotate, stop, autonomous_motion, state_change, occlusion_enter, occluded, occlusion_exit, or unknown. Keep the supported visual description and use unknown if no allowed type fits. Do not blindly copy actions from another action taxonomy, guess a replacement, or erase observed events.
+- SCENE_SEMANTICS_CHOICES_ACTOR_ENUM_VALUE: actor must be left_hand, right_hand, both_hands, left_gripper, right_gripper, both_grippers, robot_arm, or unknown. Reinspect the visible actor; use unknown if identity is unclear and retain the supported event.
+- SCENE_SEMANTICS_CHOICES_OUTCOME_STATUS_ENUM_VALUE: outcome status must be success, failure, partial, or unknown. Use unknown unless visible evidence establishes the result; retain the supported description.
+- SCENE_SEMANTICS_CHOICES_RELATION_DIRECTION_ENUM_VALUE: direction must be forward or reverse relative to the offered canonical object pair. There is no unknown direction. Choose only the explicit direction supported by the offered pair and video; omit the relation if unsupported, without erasing supported objects or events.
+- SCENE_SEMANTICS_CHOICES_RELATION_PREDICATE_ENUM_VALUE: relation must be left_of, right_of, above, below, inside, on, overlapping, near, occluding, or unknown. Reinspect the relation and its visual evidence; do not automatically substitute a predicate. Regenerate supported relations and omit unsupported claims while retaining supported objects and events.
+- SCENE_SEMANTICS_CHOICES_ENUM_VALUE: re-evaluate enum fields against their respective finite vocabularies above. Preserve supported visible records and regenerate valid fields; do not guess a replacement or copy tokens across vocabularies.
 - SCENE_SEMANTICS_CHOICES_EXTRA_FIELD: return only the required DTO fields.
 - SCENE_SEMANTICS_CHOICES_SELECTION_LIMIT: at most 64 combined spatial choices.
 - SCENE_SEMANTICS_CHOICES_PROHIBITED_CONTENT: use plain text under the restrictions above.

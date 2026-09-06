@@ -672,3 +672,61 @@ def test_scene_operator_reports_response_contract_identity_and_invalid_status(tm
     assert report['public_projection_valid'] is None
     for attempt, request in zip(report['attempts'], model.requests):
         assert attempt['response_format'] == request.response_contract.cache_identity()
+
+
+@pytest.mark.parametrize('repair_type', ['unknown', 'hold'])
+def test_scene_operator_repairs_event_enum_from_immutable_context(tmp_path, repair_type):
+    from test_scene_choices import fixture
+    from las_repro.pipelines.scene_choices import SceneInputPackage, canonical
+    draft, context = fixture()
+    draft['semantic_events'][0].update(event_type='hold', description='hand holds item visibly')
+    repaired = copy.deepcopy(draft)
+    repaired['semantic_events'][0]['event_type'] = repair_type
+    stage = _scene_stage(tmp_path)
+    summary = CvEvidenceSummary.model_validate(context['evidence_summary'])
+    stage['payload'].update(schema_name='SceneSemanticsChoices', schema_context=context,
+        span={'start': 0.0, 'end': context['duration']},
+        prompt=PromptRenderer().scene_semantics(context['segments'],
+            video_duration=context['duration'], evidence_summary=summary,
+            scene_input=SceneInputPackage(canonical(context))))
+    stage['original_template'] = _current_template('scene_semantics')
+    original_stage = copy.deepcopy(stage)
+    output = tmp_path / 'private'; output.mkdir(mode=0o700)
+    model = _Model([draft, repaired])
+    report = run_stage(stage, output_dir=output, model=model)
+    code = 'SCENE_SEMANTICS_CHOICES_EVENT_TYPE_ENUM_VALUE'
+    assert report['repair_issue_codes'] == [code]
+    assert report['model_contract_valid'] is (repair_type == 'unknown')
+    assert stage == original_stage
+    assert len(model.requests) == 2
+    initial, repair = model.requests
+    assert initial.response_contract == repair.response_contract
+    assert initial.span == repair.span
+    assert initial.prompt.replace('null\n\nClosed choice repair',
+        json.dumps({'issue_codes': [code]}, separators=(',', ':')) + '\n\nClosed choice repair') == repair.prompt
+    assert '0906-scene-choice-refs-v2' in repair.prompt
+    meanings = dict(line[2:].split(': ', 1) for line in repair.prompt.splitlines()
+                    if line.startswith('- SCENE_SEMANTICS_CHOICES_') and ': ' in line)
+    assert 'use unknown if no allowed type fits' in meanings[code]
+    assert 'supported visual description' in meanings[code]
+    assert 'another action taxonomy' in meanings[code]
+    assert 'contacting' not in meanings['SCENE_SEMANTICS_CHOICES_ENUM_VALUE']
+    expected_vocab = {
+        'EVENT_TYPE': ['move', 'transport', 'grasp', 'reach', 'release', 'lift', 'place',
+                       'approach', 'contact', 'push', 'pull', 'rotate', 'stop',
+                       'autonomous_motion', 'state_change', 'occlusion_enter', 'occluded', 'occlusion_exit', 'unknown'],
+        'ACTOR': ['left_hand', 'right_hand', 'both_hands', 'left_gripper', 'right_gripper', 'both_grippers', 'robot_arm', 'unknown'],
+        'OUTCOME_STATUS': ['success', 'failure', 'partial', 'unknown'],
+        'RELATION_DIRECTION': ['forward', 'reverse'],
+        'RELATION_PREDICATE': ['left_of', 'right_of', 'above', 'below', 'inside', 'on', 'overlapping', 'near', 'occluding', 'unknown'],
+    }
+    for suffix, vocabulary in expected_vocab.items():
+        instruction = meanings['SCENE_SEMANTICS_CHOICES_' + suffix + '_ENUM_VALUE']
+        assert all(re.search(r'\b' + word + r'\b', instruction) for word in vocabulary)
+    if repair_type == 'unknown':
+        public = json.loads((output / 'full_0001.scene_semantics.projected-public-scene.private.json').read_text())
+        assert public['objects'] == repaired['objects']
+        assert public['semantic_events'] == repaired['semantic_events']
+    else:
+        assert report['final_issue_codes'] == [code]
+        assert not (output / 'full_0001.scene_semantics.validated.private.json').exists()

@@ -105,7 +105,7 @@ def compact_scene_options(context: dict[str, Any]) -> dict[str, Any] | None:
 def project_scene_choices(result: Any, context: Any, *,
                           repair_history: tuple[str, ...] = ('initial',)) -> dict[str, Any]:
     from .output_validation import (
-        DeclaredSchemaOutputError, _model_from_json, _pydantic_issue_codes,
+        DeclaredSchemaOutputError, _model_from_json, _scene_choice_pydantic_issue_codes,
         _validate_scene_semantics_output,
     )
     from .hybrid_result import _reject_artifact_text
@@ -119,7 +119,7 @@ def project_scene_choices(result: Any, context: Any, *,
     try:
         draft = _model_from_json(SceneSemanticsChoices, result)
     except ValidationError as error:
-        raise DeclaredSchemaOutputError(_pydantic_issue_codes(error, 'SCENE_SEMANTICS_CHOICES')) from None
+        raise DeclaredSchemaOutputError(_scene_choice_pydantic_issue_codes(error)) from None
     except (TypeError, ValueError, OverflowError, RecursionError):
         fail('SCHEMA_INVALID')
     if len(draft.locations) + len(draft.relations) > MAX_OPTIONS:

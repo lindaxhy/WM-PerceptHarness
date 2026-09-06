@@ -67,8 +67,8 @@ def test_projection_preserves_nonspatial_and_exact_sources_and_direction():
 @pytest.mark.parametrize('mutation,code', [
     ('unknown', 'OPTION_UNKNOWN'), ('kind', 'OPTION_KIND'),
     ('duplicate', 'DUPLICATE'), ('binding', 'OBJECT_BINDING'),
-    ('undeclared', 'OBJECT_BINDING'), ('direction', 'ENUM_VALUE'),
-    ('relation', 'ENUM_VALUE'), ('extra', 'EXTRA_FIELD'),
+    ('undeclared', 'OBJECT_BINDING'), ('direction', 'RELATION_DIRECTION_ENUM_VALUE'),
+    ('relation', 'RELATION_PREDICATE_ENUM_VALUE'), ('extra', 'EXTRA_FIELD'),
     ('history', 'EXTRA_FIELD'), ('artifact', 'PROHIBITED_CONTENT'),
 ])
 def test_invalid_choices_fail_closed(mutation, code):
@@ -184,3 +184,108 @@ def test_source_preflight_rejects_nonplain_containers_before_traversal():
     class Hostile(dict):
         def items(self): raise AssertionError('unbounded traversal')
     with pytest.raises(ValueError): authenticate_scene_context(Hostile())
+
+
+ENUM_CASES = [
+    ('semantic_events', 'event_type', 'hold', 'EVENT_TYPE'),
+    ('semantic_events', 'actor', 'private actor value', 'ACTOR'),
+    ('outcome', 'status', 'private outcome value', 'OUTCOME_STATUS'),
+    ('relations', 'direction', 'unknown', 'RELATION_DIRECTION'),
+    ('relations', 'relation', 'contacting', 'RELATION_PREDICATE'),
+]
+
+
+@pytest.mark.parametrize('collection,field,value,suffix', ENUM_CASES)
+def test_scene_choice_enum_feedback_is_field_specific_and_model_free(collection, field, value, suffix):
+    draft, ctx = fixture()
+    # Reproduce an enum error at event index 2, without exposing its index.
+    if collection == 'semantic_events':
+        draft[collection] *= 3
+        draft[collection] = [dict(row, event_index=i) for i, row in enumerate(draft[collection])]
+    row = draft[collection] if collection == 'outcome' else draft[collection][-1]
+    row[field] = value
+    original = copy.deepcopy(draft)
+    failure = registry.sanitize('SceneSemanticsChoices', draft, ctx)
+    code = 'SCENE_SEMANTICS_CHOICES_' + suffix + '_ENUM_VALUE'
+    assert failure == {'_schema_validation': {'schema_name': 'SceneSemanticsChoices',
+                                             'status': 'invalid', 'issue_codes': [code]}}
+    assert draft == original
+    assert registry.failure_codes('SceneSemanticsChoices', failure) == (code,)
+
+
+def test_scene_choice_enum_feedback_deduplicates_in_closed_domain_order():
+    draft, ctx = fixture()
+    for collection, field, value, _ in reversed(ENUM_CASES):
+        rows = [draft[collection]] if collection == 'outcome' else draft[collection]
+        for row in rows:
+            row[field] = value
+    failure = registry.sanitize('SceneSemanticsChoices', draft, ctx)
+    assert failure['_schema_validation']['issue_codes'] == [
+        'SCENE_SEMANTICS_CHOICES_EVENT_TYPE_ENUM_VALUE',
+        'SCENE_SEMANTICS_CHOICES_ACTOR_ENUM_VALUE',
+        'SCENE_SEMANTICS_CHOICES_OUTCOME_STATUS_ENUM_VALUE',
+        'SCENE_SEMANTICS_CHOICES_RELATION_DIRECTION_ENUM_VALUE',
+        'SCENE_SEMANTICS_CHOICES_RELATION_PREDICATE_ENUM_VALUE',
+    ]
+
+
+@pytest.mark.parametrize('kind,path', [
+    ('enum', ('private field', 2, 'event_type')),
+    ('enum', ('semantic_events', 'private index', 'event_type')),
+    ('enum', ('semantic_events', -1, 'event_type')),
+    ('enum', ('semantic_events', 2, 'event_type', 'extra')),
+    ('enum', ('event_type',)),
+    ('enum', ('outcome', 0, 'status')),
+    ('literal_error', ('semantic_events', 2, 'event_type')),
+    ('enum', ('relations', 0, 'direction')),
+])
+def test_scene_choice_enum_unexpected_paths_or_kinds_remain_generic(kind, path):
+    from pydantic import ValidationError
+    from las_repro.pipelines.output_validation import _scene_choice_pydantic_issue_codes
+    error = ValidationError.from_exception_data('synthetic', [
+        dict(type=kind, loc=path, input='private raw value', ctx={'expected': 'private message'})])
+    assert _scene_choice_pydantic_issue_codes(error) == ('SCENE_SEMANTICS_CHOICES_ENUM_VALUE',)
+
+
+def test_scene_unknown_requires_explicit_model_value_and_retains_supported_records():
+    from las_repro.pipelines.scene_choices import project_scene_choices
+    draft, ctx = fixture()
+    draft['semantic_events'][0].update(event_type='hold', description='hand holds item visibly')
+    original = copy.deepcopy(draft)
+    assert '_schema_validation' in registry.sanitize('SceneSemanticsChoices', draft, ctx)
+    assert draft == original
+    draft['semantic_events'][0]['event_type'] = 'unknown'
+    assert registry.sanitize('SceneSemanticsChoices', draft, ctx) == draft
+    public = project_scene_choices(draft, ctx)
+    assert public['semantic_events'] == draft['semantic_events']
+    assert public['objects'] == draft['objects']
+    draft['semantic_events'] = []
+    assert registry.sanitize('SceneSemanticsChoices', draft, ctx)['_schema_validation']['issue_codes'] == ['EMPTY_SCENE_EVENTS']
+
+
+def test_scene_choice_enum_mapping_preserves_other_issue_families():
+    draft, ctx = fixture()
+    del draft['semantic_events'][0]['actor']
+    draft['semantic_events'][0]['event_type'] = 'hold'
+    draft['semantic_events'][0]['private field'] = 'private input'
+    draft['semantic_events'][0]['confidence'] = 2.0
+    failure = registry.sanitize('SceneSemanticsChoices', draft, ctx)
+    assert failure['_schema_validation']['issue_codes'] == [
+        'SCENE_SEMANTICS_CHOICES_MISSING_FIELD',
+        'SCENE_SEMANTICS_CHOICES_EXTRA_FIELD',
+        'SCENE_SEMANTICS_CHOICES_NUMBER_RANGE',
+        'SCENE_SEMANTICS_CHOICES_EVENT_TYPE_ENUM_VALUE',
+    ]
+    assert registry.failure_codes('SceneSemanticsChoices', failure) is not None
+
+
+def test_legacy_event_enum_feedback_remains_generic():
+    from las_repro.pipelines.scene_choices import project_scene_choices
+    draft, ctx = fixture()
+    public = project_scene_choices(draft, ctx)
+    public['semantic_events'][0]['event_type'] = 'hold'
+    public_context = {key: ctx[key] for key in ('duration', 'require_observed_content',
+                      'required_object_ids', 'evidence_summary', 'segments')}
+    assert registry.sanitize('SceneSemantics', public, public_context) == {
+        '_schema_validation': {'schema_name': 'SceneSemantics', 'status': 'invalid',
+                               'issue_codes': ['SCENE_SEMANTICS_ENUM_VALUE']}}

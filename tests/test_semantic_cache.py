@@ -656,3 +656,71 @@ def test_scene_cache_changes_miss_before_inference(store, tmp_path, monkeypatch,
     second = job(store, tmp_path, stage='scene_semantics', overrides=overrides)
     run(store, model)
     assert provider.calls == 2
+
+
+@pytest.mark.parametrize('collection,field,value,suffix', [
+    ('semantic_events', 'event_type', 'hold', 'EVENT_TYPE'),
+    ('semantic_events', 'actor', 'someone', 'ACTOR'),
+    ('outcome', 'status', 'finished', 'OUTCOME_STATUS'),
+    ('relations', 'direction', 'unknown', 'RELATION_DIRECTION'),
+    ('relations', 'relation', 'contacting', 'RELATION_PREDICATE'),
+])
+def test_scene_field_enum_failures_replay_only_closed_envelopes(store, tmp_path, collection, field, value, suffix):
+    from test_scene_choices import fixture
+    from las_repro.semantic_cache import safe_result
+    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS as registry
+    draft, context = fixture()
+    row = draft[collection] if collection == 'outcome' else draft[collection][0]
+    row[field] = value
+    provider = Provider(response=draft)
+    model = provider.model()
+    overrides = dict(schema_name='SceneSemanticsChoices', schema_context=context,
+                     end=context['duration'], prompt='sealed scene enum fixture')
+    jobs = []
+    for _ in range(2):
+        jobs.append(job(store, tmp_path, stage='scene_semantics', overrides=overrides))
+        run(store, model)
+    rows = [store.get_inference_job(j.job_id) for j in jobs]
+    code = 'SCENE_SEMANTICS_CHOICES_' + suffix + '_ENUM_VALUE'
+    expected = {'_schema_validation': {'schema_name': 'SceneSemanticsChoices',
+                                      'status': 'invalid', 'issue_codes': [code]}}
+    assert rows[0].result == rows[1].result == expected
+    assert [r.metrics['semantic_cache_hit'] for r in rows] == [False, True]
+    assert provider.calls == 1
+    assert safe_result(expected, 'SceneSemanticsChoices', context, registry)
+    assert not safe_result(draft, 'SceneSemanticsChoices', context, registry)
+    expected['_schema_validation']['issue_codes'] = ['SCENE_SEMANTICS_CHOICES_ENUM_VALUE']
+    assert safe_result(expected, 'SceneSemanticsChoices', context, registry)
+    expected['_schema_validation']['issue_codes'] = [code + '_private']
+    assert not safe_result(expected, 'SceneSemanticsChoices', context, registry)
+
+
+def test_scene_v6_does_not_replay_v5_generic_enum_failure(store, tmp_path, monkeypatch):
+    from las_repro import semantic_cache
+    from test_scene_choices import fixture
+    draft, context = fixture()
+    draft['semantic_events'][0]['event_type'] = 'hold'
+    provider = Provider(response=draft)
+    model = provider.model()
+    overrides = dict(schema_name='SceneSemanticsChoices', schema_context=context,
+                     end=context['duration'], prompt='same scene enum prompt')
+    from las_repro.pipelines import output_validation
+    with monkeypatch.context() as patch:
+        patch.setattr(semantic_cache, 'VALIDATOR_CONTRACT_VERSION', 'embodied-output-v5')
+        patch.setattr(output_validation, '_scene_choice_pydantic_issue_codes',
+                      lambda error: ('SCENE_SEMANTICS_CHOICES_ENUM_VALUE',))
+        old = job(store, tmp_path, stage='scene_semantics', overrides=overrides)
+        run(store, model)
+    fresh = job(store, tmp_path, stage='scene_semantics', overrides=overrides)
+    run(store, model)
+    replay = job(store, tmp_path, stage='scene_semantics', overrides=overrides)
+    run(store, model)
+    rows = [store.get_inference_job(j.job_id) for j in (old, fresh, replay)]
+    assert [r.metrics['semantic_cache_hit'] for r in rows] == [False, False, True]
+    assert provider.calls == 2
+    assert rows[0].result['_schema_validation']['issue_codes'] == ['SCENE_SEMANTICS_CHOICES_ENUM_VALUE']
+    assert rows[1].result['_schema_validation']['issue_codes'] == ['SCENE_SEMANTICS_CHOICES_EVENT_TYPE_ENUM_VALUE']
+    with sqlite3.connect(store.database_path) as db:
+        versions = {json.loads(row[0])['validator_contract_version'] for row in
+                    db.execute('SELECT identity_json FROM semantic_results')}
+    assert versions == {'embodied-output-v5', 'embodied-output-v6'}
