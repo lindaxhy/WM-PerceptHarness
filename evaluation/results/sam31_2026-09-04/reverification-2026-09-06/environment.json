@@ -1,0 +1,125 @@
+{
+  "bundle_sha256": "cc334d45ac55b31faf33115c7d7d481652ddef3fb02e91e7c69809d9f9f257a1",
+  "copied_cache_entry_count": 2,
+  "database_integrity": "ok",
+  "database_sha256_before": "f9cd3b352db8c238d4390ca0e6a0bf1e3ebf53e4a8b33b8a269d1d953379ee1b",
+  "dependencies": {
+    "fastapi": "0.141.1",
+    "httpx": "0.28.1",
+    "pydantic": "2.13.5",
+    "pydantic-settings": "2.15.0"
+  },
+  "historical_cache_unchanged_during_v2": true,
+  "historical_settings_provenance": {
+    "historical_defaults": {
+      "max_frames": 128,
+      "max_output_chars": 1000000,
+      "max_request_bytes": 33554432,
+      "timeout_seconds": 180.0
+    },
+    "historical_package_files_match": 46,
+    "old_wheel_sha256": "ee6b737a2c70be9a2a142ea16cec32052fae3aee2afbd2db9681607957c39e03",
+    "override_fields": [],
+    "service_env_sha256": "5b26fd468380a8a266f9ffd13ab94b54c6e6ffda1339c56d763759bd40be808f"
+  },
+  "job_counts": {
+    "COMPLETED": 41
+  },
+  "model_identity": "doubao-seed-2-1-pro-260628",
+  "operator_commit": "edbee71e6ba8113c836ed2f947db9c6119710787",
+  "operator_sha256": "7c2d80df0cdd7ac8f0928d565710a33243770191a602d8c197fa9d79d60cba03",
+  "private_preflight_sha256": "aa78af33e364c57bf71a3ef26e6db5616363b3177178ed90507b36732d90cc81",
+  "private_runtime_pins_sha256": "6dfbac8aad941845b03fff2be2b7253574ea5d7c935622af1f1c2f11d7cc361a",
+  "private_v2_preflight_sha256": "f799df9b607f0c857f562f8e68c4c3e4eaa5bfe99687b1643cd2a808f6d4d22d",
+  "python_version": "3.12.13",
+  "remote_dry_run": {
+    "model_calls": 0,
+    "stage_count": 2,
+    "status": "preflight_valid"
+  },
+  "runtime_pins": {
+    "bpe_git_blob_sha1": "7b5088a527f720063f044eb928eee315f63b2fc0",
+    "bpe_matches_pinned_source": true,
+    "bpe_sha256": "924691ac288e54409236115652ad4aa250f48203de50a9e4722a6ecd48d6804a",
+    "checkpoint_sha256": "0567debeec80ba4ac6369540c6c248025283cb3ff2b92827509e57e2b3541cb6",
+    "checkpoint_size_bytes": 3502755717,
+    "gpu_compute_process_count": 0,
+    "gpu_memory": [
+      {
+        "index": 0,
+        "memory_used_mib": 1
+      },
+      {
+        "index": 1,
+        "memory_used_mib": 1
+      },
+      {
+        "index": 2,
+        "memory_used_mib": 1
+      },
+      {
+        "index": 3,
+        "memory_used_mib": 1
+      }
+    ],
+    "historical_python_service_process_count": 0,
+    "new_sam_analysis_calls": 0,
+    "old_venvs": {
+      "sam": {
+        "historical_package_files_match": 46
+      },
+      "semantic": {
+        "historical_package_files_match": 46
+      }
+    },
+    "sam_dependencies": {
+      "cuda": "12.8",
+      "torch": "2.10.0+cu128"
+    },
+    "sam_source_clean": true,
+    "sam_source_revision": "660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7",
+    "schema_version": "semantic_reverification_runtime_pins_v1"
+  },
+  "schema_version": "semantic_reverification_environment_v1",
+  "settings": {
+    "max_frames": 128,
+    "max_output_chars": 1000000,
+    "max_request_bytes": 33554432,
+    "timeout_seconds": 180.0
+  },
+  "source_archive_sha256": "0f6dcc990f7775f55a960987535e8579a50db346b184983082b605ee513a019b",
+  "source_commit": "76b8848da7fb773cf2e4a31b5491b194ca418e56",
+  "stages": [
+    {
+      "artifact_key": "077b324e5346ffc92d2f1297a0650508e177d7c4b1cc19129e44e3d42ef1de8c",
+      "authenticated_cv_context": true,
+      "candidate_count": 7,
+      "manifest_sha256": "c0fcb5ff666002111e9784c2b2ca1ee499a3df39434123156179154e2d4093f6",
+      "original_job_payload_sha256": "e585bbe0b5a5ee4a1cea1a3155bfc9b4b900a16923efe41aca164097ede39129",
+      "original_prompt_round_trip": true,
+      "original_prompt_sha256": "bad458f1423d95951bb19accca8ed5908f68141bc2edb53f00d5f632dcbd616c",
+      "sample_id": "full_0001",
+      "schema_context_sha256": "b249f4ded0bd6dc828e99222107061c15a6b4ccfbcafa4d1eb619fbb7f7b804d",
+      "source_video_sha256": "c3243c46bad68d3b2772e82648e45b68e75a1893b0ce27edecd450226464c1e9",
+      "stage": "scene_semantics"
+    },
+    {
+      "artifact_key": "09f229034adfbaa98d39cf70ccaa85b40ab72d11924874cc98b54555a76547de",
+      "authenticated_cv_context": true,
+      "candidate_count": 15,
+      "manifest_sha256": "b2743cfb9d38dd040954c67290fdca51f20b6fb2bd974985393c5aca3140c71f",
+      "original_job_payload_sha256": "bc1f320629e27378cd920bbfff275a3ed68431ae42b6ef146450325db955d58e",
+      "original_prompt_round_trip": true,
+      "original_prompt_sha256": "ea077e3057e2869bf93e32715897c78042e89570b8c4e99919afc15f6808a3f2",
+      "sample_id": "full_0002",
+      "schema_context_sha256": "08f56f9f1aa58eeabf1dd965dc17b75457126d0cf688905ae9649b8670d20533",
+      "source_video_sha256": "6741b6184b847b6096e4282b1e0f76142714870b258ca16a19606e0441f0973f",
+      "stage": "occlusion_semantics"
+    }
+  ],
+  "task_counts": {
+    "COMPLETED": 5,
+    "FAILED": 1
+  },
+  "wheel_sha256": "220cc4a5d45e554ec98bb5e10227b44ade98107850ef31b667f543e354a8b903"
+}

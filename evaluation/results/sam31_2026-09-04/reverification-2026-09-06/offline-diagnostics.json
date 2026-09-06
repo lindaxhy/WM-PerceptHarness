@@ -1,0 +1,36 @@
+{
+  "schema_version": "semantic_reverification_offline_diagnostic_v1",
+  "new_model_calls": 0,
+  "occlusion_attempts": [
+    {
+      "attempt": 1,
+      "response_sha256": "e15a99e36c97038b63a6c745fe13149356aeb8bd1228590bb5fb64ff463bb1f8",
+      "schema_valid": true,
+      "raw_decision_count": 15,
+      "raw_classification_counts": {"occlusion": 2, "out_of_frame": 4, "unknown": 9},
+      "raw_event_count": 1,
+      "prohibited_evidence_findings": [],
+      "accepted_stage": false
+    },
+    {
+      "attempt": 2,
+      "response_sha256": "2ff9f7c5317a048cee4f9b605ed524ae96886e92ca7b5e820412f3007621a541",
+      "schema_valid": true,
+      "raw_decision_count": 15,
+      "raw_classification_counts": {"occlusion": 1, "out_of_frame": 12, "unknown": 2},
+      "raw_event_count": 1,
+      "prohibited_evidence_findings": [
+        {
+          "decision_index": 12,
+          "field": "visual_evidence",
+          "structural_characters": ["/"],
+          "slash_occurrences": 1,
+          "slash_between_ascii_words_count": 1,
+          "raw_mask_filename_match": false,
+          "control_character_match": false
+        }
+      ],
+      "accepted_stage": false
+    }
+  ]
+}

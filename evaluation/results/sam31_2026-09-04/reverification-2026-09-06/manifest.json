@@ -1,0 +1,62 @@
+{
+  "controller_helper_sha256": {
+    "audit_remote.py": "2be88583eed13bcfcf837e5b7526c7065470262b2254281c87bebfb82059c75a",
+    "launch_remote.py": "61353dc1ea2eb0ee7d63a77be30b70d3e3d4f07735bd84e9d886f657a011a19f",
+    "prepare_remote.py": "ec260dc62a264e7b74331bcefdcd27b560db14918522df94bf0b5616fdf73dec",
+    "prepare_remote_v2.py": "e92d2069926d5a2b0bc52989e7efe3be9613e1e0e006656544ea8c07765495eb",
+    "snapshot_cache.py": "aa6f8b1e6d7cfb776c199bcab6dd90b71857cf679dd6df5594dcc543bccbc1a3"
+  },
+  "experiment_status": "complete",
+  "files": [
+    {
+      "name": "cleanup.json",
+      "sha256": "0f3c83d4452277fb29e64b548f6dd0540086e0a546ae08d5dcef1eda1608f32f",
+      "size_bytes": 472
+    },
+    {
+      "name": "environment.json",
+      "sha256": "d426a872f79798c57b98ae31fc131b4198788d61f872f8e7a80568888a107812",
+      "size_bytes": 4827
+    },
+    {
+      "name": "execution-report.json",
+      "sha256": "af5895525f46b53404c4786fe4bf8326fa3655cae0b1c5b602bcdffae57733cc",
+      "size_bytes": 2289
+    },
+    {
+      "name": "launch-gate.json",
+      "sha256": "40398eefbedb53dec7a521cbae12e52a41ad4030a22757d091586504406b2846",
+      "size_bytes": 399
+    },
+    {
+      "name": "offline-diagnostics.json",
+      "sha256": "7d50af3e7ac8b99e9c7f72c1c35265028ec3a7add0aad45ed6ede608f4cf60cb",
+      "size_bytes": 1179
+    },
+    {
+      "name": "postflight.json",
+      "sha256": "e22a24ff6421bcc03dc53d9ce036ac8d948e7727028da12de559cfc4616d34e8",
+      "size_bytes": 4189
+    }
+  ],
+  "finished_at_utc": "2026-09-06T02:35:27.496665+00:00",
+  "generate_call_count": 4,
+  "model_identity": "doubao-seed-2-1-pro-260628",
+  "new_five_video_experiment_recommended": false,
+  "new_sam_analysis_calls": 0,
+  "operator_commit": "edbee71e6ba8113c836ed2f947db9c6119710787",
+  "overall_integration_acceptance_passed": false,
+  "returned_response_count": 4,
+  "schema_version": "semantic_reverification_manifest_v1",
+  "semantic_repair_call_count": 2,
+  "source_commit": "76b8848da7fb773cf2e4a31b5491b194ca418e56",
+  "stage_validation_outcome": "mixed",
+  "started_at_utc": "2026-09-06T02:31:30.936972+00:00",
+  "sum_generate_elapsed_seconds": 234.99088702900917,
+  "supervisor_elapsed_seconds": 236.559,
+  "total_usage": {
+    "input_tokens": 613199,
+    "output_tokens": 7829
+  },
+  "transport_retry_count": 0
+}

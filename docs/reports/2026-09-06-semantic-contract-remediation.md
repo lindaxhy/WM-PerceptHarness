@@ -152,3 +152,11 @@ A separately bounded verification experiment is the next planning step after
 review remediation; old failed reports must never be replaced or relabeled.
 Keep this worktree for that continuation and the eventual new PR. The original
 requirement to complete real acceptance before PR delivery remains unsatisfied.
+
+## Subsequent bounded re-verification
+
+The [2026-09-06 bounded real experiment](2026-09-06-semantic-reverification.md)
+has now run on an isolated repaired wheel. Scene passed after one repair but
+returned no spatial records; occlusion remained invalid after its one repair.
+The four-call evidence is separate from the unchanged historical acceptance
+results. A new five-video experiment is not recommended yet.
