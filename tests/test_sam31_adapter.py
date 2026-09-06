@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import importlib
+import io
 import json
 import os
 from pathlib import Path
@@ -233,6 +234,74 @@ def read_int64_array(archive: zipfile.ZipFile, name: str) -> tuple[int, ...]:
     values = tuple(item[0] for item in struct.iter_unpack("<q", payload))
     assert len(values) == shape[0]
     return values
+
+
+def reference_npy(payload: bytes, descriptor: str, shape: tuple[int, ...]) -> bytes:
+    header_text = (
+        f"{{'descr': {descriptor!r}, 'fortran_order': False, "
+        f"'shape': {shape!r}, }}"
+    )
+    padding = (-((10 + len(header_text) + 1) % 16)) % 16
+    header = (header_text + (" " * padding) + "\n").encode("latin1")
+    return b"\x93NUMPY\x01\x00" + struct.pack("<H", len(header)) + header + payload
+
+
+def reference_mask_archive(
+    masks: tuple[bytes, ...], *, object_ids: tuple[int, ...]
+) -> bytes:
+    output = io.BytesIO()
+    with zipfile.ZipFile(
+        output, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=9
+    ) as archive:
+        arrays = tuple(
+            (f"masks/{index:08d}.npy", reference_npy(mask, "|b1", (4, 5)))
+            for index, mask in enumerate(masks)
+        ) + (
+            (
+                "local_frame_indices.npy",
+                reference_npy(
+                    b"".join(struct.pack("<q", 0) for _ in masks),
+                    "<i8",
+                    (3,),
+                ),
+            ),
+            (
+                "frame_indices.npy",
+                reference_npy(
+                    b"".join(struct.pack("<q", 0) for _ in masks),
+                    "<i8",
+                    (3,),
+                ),
+            ),
+            (
+                "object_ids.npy",
+                reference_npy(
+                    b"".join(struct.pack("<q", value) for value in object_ids),
+                    "<i8",
+                    (3,),
+                ),
+            ),
+            (
+                "mask_indices.npy",
+                reference_npy(
+                    b"".join(struct.pack("<q", value) for value in range(3)),
+                    "<i8",
+                    (3,),
+                ),
+            ),
+            (
+                "sampled_frame_indices.npy",
+                reference_npy(struct.pack("<q", 0), "<i8", (1,)),
+            ),
+        )
+        for name, payload in arrays:
+            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 3
+            info.external_attr = 0o600 << 16
+            with archive.open(info, mode="w", force_zip64=True) as member:
+                member.write(payload)
+    return output.getvalue()
 
 
 class FakeCuda:
@@ -475,6 +544,77 @@ def test_adapter_writes_deterministic_compressed_per_prompt_mask_chunks(
                     assert len(mask_payload) == 4
 
 
+def test_mask_accounting_and_archive_match_independent_reference_for_boundaries(
+    tmp_path: Path, fake_torch: SimpleNamespace
+) -> None:
+    mask_by_id = {
+        1: b"\x01\x00\x00\x00\x00" + b"\x00" * 10 + b"\x00\x00\x00\x00\x01",
+        2: b"\x01" * 20,
+        3: (
+            b"\x00\x00\x00\x00\x01"
+            + b"\x00\x00\x00\x00\x01"
+            + b"\x00" * 5
+            + b"\x01\x00\x00\x00\x00"
+        ),
+    }
+    expected_metrics = {
+        1: (0.1, (0.5, 0.5)),
+        2: (1.0, (0.5, 0.5)),
+        3: (0.15, (19 / 30, 11 / 24)),
+    }
+    object_ids = [3, 1, 2]
+    masks = [
+        [
+            [bool(value) for value in payload[row_start : row_start + 5]]
+            for row_start in range(0, 20, 5)
+        ]
+        for payload in (mask_by_id[object_id] for object_id in object_ids)
+    ]
+    response = frame_output(
+        0,
+        object_ids=object_ids,
+        probabilities=[0.875, 0.875, 0.875],
+        boxes=[[0.1, 0.1, 0.2, 0.2]] * 3,
+        masks=masks,
+        mask_shape=(3, 4, 5),
+    )
+    request = make_request(
+        tmp_path,
+        duration_seconds=1.0,
+        timestamps=(0.0,),
+        entities=(make_request(tmp_path).entities[0],),
+    )
+    provider = make_provider(
+        PredictorDouble(lambda *_: [response]),
+        fake_torch,
+        MaterializerDouble(width=5, height=4),
+    )
+
+    artifact = provider.analyze(request, tmp_path / "staging")
+
+    observations = {
+        int(track.track_id.removeprefix("right_hand_")): track.observations[0]
+        for track in artifact.tracks
+    }
+    for object_id, (area_fraction, center_xy) in expected_metrics.items():
+        observation = observations[object_id]
+        assert observation.area_fraction == pytest.approx(area_fraction)
+        assert observation.center_xy == pytest.approx(center_xy)
+        standalone = SAM31_MODULE._consume_mask_rows(
+            response["outputs"]["out_binary_masks"],
+            object_ids.index(object_id),
+            4,
+            5,
+        )
+        assert standalone[0] == pytest.approx(area_fraction)
+        assert standalone[1] == pytest.approx(center_xy)
+    archive_path = tmp_path / "staging" / "masks/right_hand.npz"
+    assert archive_path.read_bytes() == reference_mask_archive(
+        tuple(mask_by_id[object_id] for object_id in sorted(object_ids)),
+        object_ids=tuple(sorted(object_ids)),
+    )
+
+
 def test_every_observation_resolves_through_npz_frame_object_mapping(
     tmp_path: Path, fake_torch: SimpleNamespace
 ) -> None:
@@ -573,6 +713,46 @@ def test_mask_rows_stream_without_tolist_or_full_mask_materialization(
     assert mask_array.row_reads == height
     assert mask_array.max_materialized_bytes == width
     assert sum(item.size_bytes for item in artifact.files) < 100_000
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(b"\x00\x02", id="byte-two"),
+        pytest.param(b"\xff\x01", id="byte-255"),
+        pytest.param(b"\x01", id="wrong-length"),
+    ],
+)
+def test_mask_row_bytes_rejects_non_boolean_bytes_and_wrong_lengths(
+    payload: bytes,
+) -> None:
+    class ByteMask:
+        def __getitem__(self, index: Any) -> bytes:
+            assert index == (0, 0)
+            return payload
+
+    with pytest.raises(ValueError):
+        SAM31_MODULE._mask_row_bytes(ByteMask(), 0, 0, 2)
+
+
+def test_mask_row_conversion_fallback_and_empty_mask_contract() -> None:
+    class RowWithoutOrderArgument:
+        def tobytes(self) -> bytes:
+            return b"\x01\x00"
+
+    class ConvertedMask:
+        def __getitem__(self, index: Any) -> RowWithoutOrderArgument:
+            assert index == (0, 0)
+            return RowWithoutOrderArgument()
+
+    assert SAM31_MODULE._mask_row_bytes(ConvertedMask(), 0, 0, 2) == b"\x01\x00"
+    with pytest.raises(ValueError):
+        SAM31_MODULE._consume_mask_rows(
+            array([[[False, False], [False, False]]], (1, 2, 2), "b"),
+            0,
+            2,
+            2,
+        )
 
 
 def test_adapter_rejects_projected_mask_output_before_reading_rows(

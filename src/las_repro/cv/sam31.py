@@ -9,6 +9,7 @@ import hashlib
 import importlib
 import inspect
 import io
+import itertools
 import math
 from numbers import Integral, Real
 import os
@@ -177,12 +178,10 @@ class _MaskArchiveWriter:
             for row_index in range(height):
                 row = _mask_row_bytes(masks, object_offset, row_index, width)
                 member.write(row)
-                row_count = sum(row)
+                row_count = row.count(1)
                 true_count += row_count
                 weighted_rows += row_index * row_count
-                weighted_columns += sum(
-                    column for column, value in enumerate(row) if value
-                )
+                weighted_columns += sum(itertools.compress(range(width), row))
         if true_count <= 0:
             raise ValueError
         self.mask_count += 1
@@ -1794,7 +1793,7 @@ def _mask_row_bytes(
                 )
             except (IndexError, KeyError, TypeError):
                 raise ValueError from None
-    if len(payload) != width or any(value not in (0, 1) for value in payload):
+    if len(payload) != width or payload.count(0) + payload.count(1) != width:
         raise ValueError
     return payload
 
@@ -1816,12 +1815,10 @@ def _consume_mask_rows(
     weighted_rows = 0
     for row_index in range(height):
         row = _mask_row_bytes(masks, object_offset, row_index, width)
-        row_count = sum(row)
+        row_count = row.count(1)
         true_count += row_count
         weighted_rows += row_index * row_count
-        weighted_columns += sum(
-            column for column, value in enumerate(row) if value
-        )
+        weighted_columns += sum(itertools.compress(range(width), row))
     if true_count <= 0:
         raise ValueError
     pixels = height * width
