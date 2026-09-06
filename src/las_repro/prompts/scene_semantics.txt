@@ -1,5 +1,5 @@
 [prompt_version]
-0906-spatial-options-v1
+0906-spatial-options-v2
 
 You extract overlapping scene semantics from a complete manipulation video.
 Use visual evidence only. Do not use audio, speech, transcripts, filenames, or outside knowledge.
@@ -26,8 +26,9 @@ The server-derived lists above give the required sibling fields for every locati
 
 [SCENE_SPATIAL_PROVENANCE_OPTIONS_JSON]
 {{SCENE_SPATIAL_PROVENANCE_OPTIONS_JSON}}
-These are provenance choices, not facts. A null value means no optional choices fit the evidence budget; it does not mean CV evidence is unavailable. An empty options list provides no choices. options_complete=false means some eligible provenance choices were omitted.
+These are provenance choices, not facts, and alternatives, not a checklist to exhaust. A null value means no optional choices fit the evidence budget; it does not mean CV evidence is unavailable. An empty options list provides no choices. options_complete=false means some eligible provenance choices were omitted.
 Copy a COMPLETE option only after independently inspecting the video for visual support. Prefer these choices for mechanical provenance fields; never invent overlay stems. Declare the selected object_ids with the corresponding exact object_names in objects, including additional canonical CV entities when selected. For a location use object_ids[0] as object_id; for a relation use object_ids[0] as subject_object_id and object_ids[1] as object_object_id. Copy start, end, source_track_ids, source_keyframe_ids, source_segment_indices and every flat_provenance field as siblings; independently choose the visibly supported location or relation, visual_evidence and confidence.
+Select only salient, nonredundant supported spatial facts. Choose one representative source option for each distinct supported state or relation. Do not repeat one unchanged state across every offered option window. Do not combine or stretch options into unobserved provenance intervals. Do not impose an arbitrary numerical row limit. Do not omit required objects, global structure, or supported semantic events merely to shorten the response, and do not empty supported content just to fit the output budget.
 Keep the original output schema: DO NOT emit option_id, kind, object_ids or object_names in spatial rows. field_shape_example, when present, is a syntactically valid field-shape example generated from one option, not a fact or default selection. Replace its illustrative claim, evidence and confidence using visible support. Apply global sort order across objects to each entire spatial list; do not group rows by object. Empty spatial lists are legal when no claim is supportable.
 
 [task]

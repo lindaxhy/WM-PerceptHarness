@@ -68,6 +68,71 @@ def test_request_is_visual_only_bounded_and_strict(tmp_path):
     assert all("image_pixel_limit" not in part for part in content)
 
 
+@pytest.mark.parametrize(
+    ("stage", "expected_cap"),
+    [
+        ("active_objects", 1_024),
+        ("general_segment", 4_096),
+        ("general_summary", 2_048),
+        ("embodied_pass_a", 4_096),
+        ("embodied_pass_b", 8_192),
+        ("embodied_enrichment", 4_096),
+        ("scene_semantics", 8_192),
+        ("occlusion_semantics", 4_096),
+    ],
+)
+def test_ark_request_and_cache_identity_use_the_same_stage_budget(
+    tmp_path, stage, expected_cap
+):
+    """A request/cache cap mismatch can replay output generated under another budget."""
+    captured = {}
+
+    def handler(request):
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json=_envelope())
+
+    model = _model(handler)
+    request = _request(tmp_path, stage=stage)
+    assert model.generate(request) == {"objects": []}
+    identity = model.semantic_cache_identity(request)
+
+    assert captured["max_output_tokens"] == expected_cap
+    assert identity["max_output_tokens"] == expected_cap
+
+
+def test_ark_cache_identity_uses_the_scene_budget_contract(tmp_path):
+    """A stale adapter contract can replay entries created before the budget change."""
+    model = _model(lambda request: httpx.Response(200, json=_envelope()))
+    identity = model.semantic_cache_identity(
+        _request(tmp_path, stage="scene_semantics")
+    )
+
+    assert identity["adapter_contract_version"] == "ark-responses-scene-budget-v2"
+
+
+def test_unknown_stage_fails_before_visual_extraction_or_transport(tmp_path):
+    """An absent finite stage budget must not leak work into external boundaries."""
+    extraction_calls = transport_calls = 0
+
+    def extract(*args):
+        nonlocal extraction_calls
+        extraction_calls += 1
+        return _frames(*args)
+
+    def handler(request):
+        nonlocal transport_calls
+        transport_calls += 1
+        return httpx.Response(200, json=_envelope())
+
+    from las_repro.models.ark import ArkBackendError
+
+    model = _model(handler, frame_extractor=extract)
+    with pytest.raises(ArkBackendError, match="no configured output budget"):
+        model.generate(_request(tmp_path, stage="unsupported_stage"))
+    assert extraction_calls == 0
+    assert transport_calls == 0
+
+
 @pytest.mark.parametrize("resolution,maximum", [
     ("low", 65536), ("medium", 131072), ("high", 262144),
 ])
@@ -108,6 +173,21 @@ def test_requested_resolution_reaches_ark_without_changing_frames(tmp_path, reso
 def test_invalid_provider_output_is_model_output_error_and_clears_metrics(tmp_path, envelope):
     model = _model(lambda request: httpx.Response(200, json=envelope))
     with pytest.raises(ModelOutputError): model.generate(_request(tmp_path))
+    assert model.request_metrics() == {}
+
+
+def test_length_incomplete_response_is_never_accepted_or_repaired_posthoc(tmp_path):
+    """Partial JSON at the provider token limit must remain a generation failure."""
+    envelope = _envelope(
+        '{"objects":[],"locations":[',
+        status="incomplete",
+        incomplete_details={"reason": "length"},
+    )
+    model = _model(lambda request: httpx.Response(200, json=envelope))
+
+    with pytest.raises(ModelOutputError, match="identity or status is invalid"):
+        model.generate(_request(tmp_path, stage="scene_semantics"))
+
     assert model.request_metrics() == {}
 
 

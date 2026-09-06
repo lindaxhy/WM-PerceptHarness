@@ -304,7 +304,7 @@ def test_normalized_repair_envelope_replays_and_context_change_misses(store, tmp
 @pytest.mark.parametrize("contract", ["adapter", "frames", "validator", "stage_tokens", "schema"])
 def test_contract_changes_invalidate_replay(store, tmp_path, monkeypatch, contract):
     from las_repro import semantic_cache
-    from las_repro.models.ark import STAGE_MAX_NEW_TOKENS
+    from las_repro.models.ark import ARK_STAGE_MAX_OUTPUT_TOKENS
     provider = Provider()
     model = provider.model()
     job(store, tmp_path)
@@ -313,7 +313,7 @@ def test_contract_changes_invalidate_replay(store, tmp_path, monkeypatch, contra
     if contract == "adapter": model.adapter_contract_version = "new-adapter"
     if contract == "frames": model.frame_extraction_contract_version = "new-extractor"
     if contract == "validator": monkeypatch.setattr(semantic_cache, "VALIDATOR_CONTRACT_VERSION", "new-validator")
-    if contract == "stage_tokens": monkeypatch.setitem(STAGE_MAX_NEW_TOKENS, "embodied_pass_a", 999)
+    if contract == "stage_tokens": monkeypatch.setitem(ARK_STAGE_MAX_OUTPUT_TOKENS, "embodied_pass_a", 999)
     if contract == "schema": overrides = {"schema_name": "UnregisteredSchema"}
     job(store, tmp_path, overrides=overrides)
     run(store, model)

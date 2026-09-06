@@ -17,9 +17,18 @@ import httpx
 from ..media import FrameRef, TimeSpan, extract_frames
 from ..model_alias import validate_model_alias
 from .base import ModelOutputError, ModelRequest
-from .qwen3_vl import STAGE_MAX_NEW_TOKENS
 
 ARK_RESPONSES_ENDPOINT = "https://ark.cn-beijing.volces.com/api/v3/responses"
+ARK_STAGE_MAX_OUTPUT_TOKENS = {
+    "active_objects": 1_024,
+    "general_segment": 4_096,
+    "general_summary": 2_048,
+    "embodied_pass_a": 4_096,
+    "embodied_pass_b": 8_192,
+    "embodied_enrichment": 4_096,
+    "scene_semantics": 8_192,
+    "occlusion_semantics": 4_096,
+}
 _MEDIA_MAX_PIXELS = {"low": 65_536, "medium": 131_072, "high": 262_144}
 FrameExtractor = Callable[[Path, TimeSpan, float, Path], list[FrameRef]]
 
@@ -33,7 +42,7 @@ class ArkVideoModel:
 
     supports_semantic_result_cache = True
     # Bump these contracts when payload defaults or frame encoding/sampling change.
-    adapter_contract_version = "ark-responses-pixels-v1"
+    adapter_contract_version = "ark-responses-scene-budget-v2"
     frame_extraction_contract_version = "extract-frames-jpeg-timestamps-v1"
 
     def semantic_cache_identity(self, request: ModelRequest) -> dict[str, Any]:
@@ -46,7 +55,7 @@ class ArkVideoModel:
             "max_frames": self.max_frames,
             "ark_max_request_bytes": self.max_request_bytes,
             "ark_max_output_chars": self.max_output_chars,
-            "max_output_tokens": STAGE_MAX_NEW_TOKENS[request.stage],
+            "max_output_tokens": ARK_STAGE_MAX_OUTPUT_TOKENS[request.stage],
             "thinking": {"type": "disabled"},
             "store": False,
             "stream": False,
@@ -91,8 +100,9 @@ class ArkVideoModel:
 
     def generate(self, request: ModelRequest) -> dict[str, Any]:
         self._metrics = {}
-        if request.stage not in STAGE_MAX_NEW_TOKENS:
+        if request.stage not in ARK_STAGE_MAX_OUTPUT_TOKENS:
             raise ArkBackendError("ARK stage has no configured output budget")
+        max_output_tokens = ARK_STAGE_MAX_OUTPUT_TOKENS[request.stage]
         try:
             alias = validate_model_alias(request.model_name)
             model_id = self._registry[alias]
@@ -109,7 +119,7 @@ class ArkVideoModel:
                 raise ArkBackendError("ARK visual preparation failed") from None
             payload = {"model": model_id, "store": False, "stream": False,
                        "thinking": {"type": "disabled"},
-                       "max_output_tokens": STAGE_MAX_NEW_TOKENS[request.stage],
+                       "max_output_tokens": max_output_tokens,
                        "input": [{"role": "user", "content": content}]}
             encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
             if len(encoded) > self.max_request_bytes:

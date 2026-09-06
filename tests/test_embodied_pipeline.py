@@ -131,11 +131,29 @@ def test_scene_prompt_declares_cv_availability_and_flat_spatial_fields(
     )
 
     for prompt in (initial, repair):
+        assert prompt.startswith("[prompt_version]\n0906-spatial-options-v2\n")
         assert '[CV_EVIDENCE_AVAILABILITY_JSON]\n{"available":false}' in prompt
         assert (
             "[SCENE_SPATIAL_FIELDS_JSON]\n"
             + json.dumps(expected_fields, separators=(",", ":"))
         ) in prompt
+        assert "alternatives, not a checklist to exhaust" in prompt
+        assert (
+            "representative source option for each distinct supported state or relation"
+            in prompt
+        )
+        assert (
+            "Do not repeat one unchanged state across every offered option window"
+            in prompt
+        )
+        assert (
+            "Do not combine or stretch options into unobserved provenance intervals"
+            in prompt
+        )
+        assert (
+            "Do not omit required objects, global structure, or supported semantic events"
+            in prompt
+        )
         assert "provenance" not in expected_fields["location_fields"]
         assert "provenance" not in expected_fields["relation_fields"]
     assert '"issue_codes":["SCENE_SPATIAL_INVALID"]' in repair
