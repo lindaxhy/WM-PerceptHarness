@@ -23,6 +23,7 @@ from las_repro.cv.summary import (
     CvEvidenceSummary,
     OccluderProvenance,
     OcclusionCandidate,
+    AllowedEventInterval,
     _candidate_identity,
     summarize_cv_evidence,
 )
@@ -58,8 +59,8 @@ def _candidate() -> OcclusionCandidate:
             ),
         ),
         possible_occluder_entity_ids=("board",),
-        allowed_start_times=(1.0, 1.2),
-        allowed_end_times=(2.0, 2.2),
+        allowed_event_intervals=(AllowedEventInterval(event_type="occluded",start=1.0,end=2.0),
+                                 AllowedEventInterval(event_type="occluded",start=1.2,end=2.2)),
         last_visible_frame=2,
         first_revisible_frame=5,
         edge_departure=False,
@@ -89,8 +90,7 @@ def _second_candidate() -> OcclusionCandidate:
             ),
         ),
         possible_occluder_entity_ids=("board",),
-        allowed_start_times=(2.3,),
-        allowed_end_times=(2.8,),
+        allowed_event_intervals=(AllowedEventInterval(event_type="occluded",start=2.3,end=2.8),),
         last_visible_frame=5,
         first_revisible_frame=8,
         edge_departure=False,
@@ -234,8 +234,8 @@ def test_occlusion_decision_must_use_candidate_and_observed_boundaries():
         (lambda raw: raw["decisions"].append(copy.deepcopy(raw["decisions"][0])), "OCCLUSION_DECISION_CARDINALITY"),
         (lambda raw: raw["decisions"][0].update({"target_entity_id": "pear"}), "OCCLUSION_TARGET_MISMATCH"),
         (lambda raw: raw["decisions"][0].update({"occluder_entity_id": "hand"}), "OCCLUSION_OCCLUDER_NOT_PROPOSED"),
-        (lambda raw: raw["decisions"][0]["events"][0].update({"start": 1.1}), "OCCLUSION_START_NOT_OBSERVED"),
-        (lambda raw: raw["decisions"][0]["events"][0].update({"end": 3.1}), "OCCLUSION_END_NOT_OBSERVED"),
+        (lambda raw: raw["decisions"][0]["events"][0].update({"start": 1.1}), "OCCLUSION_INTERVAL_NOT_ALLOWED"),
+        (lambda raw: raw["decisions"][0]["events"][0].update({"end": 3.1}), "OCCLUSION_INTERVAL_NOT_ALLOWED"),
     ],
 )
 def test_occlusion_decisions_reject_injected_references_and_times(mutation, expected_code):
@@ -372,12 +372,12 @@ def test_occlusion_prompt_isolates_trusted_data_and_repair_codes():
         summary,
         video_duration=3.0,
         frame_pts=(0.0, 1.0, 2.0, 3.0),
-        repair={"issue_codes": ["OCCLUSION_START_NOT_OBSERVED"]},
+        repair={"issue_codes": ["OCCLUSION_INTERVAL_NOT_ALLOWED"]},
     )
 
     assert "[trusted occlusion candidate JSON data]" in prompt
     assert candidate.candidate_id in prompt
-    assert "OCCLUSION_START_NOT_OBSERVED" in prompt
+    assert "OCCLUSION_INTERVAL_NOT_ALLOWED" in prompt
     assert "invent" in prompt.lower()
 
 
@@ -556,7 +556,7 @@ def test_output_registry_replaces_arbitrary_timestamp_with_closed_issue_code():
         "_schema_validation": {
             "schema_name": "OcclusionDecisionSet",
             "status": "invalid",
-            "issue_codes": ["OCCLUSION_START_NOT_OBSERVED"],
+            "issue_codes": ["OCCLUSION_INTERVAL_NOT_ALLOWED"],
         }
     }
 

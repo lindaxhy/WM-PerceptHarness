@@ -481,8 +481,9 @@ def test_available_evidence_rebuilt_with_bound_config_and_real_artifact(
         )
 
 
+@pytest.mark.parametrize("with_identity", [False, True])
 def test_evaluation_rebuild_keeps_threshold_aware_candidate_provenance(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, with_identity
 ):
     from test_cv_artifacts import cv_request
     from test_cv_summary import _artifact, _observation, _timeline, _track
@@ -498,14 +499,14 @@ def test_evaluation_rebuild_keeps_threshold_aware_candidate_provenance(
     tracks = tuple(
         _track(
             f"item_{ordinal}_1",
-            f"item_{ordinal}",
+            "item" if with_identity else f"item_{ordinal}",
             tuple(
                 _observation(
                     frame,
                     bbox_xyxy=(
                         0.05 + ordinal * 0.2,
                         0.1,
-                        0.15 + ordinal * 0.2,
+                        (0.25 if with_identity else 0.15) + ordinal * 0.2,
                         0.2,
                     ),
                 )
@@ -532,7 +533,7 @@ def test_evaluation_rebuild_keeps_threshold_aware_candidate_provenance(
         "max_observations_per_track": 40,
         "max_relations": 1,
         "max_overlays": 24,
-        "max_prompt_chars": 12_000,
+        "max_prompt_chars": 200_000 if with_identity else 12_000,
     }
     config = {
         "sampling": request.sampling.model_dump(mode="json"),
@@ -540,7 +541,7 @@ def test_evaluation_rebuild_keeps_threshold_aware_candidate_provenance(
         "summary_limits": summary_limits,
         "bundle_limits": {
             "max_candidates": 256,
-            "max_prompt_chars": 12_000,
+            "max_prompt_chars": 200_000 if with_identity else 12_000,
         },
     }
     trusted_summary = summary_module.summarize_cv_evidence(
@@ -613,6 +614,9 @@ def test_evaluation_rebuild_keeps_threshold_aware_candidate_provenance(
     )
 
     [bundle] = captured_bundles
+    assert bundle == trusted_bundle
+    if with_identity:
+        assert all(c.identity_evidence.continuation_cues for c in bundle.candidates)
     assert len(bundle.candidates) == 4
     assert {candidate.target_track_id for candidate in bundle.candidates} == {
         f"item_{ordinal}_1" for ordinal in range(4)

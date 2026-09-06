@@ -567,3 +567,29 @@ def test_per_entry_limit_bounds_combined_canonical_identity_and_result(store, tm
     assert completed.metrics["semantic_cache_published"] is False
     with sqlite3.connect(store.database_path) as db:
         assert db.execute("SELECT COUNT(*) FROM semantic_results").fetchone()[0] == 0
+
+
+def test_candidate_v2_validator_does_not_replay_v1_acceptance(store, tmp_path, monkeypatch):
+    from las_repro import semantic_cache
+    from test_candidate_v2 import gap_bundle, decisions
+    bundle = gap_bundle()
+    candidate = bundle.candidates[0]
+    positive = decisions(candidate, [candidate.allowed_event_intervals[0].model_dump()]).model_dump(mode='json')
+    provider = Provider(response=positive)
+    model = provider.model()
+    overrides = {'schema_name':'OcclusionDecisionSet', 'prompt':'same sealed input',
+                 'schema_context':{'duration':.4, 'candidates':[candidate.model_dump(mode='json')],
+                                   'evidence_summary':bundle.summary.model_dump(mode='json')}}
+    with monkeypatch.context() as patch:
+        patch.setattr(semantic_cache, 'VALIDATOR_CONTRACT_VERSION', 'embodied-output-v1')
+        first = job(store,tmp_path,overrides=overrides,stage='occlusion_semantics')
+        run(store,model)
+    second = job(store,tmp_path,overrides=overrides,stage='occlusion_semantics')
+    run(store,model)
+    third = job(store,tmp_path,overrides=overrides,stage='occlusion_semantics')
+    run(store,model)
+    assert provider.calls == 2
+    records = [store.get_inference_job(j.job_id) for j in (first,second,third)]
+    assert [r.metrics['semantic_cache_hit'] for r in records] == [False,False,True]
+    assert all(r.result == positive for r in records)
+    assert records[0].metrics['semantic_cache_key'] != records[1].metrics['semantic_cache_key']

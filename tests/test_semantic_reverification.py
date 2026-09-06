@@ -24,6 +24,7 @@ from las_repro.cv.summary import (
     CvEvidenceSummary,
     OccluderProvenance,
     OcclusionCandidate,
+    AllowedEventInterval,
     _candidate_identity,
     summarize_cv_evidence,
 )
@@ -181,8 +182,7 @@ def _candidate() -> OcclusionCandidate:
             ),
         ),
         possible_occluder_entity_ids=("board",),
-        allowed_start_times=(0.5,),
-        allowed_end_times=(1.5,),
+        allowed_event_intervals=(AllowedEventInterval(event_type="occluded",start=0.5,end=1.5),),
         last_visible_frame=0,
         first_revisible_frame=2,
         edge_departure=False,

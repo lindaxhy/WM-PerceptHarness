@@ -407,9 +407,9 @@ def test_positive_occlusion_is_a_checked_projection_of_real_candidates(
                 "confidence": 0.8 if positive else 0.2,
                 "events": [
                     {
-                        "event_type": "occluded",
-                        "start": candidate.allowed_start_times[0],
-                        "end": candidate.allowed_end_times[-1],
+                        "event_type": candidate.allowed_event_intervals[0].event_type,
+                        "start": candidate.allowed_event_intervals[0].start,
+                        "end": candidate.allowed_event_intervals[0].end,
                     }
                 ]
                 if positive

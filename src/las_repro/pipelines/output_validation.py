@@ -158,8 +158,7 @@ _OCCLUSION_TEMPORAL_CODES = (
     "NON_OCCLUSION_HAS_EVENTS",
     "OCCLUSION_EVENTS_EMPTY",
     "OCCLUSION_EVENTS_NOT_ORDERED",
-    "OCCLUSION_START_NOT_OBSERVED",
-    "OCCLUSION_END_NOT_OBSERVED",
+    "OCCLUSION_INTERVAL_NOT_ALLOWED",
     "OCCLUSION_EVENT_NONPOSITIVE_DURATION",
     "OCCLUSION_EVENT_OUTSIDE_VIDEO",
     "OCCLUSION_EVENT_OVERLAP",
@@ -1040,16 +1039,23 @@ def _validate_scene_semantics_output(
 def _validate_occlusion_decision_output(
     result: Mapping[str, Any], validation_context: Mapping[str, Any] | None
 ) -> dict[str, Any]:
-    context = _exact_context(validation_context, {"duration", "candidates"})
+    from ..cv.summary import CvEvidenceSummary, validate_candidate_identity_evidence
+    keys = {"duration", "candidates"}
+    if validation_context is not None and "evidence_summary" in validation_context:
+        keys.add("evidence_summary")
+    context = _exact_context(validation_context, keys)
     duration = _finite_real(context["duration"], positive=True)
     raw_candidates = context["candidates"]
-    if type(raw_candidates) is not list:
+    if type(raw_candidates) is not list or len(raw_candidates) > 256:
         raise ValueError("OcclusionDecisionSet validation context is invalid")
     try:
         candidates = tuple(
             OcclusionCandidate.model_validate(candidate)
             for candidate in raw_candidates
         )
+        if any(c.identity_evidence is not None for c in candidates):
+            source = CvEvidenceSummary.model_validate(context.get("evidence_summary"))
+            validate_candidate_identity_evidence(source, candidates)
     except (ValidationError, TypeError, ValueError, OverflowError, RecursionError):
         raise ValueError("OcclusionDecisionSet validation context is invalid") from None
     try:

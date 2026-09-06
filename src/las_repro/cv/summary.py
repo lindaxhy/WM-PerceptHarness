@@ -20,6 +20,11 @@ from typing import Annotated, Any, Iterator, Literal
 
 from pydantic import Field, StrictBool, StrictStr, field_validator, model_validator
 
+from .identity import (
+    IdentityEvidence, derive_identity_evidence, identity_record, identity_bytes,
+    preflight_identity, MAX_IDENTITY_ROWS, MAX_IDENTITY_BYTES,
+)
+
 from .contracts import (
     ArtifactFile,
     Confidence,
@@ -746,6 +751,39 @@ class OccluderProvenance(StrictModel):
         return values
 
 
+class AllowedEventInterval(StrictModel):
+    """One exact typed visual-adjudication option, never endpoint pools."""
+
+    event_type: Literal["occlusion_enter", "occluded", "occlusion_exit"]
+    start: Timestamp
+    end: Timestamp
+
+    @model_validator(mode="before")
+    @classmethod
+    def plain_values(cls, value):
+        if type(value) is dict:
+            if len(value) != 3 or any(type(k) is not str for k in value):
+                raise ValueError("event options require exactly three plain fields")
+            if type(value.get("event_type")) is not str:
+                raise ValueError("event type must be a plain string")
+            for field in ("start", "end"):
+                item = value.get(field)
+                if type(item) not in (int, float) or not math.isfinite(item):
+                    raise ValueError("event bounds must be finite plain numbers")
+        return value
+
+    @model_validator(mode="after")
+    def positive_duration(self):
+        self.plain_values({name:getattr(self,name,None) for name in ("event_type","start","end")})
+        if not self.start < self.end:
+            raise ValueError("candidate options must guarantee positive duration")
+        return self
+
+
+def _option_key(option):
+    return (option.start, option.end, option.event_type)
+
+
 class OcclusionCandidate(StrictModel):
     """An evidence-supported transition awaiting semantic adjudication."""
 
@@ -758,12 +796,10 @@ class OcclusionCandidate(StrictModel):
     possible_occluder_entity_ids: Annotated[
         tuple[ObjectId, ...], Field(max_length=_MAX_CANDIDATE_OCCLUDERS)
     ]
-    allowed_start_times: Annotated[
-        tuple[Timestamp, ...], Field(min_length=1, max_length=8)
+    allowed_event_intervals: Annotated[
+        tuple[AllowedEventInterval, ...], Field(min_length=1, max_length=24)
     ]
-    allowed_end_times: Annotated[
-        tuple[Timestamp, ...], Field(min_length=1, max_length=8)
-    ]
+    identity_evidence: IdentityEvidence | None = None
     last_visible_frame: NonnegativeInt
     first_revisible_frame: NonnegativeInt | None
     edge_departure: StrictBool
@@ -778,6 +814,22 @@ class OcclusionCandidate(StrictModel):
     support_complete: StrictBool
     source_search_complete: StrictBool
 
+    @model_validator(mode="before")
+    @classmethod
+    def bounded_nested_records(cls, value):
+        if type(value) is dict:
+            _candidate_component_count(value)
+            for option in value["allowed_event_intervals"]:
+                if type(option) is AllowedEventInterval:
+                    fields = {name:getattr(option,name,None) for name in ("event_type","start","end")}
+                elif type(option) is dict:
+                    fields = option
+                else:
+                    raise _structural_error("candidate option model type")
+                AllowedEventInterval.plain_values(fields)
+            preflight_identity(value.get("identity_evidence"), raw=True)
+        return value
+
     @field_validator("overlay_refs")
     @classmethod
     def validate_overlay_refs(cls, values: tuple[str, ...]) -> tuple[str, ...]:
@@ -791,14 +843,17 @@ class OcclusionCandidate(StrictModel):
 
     @model_validator(mode="after")
     def validate_candidate_boundaries(self) -> OcclusionCandidate:
-        if not self.allowed_start_times or not self.allowed_end_times:
-            raise ValueError("candidate boundaries must use observed timestamps")
-        if tuple(sorted(set(self.allowed_start_times))) != self.allowed_start_times:
-            raise ValueError("candidate start times must be unique and ordered")
-        if tuple(sorted(set(self.allowed_end_times))) != self.allowed_end_times:
-            raise ValueError("candidate end times must be unique and ordered")
-        if max(self.allowed_start_times) >= min(self.allowed_end_times):
-            raise ValueError("candidate boundaries must guarantee positive duration")
+        _preflight_candidate(self)
+        keys = tuple(_option_key(o) for o in self.allowed_event_intervals)
+        if not keys or keys != tuple(sorted(set(keys))):
+            raise ValueError("candidate options must be unique and ordered")
+        if any(sum(o.event_type == kind for o in self.allowed_event_intervals) > 8
+               for kind in ("occlusion_enter", "occluded", "occlusion_exit")):
+            raise ValueError("candidate options exceed the per-type bound")
+        for option in self.allowed_event_intervals:
+            AllowedEventInterval.model_validate(dict(event_type=option.event_type, start=option.start, end=option.end))
+        if self.identity_evidence is not None:
+            IdentityEvidence.model_validate(identity_record(self.identity_evidence))
         if (
             self.first_revisible_frame is not None
             and self.first_revisible_frame <= self.last_visible_frame
@@ -865,7 +920,7 @@ def _candidate_identity(candidate: OcclusionCandidate, ordinal: int) -> str:
 class CvPromptBundle(StrictModel):
     """The only aggregate prompt record for one summary and its candidates."""
 
-    schema_version: Literal["cv_prompt_bundle_v1"]
+    schema_version: Literal["cv_prompt_bundle_v2"]
     summary: CvEvidenceSummary
     thresholds: EvidenceThresholds
     candidates: Annotated[
@@ -937,6 +992,11 @@ class CvPromptBundle(StrictModel):
             raise ValueError("bundle summary-search completeness is inconsistent")
         if self.source_search_complete != self.summary.candidate_search_complete:
             raise ValueError("bundle source-search completeness is inconsistent")
+        if sum(identity_bytes(c.identity_evidence) for c in self.candidates) > MAX_IDENTITY_BYTES:
+            raise ValueError("aggregate identity bytes exceed their bound")
+        if sum(len(c.identity_evidence.continuation_cues) + len(c.identity_evidence.cross_label_cues)
+               for c in self.candidates if c.identity_evidence is not None) > MAX_IDENTITY_ROWS:
+            raise ValueError("aggregate identity rows exceed their bound")
         track_entities = {
             track.track_id: track.entity_id for track in self.summary.tracks
         }
@@ -983,10 +1043,8 @@ class CvPromptBundle(StrictModel):
                 raise ValueError("candidate occluder lacks positive relation support")
             if any(
                 timestamp not in observed_times
-                for timestamp in (
-                    *candidate.allowed_start_times,
-                    *candidate.allowed_end_times,
-                )
+                for option in candidate.allowed_event_intervals
+                for timestamp in (option.start, option.end)
             ):
                 raise ValueError("candidate times are not closed to the observed clock")
             if any(
@@ -1070,8 +1128,7 @@ class _AssemblyMetadata:
 class _CandidateDraft:
     target_track_id: str
     target_entity_id: str
-    allowed_start_times: tuple[float, ...]
-    allowed_end_times: tuple[float, ...]
+    allowed_event_intervals: tuple[AllowedEventInterval, ...]
     last_visible_frame: int
     first_revisible_frame: int | None
     edge_departure: bool
@@ -1353,6 +1410,8 @@ def build_occlusion_candidates(
 def _canonical_candidates(
     summary: CvEvidenceSummary,
     thresholds: EvidenceThresholds,
+    *,
+    include_identity: bool = True,
 ) -> tuple[tuple[OcclusionCandidate, ...], bool]:
     if summary.status is not EvidenceStatus.AVAILABLE:
         return (), False
@@ -1404,8 +1463,7 @@ def _canonical_candidates(
             target_track_id=draft.target_track_id,
             possible_occluders=possible_occluders,
             possible_occluder_entity_ids=possible_occluder_entity_ids,
-            allowed_start_times=draft.allowed_start_times,
-            allowed_end_times=draft.allowed_end_times,
+            allowed_event_intervals=draft.allowed_event_intervals,
             last_visible_frame=draft.last_visible_frame,
             first_revisible_frame=draft.first_revisible_frame,
             edge_departure=draft.edge_departure,
@@ -1425,7 +1483,63 @@ def _canonical_candidates(
             **values,
         )
         candidates.append(candidate)
-    return tuple(candidates), set_truncated
+    if not include_identity:
+        return tuple(candidates), set_truncated
+    cues = derive_identity_evidence(summary, tuple(candidates))
+    return tuple(_with_identity(c, cue) for c, cue in zip(candidates, cues)), set_truncated
+
+
+def validate_candidate_identity_evidence(summary, candidates):
+    """Authenticate supplied optional cues at renderer/replay/operator boundaries.
+
+    Missing sections make no identity assertion. Full candidate lifecycle/set
+    authentication remains the bundle's canonical regeneration responsibility.
+    """
+    _preflight_tuple(candidates, "identity candidates", _MAX_BUNDLE_CANDIDATES)
+    for candidate in candidates:
+        _preflight_candidate(candidate)
+    if not any(c.identity_evidence is not None for c in candidates):
+        return
+    _preflight_summary(summary)
+    trusted = _revalidate_summary(summary)
+    candidates = tuple(_revalidate_candidate(c) for c in candidates)
+    track_entities = {t.track_id:t.entity_id for t in trusted.tracks}
+    observed_times = {f.timestamp_seconds for f in trusted.observed_clock}
+    positive_relations = {(frozenset((r.subject_track_id,r.object_track_id)),r.frame_index)
+                          for r in trusted.relations if max(r.bbox_iou,r.subject_bbox_covered_fraction,
+                                                           r.object_bbox_covered_fraction)>0.}
+    for candidate in candidates:
+        if track_entities.get(candidate.target_track_id) != candidate.target_entity_id:
+            raise ValueError("identity target is not closed to source summary")
+        if any(track_entities.get(p.track_id) != p.entity_id for p in candidate.possible_occluders):
+            raise ValueError("identity occluder is not closed to source summary")
+        if any(t not in observed_times for o in candidate.allowed_event_intervals for t in (o.start,o.end)):
+            raise ValueError("identity span is not closed to observed clock")
+        if any((frozenset((candidate.target_track_id,p.track_id)),frame) not in positive_relations
+               for p in candidate.possible_occluders for frame in p.supporting_frames):
+            raise ValueError("identity occluder lacks positive relation support")
+    expected = derive_identity_evidence(trusted, candidates)
+    if any(c.identity_evidence is not None and c.identity_evidence != cue
+           for c,cue in zip(candidates,expected)):
+        raise ValueError("identity cues are not authenticated by the retained source")
+
+
+def _with_identity(candidate, evidence):
+    values = {name: getattr(candidate, name) for name in OcclusionCandidate.model_fields}
+    values["identity_evidence"] = evidence
+    provisional = OcclusionCandidate.model_construct(**values)
+    ordinal = int(candidate.candidate_id.rsplit("_", 1)[1])
+    values["candidate_id"] = _candidate_identity(provisional, ordinal)
+    return OcclusionCandidate(**values)
+
+
+def _gap_options(gap):
+    phases = (("occlusion_enter", gap.last_visible_time, gap.first_missing_time),
+              ("occluded", gap.first_missing_time, gap.last_missing_time),
+              ("occlusion_exit", gap.last_missing_time, gap.first_revisible_time))
+    return tuple(sorted((AllowedEventInterval(event_type=kind, start=start, end=end)
+                         for kind, start, end in phases if end is not None and start < end),
+                        key=_option_key))
 
 
 def _candidate_drafts(
@@ -1440,12 +1554,7 @@ def _candidate_drafts(
             yield _CandidateDraft(
                 target_track_id=track.track_id,
                 target_entity_id=track.entity_id,
-                allowed_start_times=(gap.last_visible_time,),
-                allowed_end_times=(
-                    gap.first_revisible_time
-                    if gap.first_revisible_time is not None
-                    else gap.last_missing_time,
-                ),
+                allowed_event_intervals=_gap_options(gap),
                 last_visible_frame=gap.last_visible_frame,
                 first_revisible_frame=gap.first_revisible_frame,
                 edge_departure=gap.edge_departure,
@@ -1495,7 +1604,7 @@ def build_cv_prompt_bundle(
         prompt_char_limit=effective_prompt_limit,
     )
     return CvPromptBundle(
-        schema_version="cv_prompt_bundle_v1",
+        schema_version="cv_prompt_bundle_v2",
         summary=validated_summary,
         thresholds=validated_thresholds,
         candidates=expected.candidates,
@@ -1514,9 +1623,11 @@ def _expected_bundle_components(
     candidate_limit: int,
     prompt_char_limit: int,
 ) -> _ExpectedBundleComponents:
-    candidates, generation_truncated = _canonical_candidates(summary, thresholds)
+    candidates, generation_truncated = _canonical_candidates(summary, thresholds, include_identity=False)
     count_truncated = len(candidates) > candidate_limit
     initially_kept = candidates[:candidate_limit]
+    cues = derive_identity_evidence(summary, initially_kept)
+    initially_kept = tuple(_with_identity(c, cue) for c, cue in zip(initially_kept, cues))
     source_search_complete = summary.candidate_search_complete
 
     def codes(*, prompt_truncated: bool) -> tuple[str, ...]:
@@ -1549,6 +1660,14 @@ def _expected_bundle_components(
     )
     initial_total += sum(candidate_char_counts)
     initial_total += max(0, len(candidate_char_counts) - 1)
+    if initial_total > prompt_char_limit and any(c.identity_evidence is not None for c in initially_kept):
+        # Whole optional sections yield before any required candidate content.
+        initially_kept = tuple(_with_identity(c, None) for c in initially_kept)
+        candidate_char_counts = tuple(_canonical_char_count(_candidate_projection(c)) for c in initially_kept)
+        initial_total = _bundle_empty_candidates_char_count(
+            summary, thresholds, source_search_complete=source_search_complete,
+            candidates_complete=initial_complete, truncation_codes=initial_codes)
+        initial_total += sum(candidate_char_counts) + max(0, len(candidate_char_counts)-1)
     if initial_total <= prompt_char_limit:
         return _ExpectedBundleComponents(
             candidates=initially_kept,
@@ -2043,8 +2162,14 @@ def _preflight_candidate(candidate: object) -> None:
     )
     for entity_id in possible_entity_ids:
         _preflight_text(entity_id, "candidate possible occluder entity_id")
-    _preflight_tuple(candidate.allowed_start_times, "candidate start times", 8)
-    _preflight_tuple(candidate.allowed_end_times, "candidate end times", 8)
+    options = _preflight_tuple(getattr(candidate, "allowed_event_intervals", None), "candidate event intervals", 24)
+    for option in options:
+        if type(option) is not AllowedEventInterval:
+            raise _structural_error("candidate event interval item type")
+        _preflight_text(option.event_type, "candidate event type")
+        for value in (option.start, option.end):
+            _preflight_float(value, "candidate boundary timestamp")
+    preflight_identity(candidate.identity_evidence)
     overlays = _preflight_tuple(
         candidate.overlay_refs,
         "candidate overlay_refs",
@@ -2052,8 +2177,6 @@ def _preflight_candidate(candidate: object) -> None:
     )
     for overlay in overlays:
         _preflight_text(overlay, "candidate overlay reference")
-    for value in (*candidate.allowed_start_times, *candidate.allowed_end_times):
-        _preflight_float(value, "candidate boundary timestamp")
     _preflight_int(candidate.last_visible_frame, "candidate last_visible_frame")
     if candidate.first_revisible_frame is not None:
         _preflight_int(
@@ -2091,6 +2214,8 @@ def _preflight_bundle(bundle: object) -> None:
     if not isinstance(bundle, CvPromptBundle):
         raise _structural_error("bundle")
     _preflight_text(bundle.schema_version, "bundle.schema_version")
+    if bundle.schema_version != "cv_prompt_bundle_v2":
+        raise ValueError("bundle schema version must be cv_prompt_bundle_v2")
     _preflight_summary(bundle.summary)
     _preflight_thresholds(bundle.thresholds)
     candidates = _preflight_tuple(
@@ -2115,7 +2240,7 @@ def _preflight_bundle(bundle: object) -> None:
 def _candidate_component_count(candidate: object) -> int:
     """Count bounded nested shapes without traversing supporting frame values."""
     if isinstance(candidate, OcclusionCandidate):
-        get_candidate = lambda name: getattr(candidate, name)
+        get_candidate = lambda name: getattr(candidate, name, None)
     elif type(candidate) is dict:
         get_candidate = lambda name: candidate.get(name)
     else:
@@ -2146,15 +2271,19 @@ def _candidate_component_count(candidate: object) -> int:
             get_candidate("possible_occluder_entity_ids"),
             _MAX_CANDIDATE_OCCLUDERS,
         ),
-        ("candidate start times", get_candidate("allowed_start_times"), 8),
-        ("candidate end times", get_candidate("allowed_end_times"), 8),
+        ("candidate event intervals", get_candidate("allowed_event_intervals"), 24),
         (
             "candidate overlay_refs",
             get_candidate("overlay_refs"),
             _MAX_OVERLAY_LIMIT,
         ),
     ):
-        count += len(_shape_sequence(values, name, maximum))
+        count += len(_shape_sequence(values, name, maximum)) * (3 if name == "candidate event intervals" else 1)
+    evidence = get_candidate("identity_evidence")
+    preflight_identity(evidence, raw=True)
+    if evidence is not None:
+        record = identity_record(evidence) if type(evidence) is IdentityEvidence else evidence
+        count += 8 * len(record["continuation_cues"]) + 7 * len(record["cross_label_cues"])
     return count
 
 
@@ -3513,6 +3642,22 @@ def _provenance_projection(provenance: OccluderProvenance) -> _CanonicalObject:
     )
 
 
+def _option_projection(option):
+    return _CanonicalObject((("event_type", option.event_type), ("start", option.start), ("end", option.end)))
+
+
+def _identity_projection(evidence):
+    if evidence is None:
+        return None
+    def freeze(value):
+        if type(value) is dict:
+            return _CanonicalObject(tuple((k, freeze(v)) for k,v in value.items()))
+        if type(value) is list:
+            return _canonical_array(tuple(value), freeze)
+        return value
+    return freeze(identity_record(evidence))
+
+
 def _candidate_projection(
     candidate: OcclusionCandidate,
     *,
@@ -3533,8 +3678,8 @@ def _candidate_projection(
             "possible_occluder_entity_ids",
             _canonical_array(candidate.possible_occluder_entity_ids),
         ),
-        ("allowed_start_times", _canonical_array(candidate.allowed_start_times)),
-        ("allowed_end_times", _canonical_array(candidate.allowed_end_times)),
+        ("allowed_event_intervals", _canonical_array(candidate.allowed_event_intervals, _option_projection)),
+        ("identity_evidence", _identity_projection(candidate.identity_evidence)),
         ("last_visible_frame", candidate.last_visible_frame),
         ("first_revisible_frame", candidate.first_revisible_frame),
         ("edge_departure", candidate.edge_departure),
@@ -3583,7 +3728,7 @@ def _bundle_projection_values(
 ) -> _CanonicalObject:
     """Build one shared bundle spec, adding private validation fields on demand."""
     fields: list[tuple[str, Any]] = [
-        ("schema_version", "cv_prompt_bundle_v1"),
+        ("schema_version", "cv_prompt_bundle_v2"),
         ("summary", _summary_projection(summary, validation=validation)),
         ("thresholds", _threshold_projection(thresholds)),
         ("candidates", _canonical_array(candidates, _candidate_projection)),
@@ -3927,8 +4072,11 @@ def _uncertain_observation_drafts(
                 _CandidateDraft(
                     target_track_id=track.track_id,
                     target_entity_id=track.entity_id,
-                    allowed_start_times=(previous.timestamp_seconds,),
-                    allowed_end_times=(following.timestamp_seconds,),
+                    allowed_event_intervals=tuple(
+                        AllowedEventInterval(event_type=kind, start=previous.timestamp_seconds,
+                                             end=following.timestamp_seconds)
+                        for kind in ("occluded", "occlusion_enter", "occlusion_exit")
+                    ),
                     last_visible_frame=previous.frame_index,
                     first_revisible_frame=following.frame_index,
                     edge_departure=(
@@ -4011,8 +4159,7 @@ def _draft_sort_key(draft: _CandidateDraft) -> tuple[Any, ...]:
             if draft.first_revisible_frame is not None
             else 2**63 - 1
         ),
-        draft.allowed_start_times,
-        draft.allowed_end_times,
+        tuple(_option_key(o) for o in draft.allowed_event_intervals),
         draft.target_track_id,
     )
 
@@ -4069,6 +4216,9 @@ __all__ = [
     "CvPromptBundle",
     "OccluderProvenance",
     "OcclusionCandidate",
+    "AllowedEventInterval",
+    "IdentityEvidence",
+    "validate_candidate_identity_evidence",
     "SpatialRelation",
     "SummaryId",
     "SummaryEntity",

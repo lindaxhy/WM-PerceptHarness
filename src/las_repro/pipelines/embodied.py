@@ -22,7 +22,7 @@ from ..cv.entities import NormalizedEntities, normalize_entities
 from ..cv.artifacts import CvArtifactStore, CvArtifactHandle, CvArtifactError, cv_cache_key
 from ..cv.contracts import CvEvidenceRequest, SamplingPolicy, EvidenceThresholds
 from ..cv.timeline import probe_frame_timeline, TimelineError
-from ..cv.summary import CvEvidenceSummary, OcclusionCandidate, summarize_cv_evidence, build_cv_prompt_bundle
+from ..cv.summary import CvEvidenceSummary, OcclusionCandidate, summarize_cv_evidence, build_cv_prompt_bundle, validate_candidate_identity_evidence
 from ..domain import InferenceJob, InferenceJobSpec, TaskRecord
 from ..media import TimeSpan, VideoMetadata, probe_video
 from ..models.base import VideoSession
@@ -534,6 +534,7 @@ class EmbodiedActionPipeline:
                 schema_name="OcclusionDecisionSet",
                 schema_context={
                     "duration": span.end,
+                    "evidence_summary": evidence_summary.model_dump(mode="json"),
                     "candidates": [
                         candidate.model_dump(mode="json")
                         for candidate in candidate_tuple
@@ -783,6 +784,12 @@ class PromptRenderer:
             type(candidate) is not OcclusionCandidate for candidate in candidates
         ):
             raise PromptRenderError("occlusion candidates must be trusted records")
+        if len(candidates) > 256:
+            raise PromptRenderError("occlusion candidate count exceeds its bound")
+        try:
+            validate_candidate_identity_evidence(evidence_summary, candidates)
+        except (ValueError, TypeError):
+            raise PromptRenderError("occlusion identity evidence is not source authenticated") from None
         candidate_data = []
         for candidate in candidates:
             prompt_record = getattr(candidate, "prompt_record", None)

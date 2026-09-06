@@ -1033,7 +1033,9 @@ def test_threshold_aware_summary_fits_complete_candidate_projection() -> None:
     bundle = summary_module.build_cv_prompt_bundle(summary, thresholds)
 
     assert len(raw_candidates) == 4
-    assert bundle.candidates == raw_candidates
+    # Required options/provenance survive; optional identity sections may yield.
+    assert tuple(summary_module._with_identity(c, None) for c in bundle.candidates) == tuple(
+        summary_module._with_identity(c, None) for c in raw_candidates)
     assert "CANDIDATE_PROMPT_TRUNCATED" not in bundle.truncation_codes
     assert len(
         json.dumps(
@@ -1237,8 +1239,8 @@ def test_candidate_generation_preserves_evidence_and_counter_signals() -> None:
     assert "board" in by_target["behind_target"].possible_occluder_entity_ids
     assert by_target["behind_target"].last_visible_frame == 1
     assert by_target["behind_target"].first_revisible_frame == 3
-    assert by_target["behind_target"].allowed_start_times == (0.1,)
-    assert by_target["behind_target"].allowed_end_times == (0.3,)
+    assert [(o.event_type,o.start,o.end) for o in by_target["behind_target"].allowed_event_intervals] == [
+        ("occlusion_enter",0.1,0.2),("occlusion_exit",0.2,0.3)]
     assert by_target["behind_target"].overlay_refs == (
         "overlays/behind_target-1-00000001.png",
         "overlays/behind_target-1-00000003.png",
@@ -1289,8 +1291,8 @@ def test_absence_does_not_invent_an_occluder_or_positive_classification() -> Non
         "target_track_id",
         "possible_occluders",
         "possible_occluder_entity_ids",
-        "allowed_start_times",
-        "allowed_end_times",
+        "allowed_event_intervals",
+        "identity_evidence",
         "last_visible_frame",
         "first_revisible_frame",
         "edge_departure",
@@ -1439,7 +1441,7 @@ def test_candidate_prompt_record_is_fresh_and_model_is_frozen() -> None:
     second = candidate.prompt_record()
 
     first["possible_occluder_entity_ids"].append("injected")
-    first["allowed_start_times"].append(99.0)
+    first["allowed_event_intervals"][0]["start"] = 99.0
     first["overlay_refs"].append("../outside.png")
 
     assert second == candidate.prompt_record()
@@ -1480,7 +1482,9 @@ def test_candidate_identity_rejects_model_copy_semantic_and_ordinal_forgery() ->
             "possible_occluders": (),
             "possible_occluder_entity_ids": (),
         },
-        {"allowed_start_times": (candidate.allowed_start_times[0] / 2.0,)},
+        {"allowed_event_intervals": (candidate.allowed_event_intervals[0].model_copy(
+            update={"start":candidate.allowed_event_intervals[0].start / 2.0}),
+            *candidate.allowed_event_intervals[1:])},
         {"last_visible_frame": max(0, candidate.last_visible_frame - 1)},
         {
             "observation_support_complete": coordinated_complete,
@@ -2029,10 +2033,10 @@ def test_candidate_boundaries_are_observed_and_have_strictly_positive_length() -
     )
     [candidate] = build_occlusion_candidates(summary, _thresholds())
 
-    assert max(candidate.allowed_start_times) < min(candidate.allowed_end_times)
+    assert all(o.start < o.end for o in candidate.allowed_event_intervals)
     observed_times = {item.timestamp_seconds for item in summary.observed_clock}
-    assert set(candidate.allowed_start_times) <= observed_times
-    assert set(candidate.allowed_end_times) <= observed_times
+    assert {o.start for o in candidate.allowed_event_intervals} <= observed_times
+    assert {o.end for o in candidate.allowed_event_intervals} <= observed_times
 
 
 def test_candidate_schema_rejects_zero_length_boundary_combinations() -> None:
@@ -2043,8 +2047,7 @@ def test_candidate_schema_rejects_zero_length_boundary_combinations() -> None:
     )
     [candidate] = build_occlusion_candidates(summary, _thresholds())
     payload = candidate.model_dump(mode="json")
-    payload["allowed_start_times"] = [0.1]
-    payload["allowed_end_times"] = [0.1]
+    payload["allowed_event_intervals"] = [{"event_type":"occluded", "start":0.1, "end":0.1}]
 
     with pytest.raises(ValidationError, match="positive duration"):
         type(candidate).model_validate(payload)
@@ -2072,7 +2075,7 @@ def test_prompt_bundle_closes_candidate_times_to_summary_observed_clock() -> Non
     )
     bundle = summary_module.build_cv_prompt_bundle(summary, _thresholds())
     payload = bundle.model_dump(mode="json")
-    payload["candidates"][0]["allowed_start_times"] = [0.05]
+    payload["candidates"][0]["allowed_event_intervals"][0]["start"] = 0.05
     _reseal_candidate_payload(payload["candidates"][0])
 
     with pytest.raises(ValidationError, match="observed clock"):
@@ -2381,10 +2384,15 @@ def test_aggregate_prompt_bundle_reports_character_budget_truncation() -> None:
         sort_keys=True,
     )
 
+    # Remove optional sections before testing required-candidate truncation.
+    basic_payload = complete_bundle.prompt_record()
+    for candidate in basic_payload["candidates"]:
+        candidate["identity_evidence"] = None
+    basic_size = len(json.dumps(basic_payload, ensure_ascii=False, separators=(",", ":")))
     bundle = summary_module.build_cv_prompt_bundle(
         summary,
         _thresholds(),
-        max_prompt_chars=len(complete_encoded) - 1,
+        max_prompt_chars=basic_size - 1,
     )
     encoded = json.dumps(
         bundle.prompt_record(),
@@ -2559,7 +2567,7 @@ def test_bundle_rebuilds_the_canonical_candidate_set_from_thresholds() -> None:
         ),
         pytest.param(
             lambda candidate: candidate.__setitem__(
-                "allowed_start_times", list(reversed(candidate["allowed_end_times"]))
+                "allowed_event_intervals", list(reversed(candidate["allowed_event_intervals"]))
             ),
             id="forged-boundary",
         ),
@@ -3089,9 +3097,9 @@ def test_aggregate_budget_streams_before_materializing_oversized_projection(
         sort_keys=True,
     )
 
-    assert len(bundle.candidates) == 3
-    assert len(encoded) == 199_944
-    assert materialized_sizes == [199_944]
+    assert len(bundle.candidates) == 2  # Exact v2 record width fits two whole candidates.
+    assert len(encoded) == 199_679
+    assert materialized_sizes == [199_679]
     assert "CANDIDATE_PROMPT_TRUNCATED" in bundle.truncation_codes
 
 

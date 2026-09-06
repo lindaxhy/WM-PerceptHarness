@@ -12,7 +12,7 @@ from typing import Annotated, Any
 from pydantic import Field, StrictStr, field_validator
 
 from ..cv.contracts import CvTrack, StrictModel
-from ..cv.summary import OcclusionCandidate
+from ..cv.summary import OcclusionCandidate, _preflight_candidate, _revalidate_candidate
 from .validators import TemporalIssue, TemporalValidationError
 
 
@@ -109,6 +109,14 @@ def _has_prohibited_evidence_content(value: str) -> bool:
     ) >= 2
 
 
+def _validated_candidates(candidates):
+    if type(candidates) is not tuple or len(candidates) > 256:
+        raise ValueError("occlusion candidates exceed their structural bound")
+    for candidate in candidates:
+        _preflight_candidate(candidate)
+    return tuple(_revalidate_candidate(c) for c in candidates)
+
+
 def validate_occlusion_decisions(
     result: OcclusionDecisionSet,
     candidates: tuple[OcclusionCandidate, ...],
@@ -118,10 +126,7 @@ def validate_occlusion_decisions(
     """Close every model decision to one trusted candidate skeleton."""
     if type(result) is not OcclusionDecisionSet:
         raise TypeError("result must be an OcclusionDecisionSet")
-    if type(candidates) is not tuple or any(
-        type(candidate) is not OcclusionCandidate for candidate in candidates
-    ):
-        raise TypeError("candidates must be a tuple of OcclusionCandidate values")
+    candidates = _validated_candidates(candidates)
     if isinstance(duration, bool) or not isinstance(duration, (int, float)):
         raise ValueError("duration must be finite and positive")
     duration = float(duration)
@@ -168,10 +173,11 @@ def validate_occlusion_decisions(
             key = (event.start, event.end, event.event_type.value)
             if previous_key is not None and key < previous_key:
                 issues.append(TemporalIssue("OCCLUSION_EVENTS_NOT_ORDERED", event_path, "events must be ordered by start, end, and type"))
-            if event.start not in candidate.allowed_start_times:
-                issues.append(TemporalIssue("OCCLUSION_START_NOT_OBSERVED", event_path + ("start",), "event start must use a candidate observed timestamp"))
-            if event.end not in candidate.allowed_end_times:
-                issues.append(TemporalIssue("OCCLUSION_END_NOT_OBSERVED", event_path + ("end",), "event end must use a candidate observed timestamp"))
+            if not any((event.event_type.value, event.start, event.end) ==
+                       (option.event_type, option.start, option.end)
+                       for option in candidate.allowed_event_intervals):
+                issues.append(TemporalIssue("OCCLUSION_INTERVAL_NOT_ALLOWED", event_path,
+                                            "event must match one complete typed candidate interval"))
             if not event.start < event.end:
                 issues.append(TemporalIssue("OCCLUSION_EVENT_NONPOSITIVE_DURATION", event_path, "event intervals must have positive duration"))
             if event.end > duration:
@@ -200,8 +206,9 @@ def project_occlusion_events(
         raise TypeError("tracks must be a tuple of CvTrack values")
     if isinstance(segments, (str, bytes, bytearray)) or not isinstance(segments, Sequence):
         raise TypeError("segments must be a sequence of mappings")
+    candidates = _validated_candidates(candidates)
     validation_duration = max(
-        (timestamp for candidate in candidates for timestamp in candidate.allowed_end_times),
+        (option.end for candidate in candidates for option in candidate.allowed_event_intervals),
         default=1.0,
     )
     validate_occlusion_decisions(result, candidates, duration=validation_duration)

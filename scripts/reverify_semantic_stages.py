@@ -24,7 +24,7 @@ from typing import Any
 import zipfile
 
 import las_repro
-from las_repro.cv.summary import CvEvidenceSummary, OcclusionCandidate
+from las_repro.cv.summary import CvEvidenceSummary, OcclusionCandidate, validate_candidate_identity_evidence
 from las_repro.domain import InferenceJob
 from las_repro.models.ark import ArkVideoModel
 from las_repro.pipelines.embodied import PromptRenderer, _validated_stage_result
@@ -695,16 +695,21 @@ def _validate_scene_alignment(
 def _validate_occlusion_alignment(
     values: Mapping[str, Any], suffix: Any | None, context: Mapping[str, Any]
 ) -> None:
-    if suffix is not None or set(context) != {"duration", "candidates"}:
+    if suffix is not None or set(context) not in (
+        {"duration", "candidates"}, {"duration", "candidates", "evidence_summary"}
+    ):
         raise OperatorError("OCCLUSION_CONTEXT_INVALID")
     raw_candidates = context["candidates"]
-    if not isinstance(raw_candidates, list):
+    if type(raw_candidates) is not list or len(raw_candidates) > 256:
         raise OperatorError("OCCLUSION_CONTEXT_INVALID")
     try:
-        candidates = [
-            OcclusionCandidate.model_validate(value).prompt_record()
-            for value in raw_candidates
-        ]
+        candidate_models = tuple(OcclusionCandidate.model_validate(value) for value in raw_candidates)
+        if any(c.identity_evidence is not None for c in candidate_models):
+            source = CvEvidenceSummary.model_validate(context.get("evidence_summary"))
+            validate_candidate_identity_evidence(source, candidate_models)
+            if values.get("CV_EVIDENCE_SUMMARY_JSON") != source.prompt_record():
+                raise ValueError("occlusion summary does not match trusted context")
+        candidates = [candidate.prompt_record() for candidate in candidate_models]
     except Exception:
         raise OperatorError("OCCLUSION_CONTEXT_INVALID") from None
     if (
