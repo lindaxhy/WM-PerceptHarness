@@ -598,16 +598,15 @@ def test_mask_accounting_and_archive_match_independent_reference_for_boundaries(
     }
     for object_id, (area_fraction, center_xy) in expected_metrics.items():
         observation = observations[object_id]
-        assert observation.area_fraction == pytest.approx(area_fraction)
-        assert observation.center_xy == pytest.approx(center_xy)
+        assert observation.area_fraction == area_fraction
+        assert observation.center_xy == center_xy
         standalone = SAM31_MODULE._consume_mask_rows(
             response["outputs"]["out_binary_masks"],
             object_ids.index(object_id),
             4,
             5,
         )
-        assert standalone[0] == pytest.approx(area_fraction)
-        assert standalone[1] == pytest.approx(center_xy)
+        assert standalone == (area_fraction, center_xy)
     archive_path = tmp_path / "staging" / "masks/right_hand.npz"
     assert archive_path.read_bytes() == reference_mask_archive(
         tuple(mask_by_id[object_id] for object_id in sorted(object_ids)),
@@ -733,6 +732,38 @@ def test_mask_row_bytes_rejects_non_boolean_bytes_and_wrong_lengths(
 
     with pytest.raises(ValueError):
         SAM31_MODULE._mask_row_bytes(ByteMask(), 0, 0, 2)
+
+
+def test_mask_row_bytes_reads_bytes_subclass_from_its_raw_buffer() -> None:
+    class ForgedBytes(bytes):
+        def count(self, value: int, *args: int) -> int:
+            del value, args
+            return 1
+
+        def __bytes__(self) -> bytes:
+            return b"\x00\x01"
+
+        def __iter__(self):
+            return iter((0, 1))
+
+    class ForgedMask:
+        def __getitem__(self, index: Any) -> ForgedBytes:
+            assert index == (0, 0)
+            return ForgedBytes(b"\x01\x02")
+
+    class ConvertedRow:
+        def tobytes(self, *, order: str) -> ForgedBytes:
+            assert order == "C"
+            return ForgedBytes(b"\x01\x02")
+
+    class ConvertedMask:
+        def __getitem__(self, index: Any) -> ConvertedRow:
+            assert index == (0, 0)
+            return ConvertedRow()
+
+    for mask in (ForgedMask(), ConvertedMask()):
+        with pytest.raises(ValueError):
+            SAM31_MODULE._mask_row_bytes(mask, 0, 0, 2)
 
 
 def test_mask_row_conversion_fallback_and_empty_mask_contract() -> None:

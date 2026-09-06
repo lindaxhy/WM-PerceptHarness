@@ -1770,10 +1770,8 @@ def _mask_row_bytes(
     masks: Any, object_offset: int, row_index: int, width: int
 ) -> bytes:
     row = _array_item(masks, object_offset, row_index)
-    if isinstance(row, bytes):
+    if isinstance(row, (bytes, bytearray, memoryview)):
         payload = row
-    elif isinstance(row, (bytearray, memoryview)):
-        payload = bytes(row)
     else:
         convert = getattr(row, "tobytes", None)
         if callable(convert):
@@ -1781,8 +1779,6 @@ def _mask_row_bytes(
                 payload = convert(order="C")
             except TypeError:
                 payload = convert()
-            if not isinstance(payload, bytes):
-                payload = bytes(payload)
         else:
             try:
                 if len(row) != width:
@@ -1793,6 +1789,11 @@ def _mask_row_bytes(
                 )
             except (IndexError, KeyError, TypeError):
                 raise ValueError from None
+    if type(payload) is not bytes:
+        try:
+            payload = memoryview(payload).tobytes()
+        except TypeError:
+            payload = bytes(payload)
     if len(payload) != width or payload.count(0) + payload.count(1) != width:
         raise ValueError
     return payload
