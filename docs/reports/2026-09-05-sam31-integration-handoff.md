@@ -16,7 +16,11 @@ scoped re-review. Fresh combined-state validation passed 1,697 Python tests
 (85.78% coverage), 20 Node tests and syntax/whitespace checks. The
 [remediation checkpoint](2026-09-06-semantic-contract-remediation.md) records
 the exact scope and review limits. No new deployment or inference occurred;
-real acceptance remains failed. Final whole-branch review is in progress.
+real acceptance remains failed. Final whole-branch review subsequently found
+two integration defects plus cleanup/test minors; the single fix wave completed
+at `cc6a1db` and scoped re-review closed all six findings without new breakage.
+Fresh final verification passed 1,703 Python tests (85.78% coverage) and 20 Node
+tests. The repaired code is still not deployed, and no push or PR is claimed.
 The historical continuation below retains its original chronology.
 
 ## Continuation status — 2026-09-05
@@ -420,8 +424,10 @@ triaged before the final branch-wide review, but they do not reopen Tasks 1-9.
 
 - Two legacy negative-timestamp tests have stale exact fixtures, so unrelated
   entity-field validation can fail before the intended timestamp assertion.
-- Lazy CV worker exports work through attribute/star import but do not appear
-  in module globals or `dir(las_repro.cv)` until first resolution.
+- Lazy CV worker exports work through attribute/star import but do not populate
+  module globals or `dir(las_repro.cv)`, including after first resolution.
+  The earlier claim that first access changes reflection was incorrect;
+  final review confirmed this remains an optional discoverability improvement.
 
 Task 8 has no deferred code-review finding; its real CUDA/checkpoint smoke is
 explicitly scheduled for Task 14. Task 9 has no deferred finding after the

@@ -81,7 +81,74 @@ improved quality. There are still no positive claims eligible for measured
 human precision, and no live browser-interaction acceptance was performed.
 The repaired source has not been installed into the isolated runtime.
 
-Final whole-branch review is in progress against `b9ac98b..84e9e7c`, including
-historical deferred findings. Any confirmed issues must be resolved before
-release. A separately bounded verification experiment is the next planning
-step; old failed reports must never be replaced or relabeled.
+Final whole-branch review completed against `b9ac98b..84e9e7c`. It inspected
+bounded load-bearing sections across orchestration, durable publication,
+timeline/SAM lifecycle, candidate generation, provenance, ARK, evaluator,
+exporter and viewer, not every line of all 119 files. It reproduced two valid
+occlusion decisions failing provenance validation and identified an external
+BPE asset identity gap. Code readiness is **with fixes**, separately from
+failed real acceptance.
+
+The [final hardening design](../superpowers/specs/2026-09-06-final-integration-hardening-design.md)
+defines one consolidated fix wave for those two Important findings and the
+historical descriptor/Fake-startup cleanup and timestamp-test minors. It keeps
+all candidate evidence tracks without changing semantic labels, and requires
+BPE bytes to match the pinned blob without a new cache key. Lazy import
+reflection remains deferred; its historical description has been corrected.
+Implementation completed at `cc6a1dbfa1b94526a8d3ba51158b95510f96eaab`.
+Independent scoped re-review marked all six findings addressed, with no new
+breakage or out-of-scope observations. The remaining lazy reflection item is
+deferred as an optional discoverability change, not a correctness dependency.
+
+### Final-wave regression evidence
+
+The implementer recorded these RED/GREEN checks:
+
+- `test_positive_occlusion_is_a_checked_projection_of_real_candidates`:
+  two failures at final provenance validation before repair, then two passes
+  including complete-result and viewer projection checks.
+- `test_explicit_bpe_must_match_the_pinned_repository_blob`: altered external
+  bytes were accepted before repair; identical and same-size altered cases
+  now both pass their respective acceptance/rejection assertions, including
+  pre-builder rejection and runtime-directory cleanup.
+- `test_prefix_open_closes_descriptor_when_root_fsync_fails` and
+  `test_tree_walk_closes_child_descriptor_when_scandir_setup_fails`: both
+  exposed open descriptors before repair, then passed with original errors
+  preserved and descriptors closed.
+- `test_run_fake_closes_constructed_workers_when_cv_initialization_fails`:
+  both constructed workers had zero close calls before repair; failure and
+  normal-shutdown regressions then passed, checking exactly-once closure.
+- Both negative-timestamp regression families now validate legal baseline
+  fixtures first and assert exact erroneous timestamp locations; four cases
+  passed, without unrelated entity-field failures satisfying the tests.
+
+The implementer's focused integration run passed 488 tests, and the complete
+SAM adapter run passed 158 tests. Its final full suite passed 1,703 tests in 77.26s.
+These historical RED results are recorded implementation evidence; the scoped
+review checked the fix and tests rather than rerunning that history.
+
+The controller independently reran the final code at `cc6a1db`:
+
+```text
+.venv/bin/python -m pytest -q --cov=las_repro --cov-report=term-missing
+1703 passed, 2 known warnings in 77.53 seconds
+Configured coverage: 85.78% (required: 85%)
+
+node --test evaluation/viewer/tests/model.test.mjs
+20 passed, 0 failed
+
+node --check evaluation/viewer/js/app.js
+exit 0
+
+git diff --check
+exit 0
+```
+
+Frozen results, references, mapping and Qwen projection trees remain unchanged
+against `3b58faa`. No runtime installation, remote inference, push or PR was
+performed in this remediation. Code review is closed; real acceptance is not.
+
+A separately bounded verification experiment is the next planning step after
+review remediation; old failed reports must never be replaced or relabeled.
+Keep this worktree for that continuation and the eventual new PR. The original
+requirement to complete real acceptance before PR delivery remains unsatisfied.

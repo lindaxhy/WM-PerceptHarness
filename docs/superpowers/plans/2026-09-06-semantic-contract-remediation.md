@@ -189,4 +189,9 @@ unchanged cache identity. The
 defines one consolidated fix wave, including historical cleanup/test minors.
 Its implementation brief and report are kept in this plan's SDD workspace.
 The global preservation constraints still apply; no cache-key redesign or
-new runtime experiment is part of the wave. One scoped re-review follows.
+new runtime experiment is part of the wave. The wave completed at `cc6a1db`;
+independent scoped re-review closed all six findings with no new breakage.
+Final controller verification passed 1,703 Python tests at 85.78% coverage and
+20 Node tests. This local implementation/review plan is complete; the overall
+goal's real acceptance and eventual new PR remain open. See the
+[checkpoint report](../../reports/2026-09-06-semantic-contract-remediation.md).

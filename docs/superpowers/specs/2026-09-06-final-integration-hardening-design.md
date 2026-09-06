@@ -64,7 +64,7 @@ appear in `dir()` after access.
 
 Execute via the existing semantic-contract plan's single final-review fix
 wave: test-first covering regressions, focused suites, one full Python suite
-with configured coverage at least85%,20Node tests, syntax/whitespace checks,
+with configured coverage at least 85%, 20 Node tests, syntax/whitespace checks,
 then one independent scoped re-review. Adjudicate any residual findings;
 do not start an unbounded fix loop.
 
