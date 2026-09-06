@@ -380,7 +380,9 @@ def test_occlusion_prompt_isolates_trusted_data_and_repair_codes():
     assert candidate.candidate_id in prompt
     assert "OCCLUSION_INTERVAL_NOT_ALLOWED" in prompt
     assert "invent" in prompt.lower()
-    assert "uninterrupted observed run" in prompt
+    assert "do not cross a retained known missing run" in prompt
+    assert "incomplete lifecycle coverage does not prove uninterrupted visibility" in prompt
+    assert "within one uninterrupted observed run" not in prompt
     assert "one-sided partial phase" in prompt
 
 
