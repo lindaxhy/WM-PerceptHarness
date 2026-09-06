@@ -1,0 +1,113 @@
+{
+  "actual_model_generate_calls": 6,
+  "degradation_count": 1,
+  "evidence_sha256": {
+    "database_result_text": "d84a17cd3dd2a002f00ace6a2764ccea209de920effbf47c65780444dabf4a60",
+    "observer": "f59b99aa346c7f84ce1d4c361d8c8f18d7d50abb503d1f788664dca654aad2c2",
+    "poll": "6ce96d5a6477a1e9a0631a80ab20d6c41c5ca940d731f849b698221f0f34e8ab"
+  },
+  "failure": "validated_semantic_cache_key_redacted",
+  "jobs": [
+    {
+      "metrics": {
+        "inference_seconds": 15.805522184993606,
+        "input_tokens": 3657,
+        "output_tokens": 1025,
+        "semantic_cache_hit": false,
+        "semantic_cache_key": "04d6f9c26f8d389423e3f430eaa64a2095f29c1a685c42f78359e67470cc949f",
+        "semantic_cache_published": true,
+        "semantic_cache_result_sha256": "4725e0cf568d19b1d39f27d87743f1ff73686003452dd562d921f8118eb038b3"
+      },
+      "ordinal": 0,
+      "stage": "embodied_enrichment",
+      "status": "COMPLETED"
+    },
+    {
+      "metrics": {
+        "inference_seconds": 11.83213768096175,
+        "input_tokens": 3193,
+        "output_tokens": 536,
+        "semantic_cache_hit": false,
+        "semantic_cache_key": "bed3956ac8b27b83ecfe5884e18b571d6b04e93dc908a6fa8aae2a974e1c13f8",
+        "semantic_cache_published": true,
+        "semantic_cache_result_sha256": "94219a3533d2bce170d09281c3b92b63926ceb84d978e1f7ef29c3515a385f3b"
+      },
+      "ordinal": 0,
+      "stage": "embodied_pass_a",
+      "status": "COMPLETED"
+    },
+    {
+      "metrics": {
+        "inference_seconds": 37.61130285699619,
+        "input_tokens": 5844,
+        "output_tokens": 2645,
+        "semantic_cache_hit": false,
+        "semantic_cache_key": "d9397a85b974a39ac014ac71b7f1b46b247154da0819de2466b2f68abff87222",
+        "semantic_cache_published": true,
+        "semantic_cache_result_sha256": "e9b45e2c4783a2d13e2a4716682b8a1bc0da1bd41c4d93c631430111b953b968"
+      },
+      "ordinal": 0,
+      "stage": "embodied_pass_b",
+      "status": "COMPLETED"
+    },
+    {
+      "metrics": {
+        "inference_seconds": 34.94860604300629,
+        "input_tokens": 5855,
+        "output_tokens": 2622,
+        "semantic_cache_hit": false,
+        "semantic_cache_key": "3932bb02d7f72e225c13c0c245f24f5c03c3b6e2f43834cd2900a5f6c46533a2",
+        "semantic_cache_published": true,
+        "semantic_cache_result_sha256": "eb8adc37ba38ded77c9eaaeaf18550ad7b8e67a186ecceddc004dc2c5cd5913f"
+      },
+      "ordinal": 1,
+      "stage": "embodied_pass_b",
+      "status": "COMPLETED"
+    },
+    {
+      "metrics": {
+        "inference_seconds": 17.913651335053146,
+        "input_tokens": 6017,
+        "output_tokens": 926,
+        "semantic_cache_hit": false,
+        "semantic_cache_key": "1df5f58940ba9cc1fa0069fcce9d9fc09e6402e359dce273962de18252beec95",
+        "semantic_cache_published": true,
+        "semantic_cache_result_sha256": "6fb8dade03a29c2661f6b03859782bd43eb77b480400bf55d8e34af7a5a7333e"
+      },
+      "ordinal": 0,
+      "stage": "scene_semantics",
+      "status": "COMPLETED"
+    },
+    {
+      "metrics": {
+        "inference_seconds": 22.80878321302589,
+        "input_tokens": 6034,
+        "output_tokens": 1156,
+        "semantic_cache_hit": false,
+        "semantic_cache_key": "f55258dd03367336c9d94202cf6ddd80bc812ed3f49ac64940ac4162dd0c1585",
+        "semantic_cache_published": true,
+        "semantic_cache_result_sha256": "6fb8dade03a29c2661f6b03859782bd43eb77b480400bf55d8e34af7a5a7333e"
+      },
+      "ordinal": 1,
+      "stage": "scene_semantics",
+      "status": "COMPLETED"
+    }
+  ],
+  "notes": [
+    "First sample only; remaining four samples were never submitted.",
+    "Original data and completed task remain unchanged.",
+    "Public response rejected by independent validator.",
+    "API restoration fix requires subsequent verification."
+  ],
+  "public_poll_valid": false,
+  "repair_count": 2,
+  "sam_calls": 0,
+  "sample_id": "full_0001",
+  "scene_status": "unavailable",
+  "schema": "failed_cohort_control_observation_v1",
+  "source_commit": "8eb0eb6f1e5187710e0df781f341089c88c0abac",
+  "task_status": "COMPLETED",
+  "total_input_tokens": 30600,
+  "total_output_tokens": 8910,
+  "wall_seconds": 142.20784997940063
+}

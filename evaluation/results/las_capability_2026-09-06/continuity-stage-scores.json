@@ -1,0 +1,156 @@
+{
+  "schema": "occlusion_stage_comparison_diagnostic_v1",
+  "sample_id": "full_0002",
+  "source_commit": "8eb0eb6f1e5187710e0df781f341089c88c0abac",
+  "diagnostic_only": true,
+  "validated_decisions_sha256": "731ce88d9b3479d8482981b02d46cc8cb7e13f34f5625968424014ef8204d297",
+  "reference_provenance": {
+    "reference_sha256": "783a9b6338c5329a84293d33c3d5e60c3ef5e7ec81c9b740fee5fc28c5349bca",
+    "reference_manifest_sha256": "0ff6ee6b0df3d7aa9afe1ae74b4514be5de7fc8a378d63afb087eb0b6b5ae3bf",
+    "source_video_sha256": "6741b6184b847b6096e4282b1e0f76142714870b258ca16a19606e0441f0973f",
+    "submitted_media": {
+      "relationship_to_source": "video_only_transcode",
+      "sha256": "efa111221955501ff12132cffcaffbda8a2ed7679322104a2aa0280c8c868d82",
+      "size_bytes": 6381665,
+      "codec": "h264",
+      "width": 1280,
+      "height": 720,
+      "frames": 441,
+      "fps": 30.0,
+      "duration_seconds": 14.7,
+      "audio_streams": 0
+    }
+  },
+  "event_scores": {
+    "0.3": {
+      "precision": {
+        "value": 0.3333333333333333,
+        "numerator": 2,
+        "denominator": 6,
+        "reason": null
+      },
+      "recall": {
+        "value": 0.3333333333333333,
+        "numerator": 2,
+        "denominator": 6,
+        "reason": null
+      },
+      "f1": {
+        "value": 0.3333333333333333,
+        "numerator": 4,
+        "denominator": 12,
+        "reason": null
+      },
+      "reference_count": 6,
+      "prediction_count": 6,
+      "matched_count": 2,
+      "unmatched_reference_ids": [
+        "evt_002",
+        "evt_004",
+        "evt_006",
+        "evt_008"
+      ],
+      "unmatched_prediction_ids": [
+        "decision_9_event_0",
+        "decision_9_event_2",
+        "decision_10_event_0",
+        "decision_10_event_2"
+      ]
+    },
+    "0.5": {
+      "precision": {
+        "value": 0.3333333333333333,
+        "numerator": 2,
+        "denominator": 6,
+        "reason": null
+      },
+      "recall": {
+        "value": 0.3333333333333333,
+        "numerator": 2,
+        "denominator": 6,
+        "reason": null
+      },
+      "f1": {
+        "value": 0.3333333333333333,
+        "numerator": 4,
+        "denominator": 12,
+        "reason": null
+      },
+      "reference_count": 6,
+      "prediction_count": 6,
+      "matched_count": 2,
+      "unmatched_reference_ids": [
+        "evt_002",
+        "evt_004",
+        "evt_006",
+        "evt_008"
+      ],
+      "unmatched_prediction_ids": [
+        "decision_9_event_0",
+        "decision_9_event_2",
+        "decision_10_event_0",
+        "decision_10_event_2"
+      ]
+    }
+  },
+  "hidden_event_interval_scores": {
+    "0.3": {
+      "precision": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "recall": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "f1": {
+        "value": 1.0,
+        "numerator": 4,
+        "denominator": 4,
+        "reason": null
+      },
+      "reference_count": 2,
+      "prediction_count": 2,
+      "matched_count": 2,
+      "unmatched_reference_ids": [],
+      "unmatched_prediction_ids": []
+    },
+    "0.5": {
+      "precision": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "recall": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "f1": {
+        "value": 1.0,
+        "numerator": 4,
+        "denominator": 4,
+        "reason": null
+      },
+      "reference_count": 2,
+      "prediction_count": 2,
+      "matched_count": 2,
+      "unmatched_reference_ids": [],
+      "unmatched_prediction_ids": []
+    }
+  },
+  "notes": [
+    "Single stage and video only; does not satisfy the full cohort gate.",
+    "Frozen LAS references are machine output, not human truth.",
+    "Matching uses event type and temporal IoU, not physical object identity.",
+    "Two predicted occlusion episodes, each with entering, hidden and exiting phases; prior duplicate absent.",
+    "Reference uses full-video 720p transcode; local source uses original video.",
+    "The historical Pass A wooden_board entity conflates two distinct boards. This diagnostic does not resolve their physical identity."
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "elapsed_seconds": 4.3353391219861805,
+  "image_pixel_limit": {
+    "max_pixels": 131072,
+    "min_pixels": 4096
+  },
+  "request_media_resolution": "medium",
+  "response_sha256": "40ad0c32ddfea7bc70be03c040a8b1e6d19e3f424a08d2e981a3c7dde11e08fa",
+  "source_video_sha256": "c3243c46bad68d3b2772e82648e45b68e75a1893b0ce27edecd450226464c1e9",
+  "status": "completed",
+  "usage": {
+    "input_tokens": 1859,
+    "output_tokens": 50
+  }
+}

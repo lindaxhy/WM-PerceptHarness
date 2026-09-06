@@ -1,0 +1,206 @@
+[
+  {
+    "sample_id": "full_0001",
+    "cap": 200000,
+    "summary_chars": 167970,
+    "tracks": 15,
+    "observations": 278,
+    "relations": 143,
+    "overlays": 7,
+    "candidates": 17,
+    "with_occluders": 14,
+    "seconds": 0.937,
+    "joint_chars": 199479,
+    "with_identity_sections": 17,
+    "continuation_cues": 23,
+    "cross_label_cues": 27,
+    "allowed_typed_intervals": 48,
+    "by_target": {
+      "left_hand": {
+        "candidates": 2,
+        "continuations": 1,
+        "label_conflicts": 4
+      },
+      "red_apple": {
+        "candidates": 12,
+        "continuations": 22,
+        "label_conflicts": 17
+      },
+      "right_hand": {
+        "candidates": 2,
+        "continuations": 0,
+        "label_conflicts": 4
+      },
+      "yellow_wicker_basket": {
+        "candidates": 1,
+        "continuations": 0,
+        "label_conflicts": 2
+      }
+    },
+    "lifecycle_candidates_unchanged": true,
+    "lifecycle_candidates": 12,
+    "uncertainty_candidates": 5
+  },
+  {
+    "sample_id": "full_0002",
+    "cap": 200000,
+    "summary_chars": 179017,
+    "tracks": 10,
+    "observations": 319,
+    "relations": 155,
+    "overlays": 20,
+    "candidates": 11,
+    "with_occluders": 11,
+    "seconds": 0.822,
+    "joint_chars": 199533,
+    "with_identity_sections": 11,
+    "continuation_cues": 14,
+    "cross_label_cues": 21,
+    "allowed_typed_intervals": 26,
+    "by_target": {
+      "right_hand": {
+        "candidates": 1,
+        "continuations": 0,
+        "label_conflicts": 1
+      },
+      "wooden_board": {
+        "candidates": 2,
+        "continuations": 3,
+        "label_conflicts": 4
+      },
+      "wooden_table": {
+        "candidates": 6,
+        "continuations": 11,
+        "label_conflicts": 12
+      },
+      "yellow_ball": {
+        "candidates": 2,
+        "continuations": 0,
+        "label_conflicts": 4
+      }
+    },
+    "lifecycle_candidates_unchanged": true,
+    "lifecycle_candidates": 11,
+    "uncertainty_candidates": 0
+  },
+  {
+    "sample_id": "full_0004",
+    "cap": 200000,
+    "summary_chars": 156292,
+    "tracks": 17,
+    "observations": 246,
+    "relations": 143,
+    "overlays": 7,
+    "candidates": 25,
+    "with_occluders": 24,
+    "seconds": 0.877,
+    "joint_chars": 199543,
+    "with_identity_sections": 25,
+    "continuation_cues": 19,
+    "cross_label_cues": 45,
+    "allowed_typed_intervals": 65,
+    "by_target": {
+      "clear_plastic_cup": {
+        "candidates": 11,
+        "continuations": 13,
+        "label_conflicts": 21
+      },
+      "green_plastic_cup": {
+        "candidates": 3,
+        "continuations": 1,
+        "label_conflicts": 6
+      },
+      "left_hand": {
+        "candidates": 1,
+        "continuations": 0,
+        "label_conflicts": 1
+      },
+      "red_plastic_cup": {
+        "candidates": 2,
+        "continuations": 0,
+        "label_conflicts": 4
+      },
+      "yellow_plastic_cup": {
+        "candidates": 8,
+        "continuations": 5,
+        "label_conflicts": 13
+      }
+    },
+    "lifecycle_candidates_unchanged": true,
+    "lifecycle_candidates": 13,
+    "uncertainty_candidates": 12
+  },
+  {
+    "sample_id": "full_0021",
+    "cap": 200000,
+    "summary_chars": 170457,
+    "tracks": 14,
+    "observations": 278,
+    "relations": 160,
+    "overlays": 8,
+    "candidates": 14,
+    "with_occluders": 13,
+    "seconds": 0.902,
+    "joint_chars": 196768,
+    "with_identity_sections": 14,
+    "continuation_cues": 13,
+    "cross_label_cues": 26,
+    "allowed_typed_intervals": 39,
+    "by_target": {
+      "dark_blue_block": {
+        "candidates": 2,
+        "continuations": 2,
+        "label_conflicts": 4
+      },
+      "dark_brown_block": {
+        "candidates": 3,
+        "continuations": 1,
+        "label_conflicts": 6
+      },
+      "light_blue_block": {
+        "candidates": 1,
+        "continuations": 2,
+        "label_conflicts": 2
+      },
+      "peach_support_blocks": {
+        "candidates": 4,
+        "continuations": 8,
+        "label_conflicts": 8
+      },
+      "right_hand": {
+        "candidates": 3,
+        "continuations": 0,
+        "label_conflicts": 4
+      },
+      "yellow_block": {
+        "candidates": 1,
+        "continuations": 0,
+        "label_conflicts": 2
+      }
+    },
+    "lifecycle_candidates_unchanged": true,
+    "lifecycle_candidates": 5,
+    "uncertainty_candidates": 9
+  },
+  {
+    "sample_id": "full_0024",
+    "cap": 200000,
+    "summary_chars": 105957,
+    "tracks": 3,
+    "observations": 192,
+    "relations": 95,
+    "overlays": 0,
+    "candidates": 0,
+    "with_occluders": 0,
+    "seconds": 0.138,
+    "joint_chars": 106234,
+    "with_identity_sections": 0,
+    "continuation_cues": 0,
+    "cross_label_cues": 0,
+    "allowed_typed_intervals": 0,
+    "by_target": {},
+    "lifecycle_candidates_unchanged": true,
+    "lifecycle_candidates": 0,
+    "uncertainty_candidates": 0
+  }
+]

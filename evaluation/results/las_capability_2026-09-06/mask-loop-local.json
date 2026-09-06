@@ -1,0 +1,12 @@
+{
+  "candidate_C_loops": {
+    "checksum": 201025794,
+    "seconds": 0.19874004099983722
+  },
+  "current": {
+    "checksum": 201025794,
+    "seconds": 0.6908677920000628
+  },
+  "mask_count": 12,
+  "pixels": 24883200
+}

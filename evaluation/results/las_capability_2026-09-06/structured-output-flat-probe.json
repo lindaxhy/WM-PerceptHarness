@@ -1,0 +1,24 @@
+{
+  "call_count": 1,
+  "elapsed_seconds": 1.8021816370019224,
+  "http_status": 200,
+  "max_output_tokens": 128,
+  "model_identity_matches": true,
+  "operator_sha256": "e405bea710d9533efe268a3066893a72514fb2f48432835486490e7579408f1b",
+  "provider_completed": true,
+  "request_sha256": "40737a7be62c564ef13fd32c0985cef17ca15adea68de6e9073a830c416bad79",
+  "response_sha256": "c538e73dc167fb4cb53e73727395adb1b7e3d6c32709c286f895759562ab0ce2",
+  "sam_calls": 0,
+  "schema": "structured_output_capability_probe_v1",
+  "schema_enforcement_observed": true,
+  "source_video_sha256": "6741b6184b847b6096e4282b1e0f76142714870b258ca16a19606e0441f0973f",
+  "status": "completed",
+  "usage": {
+    "input_tokens": 277,
+    "output_tokens": 6
+  },
+  "notes": [
+    "A single tiny schema capability probe, not complete production schema validation or semantic acceptance.",
+    "The observed response follows the allowed enum; this does not prove enforcement of every JSON Schema keyword."
+  ]
+}

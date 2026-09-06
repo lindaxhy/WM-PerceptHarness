@@ -1,0 +1,13 @@
+{
+  "schema": "local_verification_v1",
+  "source_commit": "c1259157bafb89553afba61b36c4b6c55b357b3a",
+  "python_tests_passed": 1975,
+  "existing_dependency_warnings": 2,
+  "elapsed_seconds": 128.35,
+  "coverage_percent": 86.77438990648,
+  "coverage_gate_percent": 85,
+  "coverage_gate_passed": true,
+  "pytest_log_sha256": "4947e1e53d4877d46bbd5772e92fc040228de5d3e5114375583fb113ed46bed7",
+  "coverage_json_sha256": "2f3cdd9af179bac8aa90b324824b545de2a4717919908f724a040e5065eb8bcd",
+  "scope": "Full Python suite with coverage; no semantic acceptance implied."
+}

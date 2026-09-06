@@ -1,0 +1,25 @@
+{
+  "call_count": 1,
+  "elapsed_seconds": 12.337580271007027,
+  "entity_count": 5,
+  "issue_codes": [],
+  "model_identity": "doubao-seed-2-1-pro-260628",
+  "omitted_entity_count": 0,
+  "operator_sha256": "44c868d8517747f0c912397ff3318b38617132acf20c2ec53303ea6d741f6244",
+  "prompt_sha256": "ea961ef1a46d84cd643b0cbd2aa32ea597e99031051a1dd120ba5a2156fe07b9",
+  "sam_calls": 0,
+  "sample_id": "full_0002",
+  "schema": "pass_a_inventory_diagnostic_v1",
+  "source_commit": "48e415553252775aa06d3ebbfcfaec53d0e71bb1",
+  "source_video_sha256": "6741b6184b847b6096e4282b1e0f76142714870b258ca16a19606e0441f0973f",
+  "status": "valid",
+  "usage": {
+    "input_tokens": 3834,
+    "output_tokens": 416
+  },
+  "wheel_sha256": "501c507799bc746b0a2e22a4ec24ec2f17f70c1b5091f27cdd4d6bbb2100abf8",
+  "notes": [
+    "Single-call inventory diagnostic only; no SAM or complete task run.",
+    "Validated inventory separately includes light wooden board and gray-edged white board; exact physical association remains unverified."
+  ]
+}

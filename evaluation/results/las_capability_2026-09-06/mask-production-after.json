@@ -1,0 +1,15 @@
+{
+  "schema": "production_mask_accounting_benchmark_v1",
+  "module_sha256": "e7f177c78fb09d87c8abed2ef0bdf2cf21c192eeab3712ca3393d5b0bec61de0",
+  "mask_source_sha256": "87108beb9ffb140d38a7d153ef128c595b4e71a5cace67a7c03297a901d10a82",
+  "masks": 12,
+  "pixels": 24883200,
+  "seconds": [
+    0.6020318740047514,
+    0.5944632700120565,
+    0.5988691819948144
+  ],
+  "median_seconds": 0.5988691819948144,
+  "result_sha256": "60b81cf990c2dd88607f3e85bdf6fa839ddc3923b54a3e35f46056a6782994b0",
+  "sam_inference_calls": 0
+}

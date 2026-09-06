@@ -1,0 +1,102 @@
+{
+  "bundle_sha256": "78d2d0ab96e4e7d3c155a7316ba2091ae5ec21beb815be47a4fba8ea2dfd96d5",
+  "schema": "semantic_reverification_report_v1",
+  "source_commit": "a1da788e6a9e10c8eb4b8e3073ea1ec3d670e0bf",
+  "stages": [
+    {
+      "attempts": [
+        {
+          "elapsed_seconds": 67.90091878199019,
+          "issue_codes": [
+            "SCENE_SPATIAL_INVALID",
+            "SCENE_SPATIAL_ORDER_INVALID",
+            "SCENE_SPATIAL_TIME_NOT_OBSERVED",
+            "SCENE_SPATIAL_SOURCE_SEGMENTS_INVALID",
+            "SCENE_SPATIAL_TRACKS_INVALID",
+            "SCENE_SPATIAL_KEYFRAMES_INVALID",
+            "SCENE_SPATIAL_PROVENANCE_INVALID",
+            "SCENE_SPATIAL_PROHIBITED_CONTENT"
+          ],
+          "ordinal": 0,
+          "request_sha256": "1f33503676d811a388515808c5ed085d76945eb50fa6b3d92b3c84d1265ab594",
+          "response_sha256": "eff46c2d065ed0c976d52207f54e97805aa0400f3ed0d386d4e48adf5b789f1c",
+          "status": "invalid",
+          "usage": {
+            "input_tokens": 103761,
+            "output_tokens": 3538
+          }
+        },
+        {
+          "elapsed_seconds": 69.1822375790216,
+          "issue_codes": [
+            "SCENE_SPATIAL_INVALID",
+            "SCENE_SPATIAL_ORDER_INVALID",
+            "SCENE_SPATIAL_TIME_NOT_OBSERVED",
+            "SCENE_SPATIAL_SOURCE_SEGMENTS_INVALID",
+            "SCENE_SPATIAL_KEYFRAMES_INVALID"
+          ],
+          "ordinal": 1,
+          "request_sha256": "6aaa95a740a53c96ce8d8d138069beecf8604834433f1a69966d9438ed8f8c46",
+          "response_sha256": "47321bc2bc634f0f1b9ff80288fb444c8368adc03b952bcdc371a0d27c8c555e",
+          "status": "invalid",
+          "usage": {
+            "input_tokens": 103855,
+            "output_tokens": 3641
+          }
+        }
+      ],
+      "call_count": 2,
+      "final_issue_codes": [
+        "SCENE_SPATIAL_INVALID",
+        "SCENE_SPATIAL_ORDER_INVALID",
+        "SCENE_SPATIAL_TIME_NOT_OBSERVED",
+        "SCENE_SPATIAL_SOURCE_SEGMENTS_INVALID",
+        "SCENE_SPATIAL_KEYFRAMES_INVALID"
+      ],
+      "repair_issue_codes": [
+        "SCENE_SPATIAL_INVALID",
+        "SCENE_SPATIAL_ORDER_INVALID",
+        "SCENE_SPATIAL_TIME_NOT_OBSERVED",
+        "SCENE_SPATIAL_SOURCE_SEGMENTS_INVALID",
+        "SCENE_SPATIAL_TRACKS_INVALID",
+        "SCENE_SPATIAL_KEYFRAMES_INVALID",
+        "SCENE_SPATIAL_PROVENANCE_INVALID",
+        "SCENE_SPATIAL_PROHIBITED_CONTENT"
+      ],
+      "sample_id": "full_0001",
+      "schema": "semantic_reverification_stage_report_v1",
+      "stable_data_sha256": "da63fd0678e66180a32602f4a3f11ae6be3419942fa31fa57173e6375a9cdb23",
+      "stage": "scene_semantics",
+      "status": "invalid"
+    },
+    {
+      "attempts": [
+        {
+          "elapsed_seconds": 49.95451075298479,
+          "issue_codes": [],
+          "ordinal": 0,
+          "request_sha256": "eaa7ffc77d7727a85f855cde4ca9122464d25013f36c49aa50761c3afdb69405",
+          "response_sha256": "00522fd63b5027635c81748a5e8c33cec2ea597a77eee9149c84ed276c206f85",
+          "status": "valid",
+          "usage": {
+            "input_tokens": 111392,
+            "output_tokens": 2161
+          }
+        }
+      ],
+      "call_count": 1,
+      "classification_counts": {
+        "occlusion": 11,
+        "out_of_frame": 4
+      },
+      "decision_count": 15,
+      "sample_id": "full_0002",
+      "schema": "semantic_reverification_stage_report_v1",
+      "stable_data_sha256": "4c0fe35ca3582e3eea15c263122292721b9cf6059608d2c932048b68516a41e8",
+      "stage": "occlusion_semantics",
+      "status": "valid"
+    }
+  ],
+  "status": "execution_complete",
+  "wheel_sha256": "07eb7d6885e0699881d74670e2686cc55c636a38ed0cbacd67819cf6c8505695"
+}

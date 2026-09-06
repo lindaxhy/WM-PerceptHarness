@@ -1,0 +1,122 @@
+[
+  {
+    "candidates": 7,
+    "cap": 200000,
+    "observations": 530,
+    "overlays": 0,
+    "relations": 0,
+    "sample_id": "full_0001",
+    "seconds": 0.877,
+    "summary_chars": 196049,
+    "tracks": 15,
+    "with_occluders": 0
+  },
+  {
+    "candidates": 7,
+    "cap": 60000,
+    "observations": 120,
+    "overlays": 0,
+    "relations": 0,
+    "sample_id": "full_0001",
+    "seconds": 0.542,
+    "summary_chars": 55866,
+    "tracks": 15,
+    "with_occluders": 0
+  },
+  {
+    "candidates": 15,
+    "cap": 200000,
+    "observations": 374,
+    "overlays": 21,
+    "relations": 124,
+    "sample_id": "full_0002",
+    "seconds": 0.26,
+    "summary_chars": 186216,
+    "tracks": 10,
+    "with_occluders": 6
+  },
+  {
+    "candidates": 3,
+    "cap": 60000,
+    "observations": 139,
+    "overlays": 0,
+    "relations": 0,
+    "sample_id": "full_0002",
+    "seconds": 0.336,
+    "summary_chars": 58133,
+    "tracks": 10,
+    "with_occluders": 0
+  },
+  {
+    "candidates": 1,
+    "cap": 200000,
+    "observations": 529,
+    "overlays": 24,
+    "relations": 0,
+    "sample_id": "full_0004",
+    "seconds": 0.387,
+    "summary_chars": 198746,
+    "tracks": 17,
+    "with_occluders": 0
+  },
+  {
+    "candidates": 5,
+    "cap": 60000,
+    "observations": 122,
+    "overlays": 0,
+    "relations": 0,
+    "sample_id": "full_0004",
+    "seconds": 0.403,
+    "summary_chars": 57106,
+    "tracks": 17,
+    "with_occluders": 0
+  },
+  {
+    "candidates": 1,
+    "cap": 200000,
+    "observations": 554,
+    "overlays": 0,
+    "relations": 0,
+    "sample_id": "full_0021",
+    "seconds": 0.837,
+    "summary_chars": 198981,
+    "tracks": 14,
+    "with_occluders": 0
+  },
+  {
+    "candidates": 1,
+    "cap": 60000,
+    "observations": 140,
+    "overlays": 0,
+    "relations": 0,
+    "sample_id": "full_0021",
+    "seconds": 0.495,
+    "summary_chars": 59061,
+    "tracks": 14,
+    "with_occluders": 0
+  },
+  {
+    "candidates": 0,
+    "cap": 200000,
+    "observations": 192,
+    "overlays": 0,
+    "relations": 95,
+    "sample_id": "full_0024",
+    "seconds": 0.133,
+    "summary_chars": 105957,
+    "tracks": 3,
+    "with_occluders": 0
+  },
+  {
+    "candidates": 0,
+    "cap": 60000,
+    "observations": 165,
+    "overlays": 0,
+    "relations": 0,
+    "sample_id": "full_0024",
+    "seconds": 0.215,
+    "summary_chars": 59420,
+    "tracks": 3,
+    "with_occluders": 0
+  }
+]

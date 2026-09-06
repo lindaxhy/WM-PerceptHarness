@@ -1,0 +1,191 @@
+[
+  {
+    "sample_id": "full_0001",
+    "cap": 200000,
+    "summary_chars": 175153,
+    "tracks": 15,
+    "observations": 292,
+    "relations": 149,
+    "overlays": 7,
+    "candidates": 23,
+    "with_occluders": 20,
+    "seconds": 1.154,
+    "joint_chars": 199868,
+    "with_identity_sections": 0,
+    "continuation_cues": 0,
+    "cross_label_cues": 0,
+    "allowed_typed_intervals": 66,
+    "by_target": {
+      "left_hand": {
+        "candidates": 2,
+        "continuations": 0,
+        "label_conflicts": 0
+      },
+      "red_apple": {
+        "candidates": 17,
+        "continuations": 0,
+        "label_conflicts": 0
+      },
+      "right_hand": {
+        "candidates": 2,
+        "continuations": 0,
+        "label_conflicts": 0
+      },
+      "yellow_wicker_basket": {
+        "candidates": 2,
+        "continuations": 0,
+        "label_conflicts": 0
+      }
+    }
+  },
+  {
+    "sample_id": "full_0002",
+    "cap": 200000,
+    "summary_chars": 182896,
+    "tracks": 10,
+    "observations": 329,
+    "relations": 157,
+    "overlays": 20,
+    "candidates": 15,
+    "with_occluders": 15,
+    "seconds": 1.024,
+    "joint_chars": 197946,
+    "with_identity_sections": 0,
+    "continuation_cues": 0,
+    "cross_label_cues": 0,
+    "allowed_typed_intervals": 38,
+    "by_target": {
+      "right_hand": {
+        "candidates": 1,
+        "continuations": 0,
+        "label_conflicts": 0
+      },
+      "wooden_board": {
+        "candidates": 3,
+        "continuations": 0,
+        "label_conflicts": 0
+      },
+      "wooden_table": {
+        "candidates": 7,
+        "continuations": 0,
+        "label_conflicts": 0
+      },
+      "yellow_ball": {
+        "candidates": 4,
+        "continuations": 0,
+        "label_conflicts": 0
+      }
+    }
+  },
+  {
+    "sample_id": "full_0004",
+    "cap": 200000,
+    "summary_chars": 173421,
+    "tracks": 17,
+    "observations": 273,
+    "relations": 163,
+    "overlays": 8,
+    "candidates": 26,
+    "with_occluders": 26,
+    "seconds": 1.121,
+    "joint_chars": 199734,
+    "with_identity_sections": 0,
+    "continuation_cues": 0,
+    "cross_label_cues": 0,
+    "allowed_typed_intervals": 68,
+    "by_target": {
+      "clear_plastic_cup": {
+        "candidates": 11,
+        "continuations": 0,
+        "label_conflicts": 0
+      },
+      "green_plastic_cup": {
+        "candidates": 3,
+        "continuations": 0,
+        "label_conflicts": 0
+      },
+      "left_hand": {
+        "candidates": 1,
+        "continuations": 0,
+        "label_conflicts": 0
+      },
+      "red_plastic_cup": {
+        "candidates": 2,
+        "continuations": 0,
+        "label_conflicts": 0
+      },
+      "yellow_plastic_cup": {
+        "candidates": 9,
+        "continuations": 0,
+        "label_conflicts": 0
+      }
+    }
+  },
+  {
+    "sample_id": "full_0021",
+    "cap": 200000,
+    "summary_chars": 183069,
+    "tracks": 14,
+    "observations": 302,
+    "relations": 170,
+    "overlays": 8,
+    "candidates": 15,
+    "with_occluders": 14,
+    "seconds": 1.046,
+    "joint_chars": 199912,
+    "with_identity_sections": 0,
+    "continuation_cues": 0,
+    "cross_label_cues": 0,
+    "allowed_typed_intervals": 42,
+    "by_target": {
+      "dark_blue_block": {
+        "candidates": 2,
+        "continuations": 0,
+        "label_conflicts": 0
+      },
+      "dark_brown_block": {
+        "candidates": 3,
+        "continuations": 0,
+        "label_conflicts": 0
+      },
+      "light_blue_block": {
+        "candidates": 1,
+        "continuations": 0,
+        "label_conflicts": 0
+      },
+      "peach_support_blocks": {
+        "candidates": 4,
+        "continuations": 0,
+        "label_conflicts": 0
+      },
+      "right_hand": {
+        "candidates": 4,
+        "continuations": 0,
+        "label_conflicts": 0
+      },
+      "yellow_block": {
+        "candidates": 1,
+        "continuations": 0,
+        "label_conflicts": 0
+      }
+    }
+  },
+  {
+    "sample_id": "full_0024",
+    "cap": 200000,
+    "summary_chars": 105957,
+    "tracks": 3,
+    "observations": 192,
+    "relations": 95,
+    "overlays": 0,
+    "candidates": 0,
+    "with_occluders": 0,
+    "seconds": 0.138,
+    "joint_chars": 106234,
+    "with_identity_sections": 0,
+    "continuation_cues": 0,
+    "cross_label_cues": 0,
+    "allowed_typed_intervals": 0,
+    "by_target": {}
+  }
+]
