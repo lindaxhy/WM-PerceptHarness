@@ -813,6 +813,128 @@ def test_huge_tracks_aliases_observations_and_overlays_remain_bounded() -> None:
     } <= warning_codes
 
 
+def test_prompt_budget_preserves_transition_relation_and_overlay() -> None:
+    """Dense observations must yield budget to later transition evidence."""
+    transition_frame = 36
+    final_frame = 39
+    overlap_box = (0.2, 0.2, 0.5, 0.5)
+    tracks = (
+        _track(
+            "target_1",
+            "target",
+            tuple(
+                _observation(frame, bbox_xyxy=overlap_box)
+                for frame in (*range(transition_frame + 1), final_frame)
+            ),
+        ),
+        _track(
+            "board_1",
+            "board",
+            tuple(
+                _observation(frame, bbox_xyxy=overlap_box)
+                for frame in range(final_frame + 1)
+            ),
+        ),
+        *tuple(
+            _track(
+                f"context_{ordinal}_1",
+                f"context_{ordinal}",
+                tuple(
+                    _observation(
+                        frame,
+                        bbox_xyxy=(0.6, 0.6, 0.8, 0.8),
+                    )
+                    for frame in range(final_frame + 1)
+                ),
+            )
+            for ordinal in range(4)
+        ),
+    )
+    overlay = ArtifactFile(
+        path="overlays/board-transition.png",
+        sha256="c" * 64,
+        size_bytes=1,
+    )
+    artifact = _artifact(
+        tracks,
+        files=(overlay,),
+        overlay_records=(
+            OverlayRecord(
+                path=overlay.path,
+                track_id="board_1",
+                frame_index=transition_frame,
+            ),
+        ),
+        processed_timeline=_timeline(*range(final_frame + 1)),
+    )
+
+    summary = summarize_cv_evidence(
+        artifact,
+        max_observations_per_track=40,
+        max_relations=1,
+        max_overlays=1,
+        max_prompt_chars=12_000,
+    )
+    repeated = summarize_cv_evidence(
+        artifact.model_copy(update={"tracks": tuple(reversed(tracks))}),
+        max_observations_per_track=40,
+        max_relations=1,
+        max_overlays=1,
+        max_prompt_chars=12_000,
+    )
+
+    target = next(track for track in summary.tracks if track.track_id == "target_1")
+    transition = next(
+        observation
+        for observation in target.observations
+        if observation.frame_index == transition_frame
+    )
+    assert transition.timestamp_seconds == 3.6
+    assert [
+        (relation.frame_index, relation.timestamp_seconds)
+        for relation in summary.relations
+    ] == [(transition_frame, 3.6)]
+    assert {
+        summary.relations[0].subject_track_id,
+        summary.relations[0].object_track_id,
+    } == {"board_1", "target_1"}
+    assert summary.relations[0].bbox_iou == 1.0
+    assert summary.overlay_refs == (overlay.path,)
+    assert summary.overlays_complete is True
+    assert summary.relations_complete is False
+    assert summary.candidate_search_complete is False
+    assert {
+        "OBSERVATIONS_TRUNCATED",
+        "RELATIONS_TRUNCATED",
+        "PROMPT_DATA_TRUNCATED",
+    } <= {warning.code for warning in summary.warnings}
+    assert summary.summary_id == repeated.summary_id
+    candidate = next(
+        item
+        for item in build_occlusion_candidates(summary, _thresholds())
+        if item.target_track_id == "target_1"
+    )
+    repeated_candidate = next(
+        item
+        for item in build_occlusion_candidates(repeated, _thresholds())
+        if item.target_track_id == "target_1"
+    )
+    assert [
+        (item.entity_id, item.track_id)
+        for item in candidate.possible_occluders
+    ] == [("board", "board_1")]
+    assert candidate.overlay_refs == (overlay.path,)
+    assert candidate.candidate_id == repeated_candidate.candidate_id
+    assert len(
+        json.dumps(
+            summary.prompt_record(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    ) <= 12_000
+
+
 def test_summary_and_prompt_records_are_deeply_immutable_and_fresh() -> None:
     """Mutating trusted prompt data must not mutate the frozen evidence model."""
     summary = summarize_cv_evidence(

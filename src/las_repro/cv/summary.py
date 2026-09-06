@@ -1218,18 +1218,6 @@ def summarize_cv_evidence(
         return summary
 
     prompt_truncated = True
-    relation_cap = 0
-    summary = assemble()
-    if _summary_fits(summary, max_prompt_chars):
-        summary.prompt_record()
-        return summary
-
-    overlay_cap = 0
-    summary = assemble()
-    if _summary_fits(summary, max_prompt_chars):
-        summary.prompt_record()
-        return summary
-
     alias_cap = 0
     include_untracked_entities = False
     summary = assemble()
@@ -1237,28 +1225,62 @@ def summarize_cv_evidence(
         summary.prompt_record()
         return summary
 
-    # Preserve the three-observation context needed to identify a local quality
-    # dip before dropping whole, stably ordered tracks.  Both cap searches are
-    # logarithmic, so hostile-but-valid inputs cannot trigger hundreds of full
-    # summary rebuilds while the prompt budget is being reduced.
-    original_track_cap = track_cap
-    low = 3
-    high = observation_cap - 1
-    best_observation_summary: CvEvidenceSummary | None = None
+    # Allocate the remaining prompt space across observations, relations, and
+    # overlays.  A feasible reduced summary keeps the three-observation context
+    # needed for a local quality dip plus one useful witness of each kind when
+    # the source contains one.
+    # Searching a shared scale prevents any one evidence kind from consuming
+    # the entire prompt before the others receive a finite allocation.
+    original_observation_cap = observation_cap
+    original_relation_cap = relation_cap
+    original_overlay_cap = overlay_cap
+    minimum_observation_cap = min(3, original_observation_cap)
+    minimum_relation_cap = (
+        min(1, original_relation_cap)
+        if any(relation.bbox_iou > 0.0 for relation in summary.relations)
+        else 0
+    )
+    minimum_overlay_cap = (
+        min(1, original_overlay_cap) if summary.overlays else 0
+    )
+    scale_steps = max(
+        original_observation_cap - minimum_observation_cap,
+        original_relation_cap - minimum_relation_cap,
+        original_overlay_cap - minimum_overlay_cap,
+    )
+    low = 0
+    high = max(0, scale_steps - 1)
+    best_evidence_summary: CvEvidenceSummary | None = None
     while low <= high:
-        candidate_cap = (low + high) // 2
-        observation_cap = candidate_cap
+        scale_step = (low + high) // 2
+        observation_cap = minimum_observation_cap + (
+            (original_observation_cap - minimum_observation_cap) * scale_step
+            // max(1, scale_steps)
+        )
+        relation_cap = minimum_relation_cap + (
+            (original_relation_cap - minimum_relation_cap) * scale_step
+            // max(1, scale_steps)
+        )
+        overlay_cap = minimum_overlay_cap + (
+            (original_overlay_cap - minimum_overlay_cap) * scale_step
+            // max(1, scale_steps)
+        )
         candidate_summary = assemble()
         if _summary_fits(candidate_summary, max_prompt_chars):
-            best_observation_summary = candidate_summary
-            low = candidate_cap + 1
+            best_evidence_summary = candidate_summary
+            low = scale_step + 1
         else:
-            high = candidate_cap - 1
-    if best_observation_summary is not None:
-        best_observation_summary.prompt_record()
-        return best_observation_summary
+            high = scale_step - 1
+    if best_evidence_summary is not None:
+        best_evidence_summary.prompt_record()
+        return best_evidence_summary
 
-    observation_cap = min(3, max_observations_per_track)
+    observation_cap = minimum_observation_cap
+    relation_cap = minimum_relation_cap
+    overlay_cap = minimum_overlay_cap
+    # If the shared evidence floor cannot fit, drop whole, stably ordered tracks
+    # before sacrificing the context inside every retained track.
+    original_track_cap = track_cap
     low = 1
     high = original_track_cap - 1
     best_track_summary: CvEvidenceSummary | None = None
@@ -1282,6 +1304,13 @@ def summarize_cv_evidence(
         if _summary_fits(summary, max_prompt_chars):
             summary.prompt_record()
             return summary
+
+    relation_cap = 0
+    overlay_cap = 0
+    summary = assemble()
+    if _summary_fits(summary, max_prompt_chars):
+        summary.prompt_record()
+        return summary
 
     track_cap = 0
     summary = assemble()
@@ -2857,9 +2886,18 @@ def _relations(
     tracks: tuple[SummaryTrack, ...], *, cap: int
 ) -> tuple[tuple[SpatialRelation, ...], int, bool]:
     by_frame: dict[int, list[tuple[str, SummaryObservation]]] = {}
+    transition_frames_by_track: dict[str, set[int]] = {}
     for track in tracks:
         if track.status is not EvidenceStatus.AVAILABLE:
             continue
+        for gap in track.missing_intervals:
+            transition_frames_by_track.setdefault(track.track_id, set()).add(
+                gap.last_visible_frame
+            )
+            if gap.first_revisible_frame is not None:
+                transition_frames_by_track[track.track_id].add(
+                    gap.first_revisible_frame
+                )
         for observation in track.observations:
             if observation.visible:
                 by_frame.setdefault(observation.frame_index, []).append(
@@ -2878,12 +2916,28 @@ def _relations(
         return (), total_relations, True
     pair_scans = 0
     scan_complete = True
-    for retain_positive in (True, False):
+    # Positive overlap at a visibility boundary is the strongest geometric
+    # support for an occlusion candidate.  Consider those pairs before ordinary
+    # early-frame overlap so a finite cap cannot starve later transitions.
+    for require_transition, retain_positive in (
+        (True, True),
+        (False, True),
+        (True, False),
+        (False, False),
+    ):
         for frame_index in sorted(aligned_by_frame):
             aligned = aligned_by_frame[frame_index]
             for subject_index, (subject_track_id, subject) in enumerate(aligned):
                 for object_index in range(subject_index + 1, len(aligned)):
                     object_track_id, object_observation = aligned[object_index]
+                    supports_transition = (
+                        frame_index
+                        in transition_frames_by_track.get(subject_track_id, ())
+                        or frame_index
+                        in transition_frames_by_track.get(object_track_id, ())
+                    )
+                    if supports_transition != require_transition:
+                        continue
                     pair_scans += 1
                     if pair_scans > _MAX_RELATION_PAIR_SCANS:
                         scan_complete = False
