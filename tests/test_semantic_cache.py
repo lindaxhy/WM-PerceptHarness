@@ -569,7 +569,15 @@ def test_per_entry_limit_bounds_combined_canonical_identity_and_result(store, tm
         assert db.execute("SELECT COUNT(*) FROM semantic_results").fetchone()[0] == 0
 
 
-@pytest.mark.parametrize("prior_contract", ["embodied-output-v1", "embodied-output-v2"])
+@pytest.mark.parametrize(
+    "prior_contract",
+    [
+        "embodied-output-v1",
+        "embodied-output-v2",
+        "embodied-output-v3",
+        "embodied-output-v4",
+    ],
+)
 def test_candidate_v2_validator_does_not_replay_prior_contract_acceptance(store, tmp_path, monkeypatch, prior_contract):
     from las_repro import semantic_cache
     from test_candidate_v2 import gap_bundle, decisions

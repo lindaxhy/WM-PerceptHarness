@@ -164,6 +164,164 @@ def test_uncertainty_windows_are_three_independent_visual_options():
     assert not summary.tracks[0].missing_intervals
 
 
+def test_real_shaped_uncertainty_bridge_is_removed_before_budget_packing():
+    def timestamp(frame):
+        return round(frame / 30.0, 6)
+
+    frames = tuple(range(80))
+    timeline = sm.FrameTimeline(
+        frames=tuple(
+            sm.FrameTimestamp(
+                frame_index=frame,
+                timestamp_seconds=timestamp(frame),
+            )
+            for frame in frames
+        )
+    )
+    observations = tuple(
+        _observation(
+            frame,
+            timestamp_seconds=timestamp(frame),
+            area_fraction={
+                43: 0.0009717399691358024,
+                44: 0.00023775077160493826,
+                79: 0.00037229938271604937,
+            }.get(frame, 0.02),
+            confidence=0.9649122953414917,
+        )
+        for frame in (*range(45), 79)
+    )
+    summary = sm.summarize_cv_evidence(
+        _artifact(
+            (_track("yellow_ball_0", "yellow_ball", observations),),
+            processed_timeline=timeline,
+        ),
+        timeline=timeline,
+        max_observations_per_track=4,
+    )
+
+    track = summary.tracks[0]
+    assert [item.frame_index for item in track.observations] == [0, 43, 44, 79]
+    assert [item.source_ordinal for item in track.observations] == [0, 43, 44, 45]
+    assert [
+        (run.state, run.start_frame, run.end_frame)
+        for run in track.visibility_runs
+    ] == [
+        ("visible", 0, 44),
+        ("missing", 45, 78),
+        ("visible", 79, 79),
+    ]
+    assert track.visibility_lifecycle_complete is True
+    assert track.candidate_search_complete is False
+
+    bundle = sm.build_cv_prompt_bundle(
+        summary,
+        _thresholds(),
+        max_candidates=1,
+    )
+    repeated = sm.build_cv_prompt_bundle(
+        summary,
+        _thresholds(),
+        max_candidates=1,
+    )
+
+    assert bundle == repeated
+    assert bundle.candidates_complete is True
+    assert bundle.truncation_codes == ("SUMMARY_CANDIDATE_SEARCH_INCOMPLETE",)
+    assert len(bundle.candidates) == 1
+    [candidate] = bundle.candidates
+    assert (candidate.last_visible_frame, candidate.first_revisible_frame) == (44, 79)
+    assert [
+        (option.event_type, option.start, option.end)
+        for option in candidate.allowed_event_intervals
+    ] == [
+        ("occlusion_enter", 1.466667, 1.5),
+        ("occluded", 1.5, 2.6),
+        ("occlusion_exit", 2.6, 2.633333),
+    ]
+    sm.validate_candidate_identity_evidence(summary, bundle.candidates)
+
+
+def test_missing_runs_split_individual_and_grouped_uncertainty_support():
+    target = _track(
+        "item_1",
+        "item",
+        tuple(
+            _observation(
+                frame,
+                confidence=0.1 if frame in (1, 2, 4, 5, 6, 8, 9) else 0.9,
+            )
+            for frame in (0, 1, 2, 4, 5, 6, 8, 9, 10)
+        ),
+    )
+    summary = sm.summarize_cv_evidence(
+        _artifact((target,), processed_timeline=_timeline(*range(11))),
+        timeline=_timeline(*range(11)),
+    )
+    bundle = sm.build_cv_prompt_bundle(summary, _thresholds())
+
+    assert [item.frame_index for item in summary.tracks[0].observations] == [
+        0, 1, 2, 4, 5, 6, 8, 9, 10
+    ]
+    assert [
+        (run.state, run.start_frame, run.end_frame)
+        for run in summary.tracks[0].visibility_runs
+    ] == [
+        ("visible", 0, 2),
+        ("missing", 3, 3),
+        ("visible", 4, 6),
+        ("missing", 7, 7),
+        ("visible", 8, 10),
+    ]
+    assert [
+        (candidate.last_visible_frame, candidate.first_revisible_frame)
+        for candidate in bundle.candidates
+    ] == [(0, 2), (2, 4), (4, 6), (6, 8), (8, 10)]
+    uncertainty = [
+        candidate
+        for candidate in bundle.candidates
+        if len(candidate.allowed_event_intervals) == 3
+    ]
+    assert [
+        (candidate.last_visible_frame, candidate.first_revisible_frame)
+        for candidate in uncertainty
+    ] == [(0, 2), (4, 6), (8, 10)]
+    assert all(
+        len({(option.start, option.end) for option in candidate.allowed_event_intervals})
+        == 1
+        for candidate in uncertainty
+    )
+
+
+def test_sparse_processed_frames_without_missing_run_remain_uncertainty_support():
+    timeline = _timeline(0, 10, 20)
+    target = _track(
+        "item_1",
+        "item",
+        (
+            _observation(0),
+            _observation(10, confidence=0.1),
+            _observation(20),
+        ),
+    )
+    summary = sm.summarize_cv_evidence(
+        _artifact((target,), processed_timeline=timeline),
+        timeline=timeline,
+    )
+
+    assert [run.state for run in summary.tracks[0].visibility_runs] == ["visible"]
+    [candidate] = sm.build_cv_prompt_bundle(summary, _thresholds()).candidates
+    assert (candidate.last_visible_frame, candidate.first_revisible_frame) == (0, 20)
+    assert {
+        (option.event_type, option.start, option.end)
+        for option in candidate.allowed_event_intervals
+    } == {
+        ("occluded", 0.0, 2.0),
+        ("occlusion_enter", 0.0, 2.0),
+        ("occlusion_exit", 0.0, 2.0),
+    }
+
+
 def test_old_bundle_marker_cannot_be_replayed_via_bypass_model():
     bundle=gap_bundle()
     with pytest.raises(ValueError):

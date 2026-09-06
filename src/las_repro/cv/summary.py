@@ -4043,6 +4043,7 @@ def _uncertain_observation_drafts(
     observations = track.observations
     if len(observations) < 3:
         return ()
+    continuous_edges = _continuous_observation_edges(track)
     uncertain: list[tuple[bool, bool]] = [(False, False)] * len(observations)
     for index in range(1, len(observations) - 1):
         previous = observations[index - 1]
@@ -4054,6 +4055,8 @@ def _uncertain_observation_drafts(
             previous.source_ordinal + 1 == current.source_ordinal
             and current.source_ordinal + 1 == following.source_ordinal
         ):
+            continue
+        if not (continuous_edges[index - 1] and continuous_edges[index]):
             continue
         low_confidence = current.confidence < thresholds.min_confidence
         reference_area = max(previous.area_fraction, following.area_fraction)
@@ -4117,6 +4120,29 @@ def _uncertain_observation_drafts(
             )
         index = end + 1
     return tuple(drafts)
+
+
+def _continuous_observation_edges(track: SummaryTrack) -> tuple[bool, ...]:
+    """Mark adjacent retained observations that do not cross a known missing run."""
+    observations = track.observations
+    missing_runs = tuple(
+        run for run in track.visibility_runs if run.state == "missing"
+    )
+    continuous: list[bool] = []
+    missing_index = 0
+    for previous, current in zip(observations, observations[1:]):
+        while (
+            missing_index < len(missing_runs)
+            and missing_runs[missing_index].end_frame <= previous.frame_index
+        ):
+            missing_index += 1
+        crosses_missing = (
+            missing_index < len(missing_runs)
+            and missing_runs[missing_index].start_frame < current.frame_index
+            and missing_runs[missing_index].end_frame > previous.frame_index
+        )
+        continuous.append(not crosses_missing)
+    return tuple(continuous)
 
 
 def _possible_occluders(
