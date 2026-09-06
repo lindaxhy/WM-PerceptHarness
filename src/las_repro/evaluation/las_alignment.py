@@ -1139,7 +1139,10 @@ def adapt_hybrid(
         ):
             raise ValueError("artifact configuration or video mismatch")
         summary = summarize_cv_evidence(
-            artifact, timeline=timeline, **config["summary_limits"]
+            artifact,
+            timeline=timeline,
+            thresholds=request.thresholds,
+            **config["summary_limits"],
         )
         bundle = build_cv_prompt_bundle(
             summary, request.thresholds, **config["bundle_limits"]

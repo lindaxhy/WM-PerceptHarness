@@ -481,6 +481,150 @@ def test_available_evidence_rebuilt_with_bound_config_and_real_artifact(
         )
 
 
+def test_evaluation_rebuild_keeps_threshold_aware_candidate_provenance(
+    tmp_path, monkeypatch
+):
+    from test_cv_artifacts import cv_request
+    from test_cv_summary import _artifact, _observation, _timeline, _track
+    from test_hybrid_result import source_segments
+
+    from las_repro.cv.artifacts import CvArtifactStore, cv_cache_key
+    import las_repro.cv.summary as summary_module
+    from las_repro.evaluation import las_alignment as las
+    from las_repro.pipelines.hybrid_result import build_hybrid_result
+    from las_repro.pipelines.scene_semantics import unavailable_scene_semantics
+
+    timeline = _timeline(*range(40))
+    tracks = tuple(
+        _track(
+            f"item_{ordinal}_1",
+            f"item_{ordinal}",
+            tuple(
+                _observation(
+                    frame,
+                    bbox_xyxy=(
+                        0.05 + ordinal * 0.2,
+                        0.1,
+                        0.15 + ordinal * 0.2,
+                        0.2,
+                    ),
+                )
+                for frame in range(40)
+                if frame != 30 + ordinal
+            ),
+        )
+        for ordinal in range(4)
+    )
+    artifact = _artifact(tracks, processed_timeline=timeline)
+    request = cv_request.__wrapped__().model_copy(
+        update={
+            "duration_seconds": 4.0,
+            "frame_count": 40,
+            "timeline": timeline,
+            "entities": artifact.entities,
+        }
+    )
+    root = tmp_path / "artifacts"
+    with CvArtifactStore(root) as store, store.staging(cv_cache_key(request)) as stage:
+        handle = store.publish(request, stage, artifact)
+    summary_limits = {
+        "max_tracks": 64,
+        "max_observations_per_track": 40,
+        "max_relations": 1,
+        "max_overlays": 24,
+        "max_prompt_chars": 12_000,
+    }
+    config = {
+        "sampling": request.sampling.model_dump(mode="json"),
+        "thresholds": request.thresholds.model_dump(mode="json"),
+        "summary_limits": summary_limits,
+        "bundle_limits": {
+            "max_candidates": 256,
+            "max_prompt_chars": 12_000,
+        },
+    }
+    trusted_summary = summary_module.summarize_cv_evidence(
+        artifact,
+        timeline=timeline,
+        thresholds=request.thresholds,
+        **summary_limits,
+    )
+    trusted_bundle = summary_module.build_cv_prompt_bundle(
+        trusted_summary,
+        request.thresholds,
+        **config["bundle_limits"],
+    )
+    decisions = [
+        {
+            "candidate_id": candidate.candidate_id,
+            "classification": "unknown",
+            "target_entity_id": candidate.target_entity_id,
+            "occluder_entity_id": "unknown",
+            "events": [],
+            "visual_evidence": "insufficient evidence",
+            "confidence": 0.2,
+        }
+        for candidate in trusted_bundle.candidates
+    ]
+    assert len(decisions) == 4
+    result = build_hybrid_result(
+        task_description="move",
+        segments=source_segments(),
+        scene=unavailable_scene_semantics(),
+        scene_status="unavailable",
+        cv_evidence={
+            "status": "available",
+            "artifact_key": handle.key,
+            "manifest_sha256": handle.manifest_sha256,
+            "cache_hit": False,
+        },
+        warnings=[{"code": "SCENE_SEMANTICS_UNAVAILABLE"}],
+        performance={
+            "stages": [],
+            "total_seconds": 0.0,
+            "repair_count": 0,
+            "degradation_count": 1,
+        },
+        evidence_summary=trusted_summary,
+        occlusion={
+            "status": "available",
+            "decisions": decisions,
+            "events": [],
+        },
+    )
+    captured_bundles = []
+    original_build = summary_module.build_cv_prompt_bundle
+
+    def capture_bundle(*args, **kwargs):
+        bundle = original_build(*args, **kwargs)
+        captured_bundles.append(bundle)
+        return bundle
+
+    monkeypatch.setattr(summary_module, "build_cv_prompt_bundle", capture_bundle)
+
+    adapted = las.adapt_hybrid(
+        result,
+        sample_id="s",
+        duration=4.0,
+        configuration={"cv": config},
+        artifact_root=root,
+        timeline=timeline,
+        video_sha256=request.video_sha256,
+    )
+
+    [bundle] = captured_bundles
+    assert len(bundle.candidates) == 4
+    assert {candidate.target_track_id for candidate in bundle.candidates} == {
+        f"item_{ordinal}_1" for ordinal in range(4)
+    }
+    assert "CANDIDATE_PROMPT_TRUNCATED" not in bundle.truncation_codes
+    assert adapted.provenance["cv_model"] == {
+        "provider": artifact.provider,
+        "model_identity": artifact.model_identity,
+        "checkpoint_sha256": artifact.checkpoint_sha256,
+    }
+
+
 def test_report_writer_is_canonical_idempotent_and_refuses_overwrite(tmp_path):
     from las_repro.evaluation import las_alignment as las
 
