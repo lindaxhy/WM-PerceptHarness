@@ -274,58 +274,74 @@ def _ids(values, *, integer=False, keyframe=False):
             raise ValueError("hybrid evidence ID is invalid")
 
 
+class ProvenanceValidationError(ValueError):
+    """Closed categories only; callers must still allowlist public repair codes."""
+
+    def __init__(self, issue_codes: Sequence[str]) -> None:
+        self.issue_codes = tuple(dict.fromkeys(issue_codes))
+        super().__init__("event provenance is invalid")
+
+
 def validate_event_provenance(
     event, *, segments, summary, frame_pts, spatial=False, expected_names=None
 ):
-    for key in ("source_track_ids", "source_keyframe_ids"):
-        _ids(event[key], keyframe=key == "source_keyframe_ids")
-    _ids(event["source_segment_indices"], integer=True)
+    try:
+        for key in ("source_track_ids", "source_keyframe_ids"):
+            _ids(event[key], keyframe=key == "source_keyframe_ids")
+        _ids(event["source_segment_indices"], integer=True)
+    except (ValueError, TypeError, KeyError):
+        raise ProvenanceValidationError(("PROVENANCE_INVALID",)) from None
+    issues: list[str] = []
     expected = [
         s["segment_index"]
         for s in segments
         if s["start"] < event["end"] and s["end"] > event["start"]
     ]
     if event["source_segment_indices"] != expected:
-        raise ValueError("hybrid source segments do not overlap")
+        issues.append("SOURCE_SEGMENTS_INVALID")
     if event["repair_history"] not in (["initial"], ["initial", "repair"]):
-        raise ValueError("hybrid repair history is invalid")
+        issues.append("PROVENANCE_INVALID")
     if event["evidence_mode"] != (
         "hybrid" if event["source_track_ids"] else "vlm_only"
     ):
-        raise ValueError("hybrid evidence mode is inconsistent")
+        issues.append("PROVENANCE_INVALID")
     if event["source_keyframe_ids"] and not event["source_track_ids"]:
-        raise ValueError("keyframes require source tracks")
+        issues.append("KEYFRAMES_INVALID")
     if summary is None:
+        if issues:
+            raise ProvenanceValidationError(issues)
         return
     tracks = {track.track_id: track for track in summary.tracks}
     if not set(event["source_track_ids"]) <= tracks.keys():
-        raise ValueError("foreign source track")
+        issues.append("TRACKS_INVALID")
     overlays = {
         PurePosixPath(overlay.path).stem: overlay for overlay in summary.overlays
     }
     if not set(event["source_keyframe_ids"]) <= overlays.keys():
-        raise ValueError("foreign source keyframe")
+        issues.append("KEYFRAMES_INVALID")
     for key in event["source_keyframe_ids"]:
-        if overlays[key].track_id not in event["source_track_ids"]:
-            raise ValueError("keyframe does not belong to source track")
+        if key in overlays and overlays[key].track_id not in event["source_track_ids"]:
+            issues.append("KEYFRAMES_INVALID")
     if spatial:
         clock = {frame.timestamp_seconds for frame in summary.observed_clock}
         if event["start"] not in clock or event["end"] not in clock:
-            raise ValueError("spatial boundaries are not observed PTS")
+            issues.append("TIME_NOT_OBSERVED")
     if expected_names is not None:
         expected_tracks, expected_frames = evidence_sources(
             event, expected_names, summary
         )
         if spatial:
             if not set(event["source_track_ids"]) <= set(expected_tracks):
-                raise ValueError("spatial track does not match object and interval")
+                issues.append("TRACKS_INVALID")
             if not set(event["source_keyframe_ids"]) <= set(expected_frames):
-                raise ValueError("spatial keyframe does not overlap interval")
+                issues.append("KEYFRAMES_INVALID")
         elif (event["source_track_ids"], event["source_keyframe_ids"]) != (
             expected_tracks,
             expected_frames,
         ):
-            raise ValueError("event provenance is not the deterministic projection")
+            issues.append("PROVENANCE_INVALID")
+    if issues:
+        raise ProvenanceValidationError(issues)
 
 
 def validate_hybrid_result(

@@ -259,13 +259,24 @@ def validate_scene_semantics(
             refs = ([row.object_id] if collection_name == "locations" else
                     [row.subject_object_id, row.object_object_id])
             key = (row.start, row.end, *refs)
-            if (not spatial_evidence_available or not 0 <= row.start < row.end <= duration
-                    or not set(refs) <= object_ids
-                    or (previous_key is not None and key < previous_key)
-                    or not row.source_track_ids
-                    or row.repair_history not in (["initial"], ["initial", "repair"])):
-                issues.append(TemporalIssue("SCENE_SPATIAL_INVALID", (collection_name, index),
-                                            "spatial facts require ordered supported references"))
+            checks = (
+                (not spatial_evidence_available, "EVIDENCE_UNAVAILABLE"),
+                (not 0 <= row.start < row.end <= duration, "TIME_BOUNDS_INVALID"),
+                (not set(refs) <= object_ids, "OBJECT_REFERENCE_INVALID"),
+                (previous_key is not None and key < previous_key, "ORDER_INVALID"),
+                (not row.source_track_ids, "TRACKS_INVALID"),
+                (row.repair_history not in (["initial"], ["initial", "repair"]),
+                 "PROVENANCE_INVALID"),
+            )
+            failed_codes = [code for failed, code in checks if failed]
+            if failed_codes:
+                for code in ("SCENE_SPATIAL_INVALID", *(
+                    "SCENE_SPATIAL_" + suffix for suffix in failed_codes
+                )):
+                    issues.append(TemporalIssue(
+                        code, (collection_name, index),
+                        "spatial facts require ordered supported references",
+                    ))
             previous_key = key
     for index, event in enumerate(result.semantic_events):
         path = ("semantic_events", index)

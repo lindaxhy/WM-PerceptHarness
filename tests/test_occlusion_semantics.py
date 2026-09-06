@@ -505,6 +505,9 @@ def test_occlusion_prompt_rejects_unvalidated_summary_and_entity_mappings():
         "masks/private.npz",
         "The mask is private.npy and shows the target.",
         "mask pixels:\n1,0\n0,1",
+        "The object moves left/right.",
+        "The object moves left\\right.",
+        "The object is [hidden].",
     ],
 )
 def test_schema_rejects_mask_or_path_content_before_persistence(evidence):
@@ -526,6 +529,16 @@ def test_schema_rejects_mask_or_path_content_before_persistence(evidence):
         }
     }
     assert evidence not in json.dumps(sanitized)
+
+
+def test_plain_words_pass_without_rewriting_occlusion_evidence():
+    candidate = _candidate()
+    raw = _positive_raw(candidate)
+    raw["decisions"][0]["visual_evidence"] = "The object moves left or right."
+    assert DEFAULT_OUTPUT_SCHEMAS.sanitize(
+        "OcclusionDecisionSet", raw,
+        {"duration": 3.0, "candidates": [candidate.model_dump(mode="json")]},
+    ) == raw
 
 
 def test_output_registry_replaces_arbitrary_timestamp_with_closed_issue_code():

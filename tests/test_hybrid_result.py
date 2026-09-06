@@ -165,16 +165,150 @@ def test_scene_spatial_failure_survives_registry(available_result, fault):
         scene["locations"][0]["source_segment_indices"] = [5]
     before = copy.deepcopy(scene)
     sanitized = DEFAULT_OUTPUT_SCHEMAS.sanitize("SceneSemantics", scene, context)
+    expected_codes = ["SCENE_SPATIAL_INVALID", (
+        "SCENE_SPATIAL_ORDER_INVALID" if fault == "ordering"
+        else "SCENE_SPATIAL_SOURCE_SEGMENTS_INVALID"
+    )]
     assert sanitized == {
         "_schema_validation": {
             "schema_name": "SceneSemantics",
             "status": "invalid",
-            "issue_codes": ["SCENE_SPATIAL_INVALID"],
+            "issue_codes": expected_codes,
         }
     }
     assert scene == before
     _, codes, _ = _validated_stage_result("SceneSemantics", sanitized, context)
-    assert list(codes) == ["SCENE_SPATIAL_INVALID"]
+    assert list(codes) == expected_codes
+
+
+def test_scene_repair_aggregates_independent_faults_without_leaking(available_result):
+    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+    from las_repro.pipelines.embodied import _validated_stage_result
+
+    result, summary = available_result
+    scene = {key: copy.deepcopy(result[key]) for key in hybrid_result.SCENE_KEYS}
+    later = copy.deepcopy(scene["locations"][0])
+    later["start"] = 0.5
+    scene["locations"].insert(0, later)
+    scene["locations"][1].update(
+        end=0.93, source_segment_indices=[], source_track_ids=[],
+        visual_evidence="private_marker left/right",
+    )
+    context = {
+        "duration": 1.0, "require_observed_content": True,
+        "required_object_ids": ["cup"], "segments": source_segments(),
+        "evidence_summary": summary.model_dump(mode="json"),
+    }
+    before = copy.deepcopy(scene)
+    sanitized = DEFAULT_OUTPUT_SCHEMAS.sanitize("SceneSemantics", scene, context)
+    expected = [
+        "SCENE_SPATIAL_INVALID", "SCENE_SPATIAL_ORDER_INVALID",
+        "SCENE_SPATIAL_TIME_NOT_OBSERVED", "SCENE_SPATIAL_SOURCE_SEGMENTS_INVALID",
+        "SCENE_SPATIAL_TRACKS_INVALID", "SCENE_SPATIAL_PROVENANCE_INVALID",
+        "SCENE_SPATIAL_PROHIBITED_CONTENT",
+    ]
+    assert sanitized == {"_schema_validation": {
+        "schema_name": "SceneSemantics", "status": "invalid", "issue_codes": expected,
+    }}
+    _, codes, _ = _validated_stage_result("SceneSemantics", sanitized, context)
+    assert list(codes) == expected
+    assert scene == before
+
+
+@pytest.mark.parametrize("field,value,code", [
+    ("end", 0.93, "TIME_NOT_OBSERVED"),
+    ("end", 1.1, "TIME_BOUNDS_INVALID"),
+    ("object_id", "missing", "OBJECT_REFERENCE_INVALID"),
+    ("source_track_ids", [], "TRACKS_INVALID"),
+    ("source_track_ids", ["foreign_track"], "TRACKS_INVALID"),
+    ("source_track_ids", ["cup_1", "cup_1"], "PROVENANCE_INVALID"),
+    ("source_keyframe_ids", ["foreign_frame"], "KEYFRAMES_INVALID"),
+    ("source_segment_indices", [], "SOURCE_SEGMENTS_INVALID"),
+    ("repair_history", [], "PROVENANCE_INVALID"),
+    ("visual_evidence", "moves left/right", "PROHIBITED_CONTENT"),
+])
+def test_scene_repair_reports_specific_closed_fault(available_result, field, value, code):
+    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+
+    result, summary = available_result
+    scene = {key: copy.deepcopy(result[key]) for key in hybrid_result.SCENE_KEYS}
+    scene["locations"][0][field] = value
+    context = {
+        "duration": 1.0, "require_observed_content": True,
+        "required_object_ids": ["cup"], "segments": source_segments(),
+        "evidence_summary": summary.model_dump(mode="json"),
+    }
+    before = copy.deepcopy(scene)
+    sanitized = DEFAULT_OUTPUT_SCHEMAS.sanitize("SceneSemantics", scene, context)
+    codes = sanitized["_schema_validation"]["issue_codes"]
+    assert "SCENE_SPATIAL_INVALID" in codes
+    assert "SCENE_SPATIAL_" + code in codes
+    assert scene == before
+
+
+def test_scene_repair_keeps_abstention_and_unavailable_evidence_rules(available_result):
+    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+
+    result, _ = available_result
+    scene = {key: copy.deepcopy(result[key]) for key in hybrid_result.SCENE_KEYS}
+    context = {"duration": 1.0, "require_observed_content": True,
+               "required_object_ids": ["cup"]}
+    invalid = DEFAULT_OUTPUT_SCHEMAS.sanitize("SceneSemantics", scene, context)
+    assert "SCENE_SPATIAL_EVIDENCE_UNAVAILABLE" in invalid["_schema_validation"]["issue_codes"]
+    scene["locations"] = []
+    assert DEFAULT_OUTPUT_SCHEMAS.sanitize("SceneSemantics", scene, context) == scene
+    scene["objects"][0]["description"] = "private/path"
+    invalid = DEFAULT_OUTPUT_SCHEMAS.sanitize("SceneSemantics", scene, context)
+    assert "SCENE_SPATIAL_PROHIBITED_CONTENT" in invalid["_schema_validation"]["issue_codes"]
+
+
+@pytest.mark.parametrize("error", [
+    hybrid_result.ProvenanceValidationError(("private/path arbitrary code",)),
+    ValueError("private/path raw exception"),
+])
+def test_scene_repair_filters_unknown_provenance_failures(available_result, monkeypatch, error):
+    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+
+    result, summary = available_result
+    scene = {key: copy.deepcopy(result[key]) for key in hybrid_result.SCENE_KEYS}
+    context = {
+        "duration": 1.0, "require_observed_content": True,
+        "required_object_ids": ["cup"], "segments": source_segments(),
+        "evidence_summary": summary.model_dump(mode="json"),
+    }
+
+    # Fault-inject only the validator failure; exercise the real transport boundary.
+    def fail_provenance(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(hybrid_result, "validate_event_provenance", fail_provenance)
+    assert DEFAULT_OUTPUT_SCHEMAS.sanitize("SceneSemantics", scene, context) == {
+        "_schema_validation": {
+            "schema_name": "SceneSemantics", "status": "invalid",
+            "issue_codes": ["SCENE_SPATIAL_INVALID"],
+        }
+    }
+
+
+def test_scene_video_end_is_not_implicitly_an_observed_frame(available_result):
+    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+
+    result, summary = available_result
+    scene = {key: copy.deepcopy(result[key]) for key in hybrid_result.SCENE_KEYS}
+    context = {
+        "duration": 1.03, "require_observed_content": True,
+        "required_object_ids": ["cup"], "segments": source_segments(),
+        "evidence_summary": summary.model_dump(mode="json"),
+    }
+    scene["locations"][0]["end"] = 1.03
+    assert DEFAULT_OUTPUT_SCHEMAS.sanitize("SceneSemantics", scene, context) == {
+        "_schema_validation": {
+            "schema_name": "SceneSemantics", "status": "invalid",
+            "issue_codes": ["SCENE_SPATIAL_INVALID", "SCENE_SPATIAL_TIME_NOT_OBSERVED"],
+        }
+    }
+    scene["locations"] = []
+    assert DEFAULT_OUTPUT_SCHEMAS.sanitize("SceneSemantics", scene, context) == scene
 
 
 @pytest.mark.parametrize(

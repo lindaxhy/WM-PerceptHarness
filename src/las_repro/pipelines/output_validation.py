@@ -127,6 +127,16 @@ _ENRICHMENT_TEMPORAL_CODES = (
 )
 _SCENE_TEMPORAL_CODES = (
     "SCENE_SPATIAL_INVALID",
+    "SCENE_SPATIAL_EVIDENCE_UNAVAILABLE",
+    "SCENE_SPATIAL_TIME_BOUNDS_INVALID",
+    "SCENE_SPATIAL_OBJECT_REFERENCE_INVALID",
+    "SCENE_SPATIAL_ORDER_INVALID",
+    "SCENE_SPATIAL_TIME_NOT_OBSERVED",
+    "SCENE_SPATIAL_SOURCE_SEGMENTS_INVALID",
+    "SCENE_SPATIAL_TRACKS_INVALID",
+    "SCENE_SPATIAL_KEYFRAMES_INVALID",
+    "SCENE_SPATIAL_PROVENANCE_INVALID",
+    "SCENE_SPATIAL_PROHIBITED_CONTENT",
     "EMPTY_SCENE_OBJECTS",
     "EMPTY_SCENE_EVENTS",
     "SCENE_REQUIRED_OBJECT_MISSING",
@@ -984,28 +994,46 @@ def _validate_scene_semantics_output(
             from ..cv.summary import CvEvidenceSummary
             summary = CvEvidenceSummary.model_validate(context["evidence_summary"])
             summary.prompt_record()
-        validate_scene_semantics(
-            scene,
-            duration,
-            require_observed_content=require_content,
-            required_object_ids=tuple(required_ids),
-            spatial_evidence_available=summary is not None,
+        issue_codes: list[str] = []
+        try:
+            validate_scene_semantics(
+                scene,
+                duration,
+                require_observed_content=require_content,
+                required_object_ids=tuple(required_ids),
+                spatial_evidence_available=summary is not None,
+            )
+        except TemporalValidationError as error:
+            issue_codes.extend(issue.code for issue in error.issues)
+        from .hybrid_result import (
+            ProvenanceValidationError, validate_event_provenance, _reject_artifact_text,
         )
-        from .hybrid_result import validate_event_provenance, _reject_artifact_text
-        _reject_artifact_text(scene.model_dump(mode="json"))
+        try:
+            _reject_artifact_text(scene.model_dump(mode="json"))
+        except ValueError:
+            issue_codes.extend(("SCENE_SPATIAL_INVALID", "SCENE_SPATIAL_PROHIBITED_CONTENT"))
         names = {obj.object_id: obj.name for obj in scene.objects}
         for collection in (scene.locations, scene.relations):
             for item in collection:
                 row = item.model_dump(mode="json")
                 ids = [row["object_id"]] if "object_id" in row else [row["subject_object_id"], row["object_object_id"]]
-                validate_event_provenance(row, segments=context["segments"], summary=summary,
-                    frame_pts=None, spatial=True, expected_names=[names[key] for key in ids])
-    except TemporalValidationError as error:
-        raise DeclaredSchemaOutputError(
-            tuple(dict.fromkeys(issue.code for issue in error.issues))
-        ) from None
+                # Absent evidence has already failed the basic scene check;
+                # no trusted provenance context exists to check in that case.
+                if summary is None:
+                    continue
+                try:
+                    validate_event_provenance(
+                        row, segments=context["segments"], summary=summary,
+                        frame_pts=None, spatial=True,
+                        expected_names=[names[key] for key in ids] if set(ids) <= names.keys() else None,
+                    )
+                except ProvenanceValidationError as error:
+                    issue_codes.append("SCENE_SPATIAL_INVALID")
+                    issue_codes.extend("SCENE_SPATIAL_" + code for code in error.issue_codes)
     except (ValueError, TypeError, KeyError):
         raise DeclaredSchemaOutputError(("SCENE_SPATIAL_INVALID",)) from None
+    if issue_codes:
+        raise DeclaredSchemaOutputError(tuple(dict.fromkeys(issue_codes)))
     return scene.model_dump(mode="json")
 
 

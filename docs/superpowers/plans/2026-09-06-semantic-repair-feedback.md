@@ -35,7 +35,7 @@ successful return. Add a ValueError subclass carrying closed `issue_codes`.
 `validate_scene_semantics` continues raising TemporalValidationError.
 The output registry continues returning only its existing invalid envelope.
 
-- [ ] Add failing regression cases to the existing available_result fixture.
+- [x] Add failing regression cases to the existing available_result fixture.
   Combine an unsorted location, wrong source segment list, unobserved end time,
   empty tracks, and slash evidence. The expected envelope contains the umbrella
   plus ORDER_INVALID, TIME_NOT_OBSERVED, SOURCE_SEGMENTS_INVALID,
@@ -52,9 +52,9 @@ The output registry continues returning only its existing invalid envelope.
   assert 'SCENE_SPATIAL_SOURCE_SEGMENTS_INVALID' in codes
   assert scene == before
   ```
-- [ ] Run `.venv/bin/python -m pytest tests/test_hybrid_result.py tests/test_occlusion_semantics.py -q`;
+- [x] Run `.venv/bin/python -m pytest tests/test_hybrid_result.py tests/test_occlusion_semantics.py -q`;
   confirm the new detailed-category expectations fail on current production.
-- [ ] Implement typed closed provenance errors from the shared predicates;
+- [x] Implement typed closed provenance errors from the shared predicates;
   retain ID validation and all existing checks. Aggregate deterministic categories
   without indexing unknown keyframes. Split the scene's combined temporal
   condition into independent closed checks, retaining umbrella compatibility.
@@ -69,12 +69,17 @@ The output registry continues returning only its existing invalid envelope.
           self.issue_codes = tuple(dict.fromkeys(issue_codes))
           super().__init__('event provenance is invalid')
   ```
-- [ ] Update prompts with the positive-occlusion converse, strict plain-text
+- [x] Update prompts with the positive-occlusion converse, strict plain-text
   rules, exact observed-clock boundaries, full temporal segment overlap rule,
   and closed-code explanations. Preserve unknown examples and spatial abstention.
-- [ ] Run focused tests and manually compare prompt contract against validators.
+- [x] Run focused tests and manually compare prompt contract against validators.
   Validate existing rendered prompt examples with synthetic trusted contexts.
-- [ ] Run full Python suite with coverage, Node tests, JS syntax and whitespace
+- [x] Run full Python suite with coverage, Node tests, JS syntax and whitespace
   checks. Request independent code review; resolve substantive findings and
   record verification in a new report, not historical experiment artifacts.
-- [ ] Commit only scoped files and hand off locally without merging or deployment.
+- [x] Commit only scoped files and hand off locally without merging or deployment.
+
+Verification: 1,740 Python tests, 85.87% coverage, 20 Node tests; independent
+review and scoped re-review closed. See
+`docs/reports/2026-09-06-semantic-repair-feedback.md` for the red/green evidence,
+unchanged historical acceptance and release boundary.
