@@ -847,21 +847,31 @@ def test_prompt_budget_preserves_transition_relation_and_overlay() -> None:
                     for frame in range(final_frame + 1)
                 ),
             )
-            for ordinal in range(4)
+            for ordinal in range(2)
         ),
     )
-    overlay = ArtifactFile(
-        path="overlays/board-transition.png",
+    unrelated_overlay = ArtifactFile(
+        path="overlays/a-board-unrelated.png",
         sha256="c" * 64,
+        size_bytes=1,
+    )
+    transition_overlay = ArtifactFile(
+        path="overlays/z-target-transition.png",
+        sha256="d" * 64,
         size_bytes=1,
     )
     artifact = _artifact(
         tracks,
-        files=(overlay,),
+        files=(unrelated_overlay, transition_overlay),
         overlay_records=(
             OverlayRecord(
-                path=overlay.path,
+                path=unrelated_overlay.path,
                 track_id="board_1",
+                frame_index=10,
+            ),
+            OverlayRecord(
+                path=transition_overlay.path,
+                track_id="target_1",
                 frame_index=transition_frame,
             ),
         ),
@@ -873,14 +883,14 @@ def test_prompt_budget_preserves_transition_relation_and_overlay() -> None:
         max_observations_per_track=40,
         max_relations=1,
         max_overlays=1,
-        max_prompt_chars=12_000,
+        max_prompt_chars=6_500,
     )
     repeated = summarize_cv_evidence(
         artifact.model_copy(update={"tracks": tuple(reversed(tracks))}),
         max_observations_per_track=40,
         max_relations=1,
         max_overlays=1,
-        max_prompt_chars=12_000,
+        max_prompt_chars=6_500,
     )
 
     target = next(track for track in summary.tracks if track.track_id == "target_1")
@@ -899,8 +909,8 @@ def test_prompt_budget_preserves_transition_relation_and_overlay() -> None:
         summary.relations[0].object_track_id,
     } == {"board_1", "target_1"}
     assert summary.relations[0].bbox_iou == 1.0
-    assert summary.overlay_refs == (overlay.path,)
-    assert summary.overlays_complete is True
+    assert summary.overlay_refs == (transition_overlay.path,)
+    assert summary.overlays_complete is False
     assert summary.relations_complete is False
     assert summary.candidate_search_complete is False
     assert {
@@ -923,7 +933,7 @@ def test_prompt_budget_preserves_transition_relation_and_overlay() -> None:
         (item.entity_id, item.track_id)
         for item in candidate.possible_occluders
     ] == [("board", "board_1")]
-    assert candidate.overlay_refs == (overlay.path,)
+    assert candidate.overlay_refs == (transition_overlay.path,)
     assert candidate.candidate_id == repeated_candidate.candidate_id
     assert len(
         json.dumps(
@@ -932,7 +942,122 @@ def test_prompt_budget_preserves_transition_relation_and_overlay() -> None:
             separators=(",", ":"),
             sort_keys=True,
         )
+    ) <= 6_500
+
+
+def test_overlay_cap_prioritizes_candidate_transition_over_lexical_path() -> None:
+    """An unrelated early path must not displace a transition overlay."""
+    target = _track(
+        "target_1",
+        "target",
+        (_observation(0), _observation(2)),
+    )
+    context = _track(
+        "context_1",
+        "context",
+        tuple(
+            _observation(frame, bbox_xyxy=(0.6, 0.6, 0.8, 0.8))
+            for frame in range(3)
+        ),
+    )
+    unrelated = ArtifactFile(
+        path="overlays/a-context.png",
+        sha256="c" * 64,
+        size_bytes=1,
+    )
+    transition = ArtifactFile(
+        path="overlays/z-target-transition.png",
+        sha256="d" * 64,
+        size_bytes=1,
+    )
+    artifact = _artifact(
+        (context, target),
+        files=(unrelated, transition),
+        overlay_records=(
+            OverlayRecord(
+                path=unrelated.path,
+                track_id="context_1",
+                frame_index=0,
+            ),
+            OverlayRecord(
+                path=transition.path,
+                track_id="target_1",
+                frame_index=0,
+            ),
+        ),
+        processed_timeline=_timeline(0, 1, 2),
+    )
+
+    summary = summarize_cv_evidence(artifact, max_overlays=1)
+    [candidate] = build_occlusion_candidates(summary, _thresholds())
+
+    assert summary.overlay_refs == (transition.path,)
+    assert candidate.overlay_refs == (transition.path,)
+    assert summary.overlays_complete is False
+
+
+def test_threshold_aware_summary_fits_complete_candidate_projection() -> None:
+    """Summary evidence must leave room for every bounded candidate it derives."""
+    timeline = _timeline(*range(40))
+    tracks = tuple(
+        _track(
+            f"item_{ordinal}_1",
+            f"item_{ordinal}",
+            tuple(
+                _observation(
+                    frame,
+                    bbox_xyxy=(
+                        0.05 + ordinal * 0.2,
+                        0.1,
+                        0.15 + ordinal * 0.2,
+                        0.2,
+                    ),
+                )
+                for frame in range(40)
+                if frame != 30 + ordinal
+            ),
+        )
+        for ordinal in range(4)
+    )
+    thresholds = _thresholds()
+
+    summary = summarize_cv_evidence(
+        _artifact(tracks, processed_timeline=timeline),
+        timeline=timeline,
+        max_observations_per_track=40,
+        max_relations=1,
+        max_prompt_chars=12_000,
+        thresholds=thresholds,
+    )
+    raw_candidates = build_occlusion_candidates(summary, thresholds)
+    bundle = summary_module.build_cv_prompt_bundle(summary, thresholds)
+
+    assert len(raw_candidates) == 4
+    assert bundle.candidates == raw_candidates
+    assert "CANDIDATE_PROMPT_TRUNCATED" not in bundle.truncation_codes
+    assert len(
+        json.dumps(
+            bundle.prompt_record(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
     ) <= 12_000
+
+
+def test_threshold_aware_summary_revalidates_thresholds() -> None:
+    """Constructed non-finite thresholds must fail at the summary boundary."""
+    unsafe = EvidenceThresholds.model_construct(
+        min_confidence=float("nan"),
+        min_area_fraction=0.01,
+        occlusion_visibility_drop=0.5,
+    )
+    artifact = _artifact(
+        (_track("target_1", "target", (_observation(0),)),)
+    )
+
+    with pytest.raises((ValidationError, ValueError)):
+        summarize_cv_evidence(artifact, thresholds=unsafe)
 
 
 def test_summary_and_prompt_records_are_deeply_immutable_and_fresh() -> None:

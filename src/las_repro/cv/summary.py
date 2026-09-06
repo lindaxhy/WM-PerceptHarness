@@ -1157,6 +1157,7 @@ def summarize_cv_evidence(
     artifact: CvEvidenceArtifact,
     *,
     timeline: FrameTimeline | None = None,
+    thresholds: EvidenceThresholds | None = None,
     max_tracks: int = _DEFAULT_MAX_TRACKS,
     max_observations_per_track: int = _DEFAULT_MAX_OBSERVATIONS_PER_TRACK,
     max_relations: int = _DEFAULT_MAX_RELATIONS,
@@ -1183,9 +1184,14 @@ def summarize_cv_evidence(
     _preflight_artifact(artifact)
     if timeline is not None:
         _preflight_timeline(timeline)
+    if thresholds is not None:
+        _preflight_thresholds(thresholds)
     validated_artifact = _revalidate_artifact(artifact)
     validated_timeline = (
         _revalidate_timeline(timeline) if timeline is not None else None
+    )
+    validated_thresholds = (
+        _revalidate_thresholds(thresholds) if thresholds is not None else None
     )
     frame_clock = _validated_frame_clock(validated_artifact, validated_timeline)
     _validate_identifier_bounds(validated_artifact)
@@ -1213,7 +1219,7 @@ def summarize_cv_evidence(
         )
 
     summary = assemble()
-    if _summary_fits(summary, max_prompt_chars):
+    if _summary_fits(summary, max_prompt_chars, validated_thresholds):
         summary.prompt_record()
         return summary
 
@@ -1221,7 +1227,7 @@ def summarize_cv_evidence(
     alias_cap = 0
     include_untracked_entities = False
     summary = assemble()
-    if _summary_fits(summary, max_prompt_chars):
+    if _summary_fits(summary, max_prompt_chars, validated_thresholds):
         summary.prompt_record()
         return summary
 
@@ -1266,7 +1272,9 @@ def summarize_cv_evidence(
             // max(1, scale_steps)
         )
         candidate_summary = assemble()
-        if _summary_fits(candidate_summary, max_prompt_chars):
+        if _summary_fits(
+            candidate_summary, max_prompt_chars, validated_thresholds
+        ):
             best_evidence_summary = candidate_summary
             low = scale_step + 1
         else:
@@ -1288,7 +1296,9 @@ def summarize_cv_evidence(
         candidate_cap = (low + high) // 2
         track_cap = candidate_cap
         candidate_summary = assemble()
-        if _summary_fits(candidate_summary, max_prompt_chars):
+        if _summary_fits(
+            candidate_summary, max_prompt_chars, validated_thresholds
+        ):
             best_track_summary = candidate_summary
             low = candidate_cap + 1
         else:
@@ -1301,20 +1311,20 @@ def summarize_cv_evidence(
     for reduced_observation_cap in range(min(observation_cap, 2), 0, -1):
         observation_cap = reduced_observation_cap
         summary = assemble()
-        if _summary_fits(summary, max_prompt_chars):
+        if _summary_fits(summary, max_prompt_chars, validated_thresholds):
             summary.prompt_record()
             return summary
 
     relation_cap = 0
     overlay_cap = 0
     summary = assemble()
-    if _summary_fits(summary, max_prompt_chars):
+    if _summary_fits(summary, max_prompt_chars, validated_thresholds):
         summary.prompt_record()
         return summary
 
     track_cap = 0
     summary = assemble()
-    if _summary_fits(summary, max_prompt_chars):
+    if _summary_fits(summary, max_prompt_chars, validated_thresholds):
         summary.prompt_record()
         return summary
 
@@ -2352,6 +2362,24 @@ def _assemble_summary(
         if artifact.status is EvidenceStatus.AVAILABLE
         else ()
     )
+    visibility_by_track: dict[
+        str, tuple[tuple[VisibilityRun, ...], int, int]
+    ] = {}
+    for track in selected_tracks:
+        if track.status is EvidenceStatus.AVAILABLE:
+            visibility_by_track[track.track_id] = _derive_visibility_runs(
+                track,
+                frame_clock,
+                cap=min(observation_cap, _MAX_VISIBILITY_RUNS_PER_TRACK),
+            )
+    relation_priority_frames = _transition_relation_priority_frames(
+        selected_tracks,
+        {
+            track_id: visibility[0]
+            for track_id, visibility in visibility_by_track.items()
+        },
+        cap=relation_cap,
+    )
     summary_tracks: list[SummaryTrack] = []
     mandatory_conflicts = 0
     total_gaps = 0
@@ -2379,11 +2407,9 @@ def _assemble_summary(
                 )
             )
             continue
-        retained_runs, source_run_count, track_gap_count = _derive_visibility_runs(
-            track,
-            frame_clock,
-            cap=min(observation_cap, _MAX_VISIBILITY_RUNS_PER_TRACK),
-        )
+        retained_runs, source_run_count, track_gap_count = visibility_by_track[
+            track.track_id
+        ]
         lifecycle_complete = len(retained_runs) == source_run_count
         lifecycle_boundary_frames = {
             frame_index
@@ -2398,6 +2424,9 @@ def _assemble_summary(
             track.observations,
             observation_cap,
             priority_frames=lifecycle_boundary_frames,
+            relation_priority_frames=relation_priority_frames.get(
+                track.track_id
+            ),
             maximum_frame=(
                 None
                 if lifecycle_complete
@@ -2462,10 +2491,44 @@ def _assemble_summary(
         for observation in track.observations
         if observation.visible
     }
+    transition_tracks_by_frame: dict[int, set[str]] = {}
+    priority_overlay_keys: set[tuple[str, int]] = set()
+    for track in tracks:
+        for gap in track.missing_intervals:
+            for frame_index in (
+                gap.last_visible_frame,
+                gap.first_revisible_frame,
+            ):
+                if frame_index is None:
+                    continue
+                transition_tracks_by_frame.setdefault(frame_index, set()).add(
+                    track.track_id
+                )
+                priority_overlay_keys.add((track.track_id, frame_index))
+    for relation in relations:
+        if relation.bbox_iou <= 0.0:
+            continue
+        endpoints = {
+            relation.subject_track_id,
+            relation.object_track_id,
+        }
+        if endpoints & transition_tracks_by_frame.get(relation.frame_index, set()):
+            priority_overlay_keys.update(
+                (track_id, relation.frame_index) for track_id in endpoints
+            )
     eligible_overlays = tuple(
-        overlay
-        for overlay in all_overlays
-        if (overlay.track_id, overlay.frame_index) in retained_visible
+        sorted(
+            (
+                overlay
+                for overlay in all_overlays
+                if (overlay.track_id, overlay.frame_index) in retained_visible
+            ),
+            key=lambda overlay: (
+                (overlay.track_id, overlay.frame_index)
+                not in priority_overlay_keys,
+                overlay.path,
+            ),
+        )
     )
     overlays = eligible_overlays[:overlay_cap]
     uncovered_entity_count = 0
@@ -2620,11 +2683,84 @@ def _truncate_text(value: str, maximum: int) -> tuple[str, bool]:
     return value[:maximum], True
 
 
+def _transition_relation_priority_frames(
+    tracks: tuple[CvTrack, ...],
+    visibility_by_track: Mapping[str, tuple[VisibilityRun, ...]],
+    *,
+    cap: int,
+) -> dict[str, set[int]]:
+    """Select bounded positive transition pairs before observation reduction."""
+    if cap == 0:
+        return {}
+    transition_tracks_by_frame: dict[int, set[str]] = {}
+    for track_id, runs in visibility_by_track.items():
+        for index, run in enumerate(runs):
+            if run.state != "missing" or index == 0:
+                continue
+            previous = runs[index - 1]
+            if previous.state != "visible":
+                continue
+            transition_tracks_by_frame.setdefault(
+                previous.end_frame, set()
+            ).add(track_id)
+            if index + 1 < len(runs) and runs[index + 1].state == "visible":
+                transition_tracks_by_frame.setdefault(
+                    runs[index + 1].start_frame, set()
+                ).add(track_id)
+    if not transition_tracks_by_frame:
+        return {}
+
+    transition_frames = set(transition_tracks_by_frame)
+    observations_by_frame: dict[
+        int, list[tuple[str, TrackObservation]]
+    ] = {}
+    for track in tracks:
+        if track.status is not EvidenceStatus.AVAILABLE:
+            continue
+        for observation in track.observations:
+            if observation.visible and observation.frame_index in transition_frames:
+                observations_by_frame.setdefault(
+                    observation.frame_index, []
+                ).append((track.track_id, observation))
+
+    selected: dict[str, set[int]] = {}
+    pair_scans = 0
+    witness_count = 0
+    for frame_index in sorted(observations_by_frame):
+        aligned = sorted(
+            observations_by_frame[frame_index], key=lambda item: item[0]
+        )
+        transition_tracks = transition_tracks_by_frame[frame_index]
+        for subject_index, (subject_track_id, subject) in enumerate(aligned):
+            for object_track_id, object_observation in aligned[
+                subject_index + 1 :
+            ]:
+                if not (
+                    subject_track_id in transition_tracks
+                    or object_track_id in transition_tracks
+                ):
+                    continue
+                pair_scans += 1
+                if pair_scans > _MAX_RELATION_PAIR_SCANS:
+                    return selected
+                if not _boxes_overlap(
+                    subject.bbox_xyxy, object_observation.bbox_xyxy
+                ):
+                    continue
+                selected.setdefault(subject_track_id, set()).add(frame_index)
+                selected.setdefault(object_track_id, set()).add(frame_index)
+                witness_count += 1
+                if witness_count == cap:
+                    return selected
+    return selected
+
+
 def _reduce_observations(
     observations: tuple[TrackObservation, ...],
     cap: int,
     *,
     priority_frames: set[int] | None = None,
+    relation_priority_frames: set[int] | None = None,
     maximum_frame: int | None = None,
 ) -> tuple[tuple[tuple[int, TrackObservation], ...], bool]:
     indexed_observations = tuple(
@@ -2660,6 +2796,10 @@ def _reduce_observations(
         observation.frame_index: index
         for index, observation in enumerate(bounded_observations)
     }
+    for frame_index in sorted(relation_priority_frames or ()):
+        position = positions_by_frame.get(frame_index)
+        if position is not None:
+            add(position)
     for frame_index in sorted(priority_frames or ()):
         position = positions_by_frame.get(frame_index)
         if position is not None:
@@ -3650,10 +3790,27 @@ def _canonical_char_count(record: Any, *, maximum: int | None = None) -> int:
     return total
 
 
-def _summary_fits(summary: CvEvidenceSummary, cap: int) -> bool:
+def _summary_fits(
+    summary: CvEvidenceSummary,
+    cap: int,
+    thresholds: EvidenceThresholds | None = None,
+) -> bool:
     # This public bundle envelope contains the complete public summary plus
     # substantially more than the summary's sole private integer field.
-    return _minimum_usable_bundle_char_count(summary) <= cap
+    if _minimum_usable_bundle_char_count(summary) > cap:
+        return False
+    if thresholds is None:
+        return True
+    try:
+        expected = _expected_bundle_components(
+            summary,
+            thresholds,
+            candidate_limit=_MAX_BUNDLE_CANDIDATES,
+            prompt_char_limit=cap,
+        )
+    except ValueError:
+        return False
+    return "CANDIDATE_PROMPT_TRUNCATED" not in expected.truncation_codes
 
 
 def _maximum_candidate_source_count(summary: CvEvidenceSummary) -> int:

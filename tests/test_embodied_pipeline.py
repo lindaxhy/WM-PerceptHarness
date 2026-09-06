@@ -1872,6 +1872,19 @@ def test_hybrid_optional_branches_complete_independently(tmp_path, monkeypatch, 
     harness.settings = harness.settings.model_copy(update={
         "cv_provider": "fake", "cv_cache_root": tmp_path / "cv-cache",
         "cv_timeout_seconds": 9.0})
+    summary_thresholds = []
+    if mode == "available":
+        original_summarize = embodied_module.summarize_cv_evidence
+
+        def capture_summary_thresholds(*args, **kwargs):
+            summary_thresholds.append(kwargs.get("thresholds"))
+            return original_summarize(*args, **kwargs)
+
+        monkeypatch.setattr(
+            embodied_module,
+            "summarize_cv_evidence",
+            capture_summary_thresholds,
+        )
     timeline = FrameTimeline(frames=tuple(FrameTimestamp(frame_index=i, timestamp_seconds=i / 2)
                                          for i in range(4)))
     monkeypatch.setattr(embodied_module, "probe_frame_timeline", lambda path: timeline)
@@ -1919,6 +1932,16 @@ def test_hybrid_optional_branches_complete_independently(tmp_path, monkeypatch, 
     if mode == "repair":
         assert branches["action_events"][0]["repair_history"] == ["initial", "repair"]
         assert result["performance"]["repair_count"] == 1
+    if mode == "available":
+        assert summary_thresholds == [
+            embodied_module.EvidenceThresholds(
+                min_confidence=harness.settings.cv_min_confidence,
+                min_area_fraction=harness.settings.cv_min_area_fraction,
+                occlusion_visibility_drop=(
+                    harness.settings.cv_occlusion_visibility_drop
+                ),
+            )
+        ]
     for request in harness.model.calls:
         if request.stage in {"embodied_enrichment", "scene_semantics"}:
             assert ("[CV_EVIDENCE_SUMMARY_JSON]" in request.prompt) is not unavailable

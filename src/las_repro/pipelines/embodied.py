@@ -394,7 +394,11 @@ class EmbodiedActionPipeline:
                 artifact = store.load(CvArtifactHandle(result["artifact_key"], result["manifest_sha256"]))
             if artifact.status != "available":
                 raise ValueError("unavailable CV artifact")
-            summary = summarize_cv_evidence(artifact, timeline=timeline)
+            summary = summarize_cv_evidence(
+                artifact,
+                timeline=timeline,
+                thresholds=request.thresholds,
+            )
             bundle = build_cv_prompt_bundle(summary, request.thresholds)
             return result, bundle, timeline, artifact, decode_seconds
         except (InferenceJobFailed, JobWaitTimeout, CvArtifactError, TimelineError,
