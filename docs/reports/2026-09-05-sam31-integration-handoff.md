@@ -1,5 +1,9 @@
 # SAM3.1/LAS alignment integration handoff
 
+Current recovery entry: [2026-09-06 consolidated handoff](2026-09-06-sam31-integration-handoff.md).
+The chronology below is historical; use the newer handoff for current status,
+Draft PR disposition, remaining acceptance gates and next actions.
+
 Date: 2026-09-05
 
 This document is the recovery point for the LAS comparison, English reference,
