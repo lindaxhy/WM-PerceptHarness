@@ -6,6 +6,7 @@ import math
 from typing import Any
 
 CHOICE_CONTRACT = 'scene-spatial-choice-refs-v1'
+BOUNDARY_CONTRACT = 'boundary-plan-v1'
 
 MAX_SCHEMA_BYTES = 65_536
 MAX_SCHEMA_DEPTH = 32
@@ -58,6 +59,39 @@ def preflight_plain(value: Any, *, max_bytes: int, max_nodes: int, max_depth: in
     visit(value, 0)
 
 
+def compile_local_schema(source: dict[str, Any]) -> dict[str, Any]:
+    """Compile bounded server-generated schemas using only known local refs."""
+    preflight_plain(source, max_bytes=MAX_SCHEMA_BYTES, max_nodes=MAX_SCHEMA_NODES, max_depth=MAX_SCHEMA_DEPTH)
+    definitions = source.get('$defs', {})
+    allowed = {'type', 'properties', 'items', 'required', 'additionalProperties',
+               'enum', 'minimum', 'maximum', 'maxItems', 'minItems', 'pattern'}
+    # Only known generated local refs are resolved. Expansion is bounded as it
+    # happens, so a compact recursively referenced schema cannot expand freely.
+    count = 0
+    def expand(node, depth=0):
+        nonlocal count
+        count += 1
+        if count > MAX_SCHEMA_NODES or depth > MAX_SCHEMA_DEPTH:
+            raise ValueError('scene response schema exceeds complexity limit')
+        if isinstance(node, list):
+            return [expand(v, depth + 1) for v in node]
+        if not isinstance(node, dict):
+            return node
+        if '$ref' in node:
+            ref = node['$ref']
+            if not ref.startswith('#/$defs/') or ref[8:] not in definitions:
+                raise ValueError('scene response schema reference is invalid')
+            return expand(definitions[ref[8:]], depth + 1)
+        result = {}
+        for key, value in node.items():
+            if key == 'properties':
+                result[key] = {k: expand(v, depth + 1) for k, v in value.items()}
+            elif key in allowed:
+                result[key] = expand(value, depth + 1)
+        return result
+    return expand(source)
+
+
 @dataclass(frozen=True)
 class ModelResponseContract:
     name: str
@@ -65,7 +99,7 @@ class ModelResponseContract:
     schema_sha256: str
 
     def __post_init__(self) -> None:
-        if (type(self.name) is not str or self.name != CHOICE_CONTRACT
+        if (type(self.name) is not str or self.name not in (CHOICE_CONTRACT, BOUNDARY_CONTRACT)
                 or type(self.schema_json) is not str
                 or len(self.schema_json) > MAX_SCHEMA_BYTES
                 or len(self.schema_json.encode()) > MAX_SCHEMA_BYTES):

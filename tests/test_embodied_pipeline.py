@@ -1033,7 +1033,7 @@ def test_prompt_assets_state_exact_schemas_enums_and_visual_only_rules(
     assert EMBODIED_PROMPT_VERSION in prompts["enrichment"]
     assert "0805-local-v1" in prompts["active"]
     assert EMBODIED_PROMPT_VERSION in prompts["pass_a"]
-    assert "0805-local-v1" in prompts["pass_b"]
+    assert "0805-local-v2" in prompts["pass_b"]
     assert all("visual evidence only" in prompt.casefold() for prompt in prompts.values())
     assert all("do not use audio" in prompt.casefold() for prompt in prompts.values())
     assert all("{{" not in prompt for prompt in prompts.values())
@@ -3861,3 +3861,48 @@ def test_affinity_fallback_reconstructs_same_local_video_session_on_new_worker(
         if job.stage in {"embodied_pass_b", "embodied_enrichment"}:
             assert job.affinity_worker_id == "gpu-0"
             assert job.completed_by == "gpu-1"
+
+
+@pytest.mark.parametrize('repeat_failure', [False, True])
+def test_boundary_enum_repair_preserves_parent_context_and_one_attempt_policy(tmp_path, repeat_failure):
+    """Repeated enum failures cannot invoke topology fallback or a third model call."""
+    from test_boundary_contract import CODES, assert_boundary_schema
+
+    class InvalidFineEnum(FakeVideoModel):
+        def __init__(self):
+            super().__init__()
+            self.pass_b_attempts = 0
+            self.valid_boundary = None
+
+        def generate(self, request):
+            result = super().generate(request)
+            if request.stage == 'embodied_pass_b':
+                self.pass_b_attempts += 1
+                self.valid_boundary = copy.deepcopy(result)
+                if repeat_failure or self.pass_b_attempts == 1:
+                    result['actions'][0]['fine_segments'][0]['event_type'] = 'private enum synonym'
+            return result
+
+    model = InvalidFineEnum()
+    harness = _ActionHarness(tmp_path, model)
+    completed = harness.run()
+    assert completed.status is (TaskStatus.FAILED if repeat_failure else TaskStatus.COMPLETED)
+    calls = [call for call in harness.model.calls if call.stage == 'embodied_pass_b']
+    jobs = [job for job in harness.store.list_inference_jobs(completed.task_id) if job.stage == 'embodied_pass_b']
+    assert len(calls) == len(jobs) == 2
+    for call in calls:
+        assert call.response_contract.name == 'boundary-plan-v1'
+        assert_boundary_schema(call.response_contract.format()['schema'])
+    contexts = [j.payload['schema_context'] for j in jobs]
+    assert contexts[0]['coarse_plan'] == contexts[1]['coarse_plan']
+    assert contexts[0]['max_segment_seconds'] == contexts[1]['max_segment_seconds'] == 1.0
+    assert [c['allow_topology_fallback'] for c in contexts] == [False, True]
+    assert _pass_b_requirements(calls[0].prompt) == _pass_b_requirements(calls[1].prompt)
+    assert jobs[0].result['_schema_validation']['issue_codes'] == [CODES[2]]
+    assert '"issue_codes":["' + CODES[2] + '"]' in calls[1].prompt
+    if repeat_failure:
+        assert jobs[1].result == jobs[0].result
+    else:
+        assert jobs[1].result == model.valid_boundary
+    assert 'private enum synonym' not in json.dumps([j.result for j in jobs])
+    assert 'private enum synonym' not in calls[1].prompt

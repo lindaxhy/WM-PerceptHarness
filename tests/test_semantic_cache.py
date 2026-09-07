@@ -695,7 +695,7 @@ def test_scene_field_enum_failures_replay_only_closed_envelopes(store, tmp_path,
     assert not safe_result(expected, 'SceneSemanticsChoices', context, registry)
 
 
-def test_scene_v6_does_not_replay_v5_generic_enum_failure(store, tmp_path, monkeypatch):
+def test_current_scene_validator_does_not_replay_v5_generic_enum_failure(store, tmp_path, monkeypatch):
     from las_repro import semantic_cache
     from test_scene_choices import fixture
     draft, context = fixture()
@@ -723,4 +723,112 @@ def test_scene_v6_does_not_replay_v5_generic_enum_failure(store, tmp_path, monke
     with sqlite3.connect(store.database_path) as db:
         versions = {json.loads(row[0])['validator_contract_version'] for row in
                     db.execute('SELECT identity_json FROM semantic_results')}
-    assert versions == {'embodied-output-v5', 'embodied-output-v6'}
+    assert versions == {'embodied-output-v5', 'embodied-output-v7'}
+
+
+@pytest.mark.parametrize('field,index', [(None, 0), ('boundary_points', 1), ('fine_segments', 2)])
+def test_boundary_initial_repair_formats_and_closed_failure_replay(store, tmp_path, field, index):
+    import copy
+    from test_boundary_contract import boundary_fixture, assert_boundary_schema, CODES
+    from las_repro.pipelines.embodied import PromptRenderer
+    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS as registry
+    from las_repro.semantic_cache import safe_result
+    valid, context = boundary_fixture()
+    bad = copy.deepcopy(valid)
+    row = bad['actions'][0]
+    if field: row = row[field][0]
+    row['event_type'] = 'private file:///enum synonym'
+    provider = Provider(response=bad)
+    model = provider.model()
+    renderer = PromptRenderer()
+    overrides = dict(schema_name='BoundaryPlan', schema_context=context, end=2.0,
+                     prompt=renderer.pass_b(context['coarse_plan'], max_fine_segment_seconds=1.0),
+                     response_contract={'name': 'injected', 'schema': {'type': 'string'}})
+    jobs = []
+    for _ in range(2):
+        jobs.append(job(store, tmp_path, stage='embodied_pass_b', overrides=overrides))
+        run(store, model)
+    rows = [store.get_inference_job(j.job_id) for j in jobs]
+    expected = {'_schema_validation': {'schema_name': 'BoundaryPlan', 'status': 'invalid',
+                                      'issue_codes': [CODES[index]]}}
+    assert rows[0].result == rows[1].result == expected
+    assert [r.metrics['semantic_cache_hit'] for r in rows] == [False, True]
+    initial_format = provider.request['text']['format']
+    assert initial_format['name'] == 'boundary-plan-v1'
+    assert initial_format['strict'] is True
+    assert_boundary_schema(initial_format['schema'])
+    assert safe_result(expected, 'BoundaryPlan', context, registry)
+    assert not safe_result(bad, 'BoundaryPlan', context, registry)
+    legacy = copy.deepcopy(expected)
+    legacy['_schema_validation']['issue_codes'] = ['BOUNDARY_PLAN_ENUM_VALUE']
+    assert safe_result(legacy, 'BoundaryPlan', context, registry)
+    legacy['_schema_validation']['issue_codes'] = [CODES[index] + '_private']
+    assert not safe_result(legacy, 'BoundaryPlan', context, registry)
+    repair_context = {**context, 'allow_topology_fallback': True}
+    repair_data = dict(schema_name='BoundaryPlan', issue_codes=[CODES[index]])
+    repair_prompt = renderer.pass_b(context['coarse_plan'], max_fine_segment_seconds=1.0, repair=repair_data)
+    assert repair_prompt.startswith('[prompt_version]\n0805-local-v2\n')
+    assert CODES[index] in repair_prompt
+    assert 'actions[i].event_type' in repair_prompt
+    assert 'boundary_points[j].event_type' in repair_prompt
+    assert 'fine_segments[j].event_type' in repair_prompt
+    provider.response = valid
+    for _ in range(2):
+        repaired = job(store, tmp_path, stage='embodied_pass_b', ordinal=1,
+                       overrides={**overrides, 'schema_context': repair_context, 'prompt': repair_prompt})
+        run(store, model)
+        assert store.get_inference_job(repaired.job_id).result == valid
+    assert provider.calls == 2
+    assert provider.request['text']['format'] == initial_format
+    assert 'private file' not in canonical(provider.request)
+    with sqlite3.connect(store.database_path) as db:
+        identities = [json.loads(row[0]) for row in db.execute('SELECT identity_json FROM semantic_results')]
+    assert {i['validator_contract_version'] for i in identities} == {'embodied-output-v7'}
+    assert {i['schema_context']['allow_topology_fallback'] for i in identities} == {False, True}
+    assert all(i['schema_context']['coarse_plan'] == context['coarse_plan'] for i in identities)
+    assert all(i['schema_context']['max_segment_seconds'] == 1.0 for i in identities)
+    assert all(i['request']['response_format']['name'] == 'boundary-plan-v1' for i in identities)
+    assert 'injected' not in canonical(identities)
+
+
+@pytest.mark.parametrize('change', ['flag', 'coarse_topology', 'maximum', 'schema'])
+def test_boundary_invalid_context_fails_worker_before_provider(store, tmp_path, change):
+    from test_boundary_contract import boundary_fixture
+    draft, context = boundary_fixture()
+    if change == 'flag': context['allow_topology_fallback'] = 'yes'
+    if change == 'coarse_topology': context['coarse_plan']['actions'][0]['start'] = .1
+    if change == 'maximum': context['max_segment_seconds'] = 0
+    if change == 'schema': context['schema'] = {'type': 'string'}
+    provider = Provider(response=draft)
+    j = job(store, tmp_path, stage='embodied_pass_b', overrides=dict(schema_name='BoundaryPlan', schema_context=context))
+    run(store, provider.model())
+    assert store.get_inference_job(j.job_id).status is InferenceStatus.FAILED
+    assert provider.calls == 0
+    assert not hasattr(provider, 'path')
+
+
+def test_boundary_v7_does_not_replay_v6_generic_failure(store, tmp_path, monkeypatch):
+    from las_repro import semantic_cache
+    from las_repro.pipelines import output_validation
+    from test_boundary_contract import boundary_fixture, CODES
+    draft, context = boundary_fixture()
+    draft['actions'][0]['event_type'] = 'private synonym'
+    provider = Provider(response=draft)
+    model = provider.model()
+    overrides = dict(schema_name='BoundaryPlan', schema_context=context)
+    with monkeypatch.context() as patch:
+        patch.setattr(semantic_cache, 'VALIDATOR_CONTRACT_VERSION', 'embodied-output-v6')
+        # Old envelope generation, while keeping format identical to isolate validator identity.
+        patch.setattr(output_validation, '_boundary_pydantic_issue_codes',
+                      lambda error: ('BOUNDARY_PLAN_ENUM_VALUE',), raising=False)
+        old = job(store, tmp_path, stage='embodied_pass_b', overrides=overrides)
+        run(store, model)
+    fresh = job(store, tmp_path, stage='embodied_pass_b', overrides=overrides)
+    run(store, model)
+    replay = job(store, tmp_path, stage='embodied_pass_b', overrides=overrides)
+    run(store, model)
+    rows = [store.get_inference_job(j.job_id) for j in (old, fresh, replay)]
+    assert [r.metrics['semantic_cache_hit'] for r in rows] == [False, False, True]
+    assert provider.calls == 2
+    assert rows[0].result['_schema_validation']['issue_codes'] == ['BOUNDARY_PLAN_ENUM_VALUE']
+    assert rows[1].result['_schema_validation']['issue_codes'] == [CODES[0]]

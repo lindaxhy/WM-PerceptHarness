@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from collections.abc import Callable, Mapping
@@ -10,6 +11,10 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
+from ..models.response_contract import (
+    BOUNDARY_CONTRACT, ModelResponseContract, canonical, compile_local_schema,
+    preflight_plain,
+)
 from ..cv.summary import OcclusionCandidate
 from .occlusion import OcclusionDecisionSet, validate_occlusion_decisions
 from .scene_semantics import SceneSemantics, validate_scene_semantics
@@ -189,6 +194,14 @@ _SCENE_CHOICE_ENUM_FIELDS = (
 _SCENE_CHOICE_ENUM_CODES = tuple(
     f"SCENE_SEMANTICS_CHOICES_{suffix}_ENUM_VALUE"
     for _, _, suffix in _SCENE_CHOICE_ENUM_FIELDS
+)
+_BOUNDARY_ENUM_FIELDS = (
+    ("enum", ("actions", None, "event_type"), "ACTION_EVENT_TYPE"),
+    ("enum", ("actions", None, "boundary_points", None, "event_type"), "BOUNDARY_POINT_EVENT_TYPE"),
+    ("enum", ("actions", None, "fine_segments", None, "event_type"), "FINE_SEGMENT_EVENT_TYPE"),
+)
+_BOUNDARY_ENUM_CODES = tuple(
+    f"BOUNDARY_PLAN_{suffix}_ENUM_VALUE" for _, _, suffix in _BOUNDARY_ENUM_FIELDS
 )
 _BOUNDARY_NORMALIZABLE_CODES = (
     "SEGMENT_TOO_LONG",
@@ -544,14 +557,31 @@ def _pydantic_issue_codes(error: ValidationError, prefix: str) -> tuple[str, ...
 
 def _scene_choice_pydantic_issue_codes(error: ValidationError) -> tuple[str, ...]:
     """Return closed field feedback without copying model paths or values."""
-    prefix = "SCENE_SEMANTICS_CHOICES"
+    return _field_pydantic_issue_codes(
+        error, "SCENE_SEMANTICS_CHOICES", _SCENE_CHOICE_ENUM_FIELDS, _SCENE_CHOICE_ENUM_CODES
+    )
+
+
+def _boundary_pydantic_issue_codes(error: ValidationError) -> tuple[str, ...]:
+    """Distinguish only known coarse, boundary-point and fine-segment enum paths."""
+    return _field_pydantic_issue_codes(
+        error, "BOUNDARY_PLAN", _BOUNDARY_ENUM_FIELDS, _BOUNDARY_ENUM_CODES
+    )
+
+
+def _field_pydantic_issue_codes(
+    error: ValidationError,
+    prefix: str,
+    fields: tuple[tuple[str, tuple[str | None, ...], str], ...],
+    field_codes: tuple[str, ...],
+) -> tuple[str, ...]:
     found: set[str] = set()
     for issue in error.errors(include_url=False, include_context=False, include_input=False):
         kind = issue["type"]
         path = issue.get("loc", ())
         code = _pydantic_issue_codes_for_type(kind, prefix)
         for (expected_kind, shape, _), field_code in zip(
-            _SCENE_CHOICE_ENUM_FIELDS, _SCENE_CHOICE_ENUM_CODES
+            fields, field_codes
         ):
             if kind == expected_kind and len(path) == len(shape) and all(
                 (type(part) is int and part >= 0) if expected is None else part == expected
@@ -560,7 +590,7 @@ def _scene_choice_pydantic_issue_codes(error: ValidationError) -> tuple[str, ...
                 code = field_code
                 break
         found.add(code)
-    order = _schema_codes(prefix) + _SCENE_CHOICE_ENUM_CODES
+    order = _schema_codes(prefix) + field_codes
     return tuple(code for code in order if code in found) or (f"{prefix}_SCHEMA_INVALID",)
 
 
@@ -736,7 +766,7 @@ def _validate_boundary_output(
         plan = _model_from_json(BoundaryPlan, snapshot)
     except ValidationError as error:
         raise DeclaredSchemaOutputError(
-            _pydantic_issue_codes(error, "BOUNDARY_PLAN")
+            _boundary_pydantic_issue_codes(error)
         ) from None
     except (TypeError, ValueError, OverflowError, RecursionError):
         raise DeclaredSchemaOutputError(("BOUNDARY_PLAN_SCHEMA_INVALID",)) from None
@@ -778,6 +808,28 @@ def _boundary_validation_context(
         "max_segment_seconds": validation_context["max_segment_seconds"],
         "allow_topology_fallback": enabled,
     }
+
+
+def boundary_response_contract(context: Any) -> ModelResponseContract:
+    """Authenticate bounded server context before compiling the public schema.
+
+    Parent fields and maximum stay in the authenticated validation/cache context;
+    the provider schema adds no action counts, time windows or vocabulary aliases.
+    Local validation remains authoritative after every model response.
+    """
+    preflight_plain(context, max_bytes=16 * 1024 * 1024, max_nodes=1_000_000, max_depth=32)
+    context = _boundary_validation_context(context)
+    _finite_real(context["max_segment_seconds"], positive=True)
+    try:
+        coarse = _model_from_json(CoarsePlan, context["coarse_plan"])
+        if not coarse.actions:
+            raise ValueError("BoundaryPlan validation context is invalid")
+        _validate_coarse_output(context["coarse_plan"], {"duration": coarse.actions[-1].end})
+    except (TypeError, ValueError):
+        raise ValueError("BoundaryPlan validation context is invalid") from None
+    schema = compile_local_schema(BoundaryPlan.model_json_schema())
+    encoded = canonical(schema)
+    return ModelResponseContract(BOUNDARY_CONTRACT, encoded, hashlib.sha256(encoded.encode()).hexdigest())
 
 
 def _normalize_boundary_topology(
@@ -1360,8 +1412,9 @@ DEFAULT_OUTPUT_SCHEMAS.register(
 DEFAULT_OUTPUT_SCHEMAS.register(
     "BoundaryPlan",
     _validate_boundary_output,
-    allowed_issue_codes=_schema_codes("BOUNDARY_PLAN") + _BOUNDARY_TEMPORAL_CODES,
+    allowed_issue_codes=_schema_codes("BOUNDARY_PLAN") + _BOUNDARY_ENUM_CODES + _BOUNDARY_TEMPORAL_CODES,
     generic_issue_code="BOUNDARY_PLAN_SCHEMA_INVALID",
+    response_contract_factory=boundary_response_contract,
 )
 DEFAULT_OUTPUT_SCHEMAS.register(
     "EnrichmentResult",

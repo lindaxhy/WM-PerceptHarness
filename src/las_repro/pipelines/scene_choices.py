@@ -17,7 +17,7 @@ from pydantic import Field
 from ..cv.summary import CvEvidenceSummary
 from ..models.response_contract import (
     CHOICE_CONTRACT, MAX_SCHEMA_BYTES, MAX_SCHEMA_DEPTH, MAX_SCHEMA_NODES,
-    ModelResponseContract, canonical, preflight_plain,
+    ModelResponseContract, canonical, preflight_plain, compile_local_schema,
 )
 from .scene_provenance import MAX_OPTIONS, scene_spatial_prompt_data
 from .scene_semantics import (
@@ -177,35 +177,7 @@ def validate_scene_choices(result: Any, context: Any) -> dict[str, Any]:
 def scene_response_contract(context: Any) -> ModelResponseContract:
     context = authenticate_scene_context(context)
     source = SceneSemanticsChoices.model_json_schema()
-    preflight_plain(source, max_bytes=MAX_SCHEMA_BYTES, max_nodes=MAX_SCHEMA_NODES, max_depth=MAX_SCHEMA_DEPTH)
-    definitions = source.get('$defs', {})
-    allowed = {'type', 'properties', 'items', 'required', 'additionalProperties',
-               'enum', 'minimum', 'maximum', 'maxItems', 'minItems', 'pattern'}
-    # Only known generated local refs are resolved. Expansion is bounded as it
-    # happens, so a compact recursively referenced schema cannot expand freely.
-    count = 0
-    def expand(node, depth=0):
-        nonlocal count
-        count += 1
-        if count > MAX_SCHEMA_NODES or depth > MAX_SCHEMA_DEPTH:
-            raise ValueError('scene response schema exceeds complexity limit')
-        if isinstance(node, list):
-            return [expand(v, depth + 1) for v in node]
-        if not isinstance(node, dict):
-            return node
-        if '$ref' in node:
-            ref = node['$ref']
-            if not ref.startswith('#/$defs/') or ref[8:] not in definitions:
-                raise ValueError('scene response schema reference is invalid')
-            return expand(definitions[ref[8:]], depth + 1)
-        result = {}
-        for key, value in node.items():
-            if key == 'properties':
-                result[key] = {k: expand(v, depth + 1) for k, v in value.items()}
-            elif key in allowed:
-                result[key] = expand(value, depth + 1)
-        return result
-    schema = expand(source)
+    schema = compile_local_schema(source)
     offered = context['spatial_options']
     for field, kind in (('locations', 'location'), ('relations', 'relation')):
         ids = [o['option_id'] for o in offered['options'] if o['kind'] == kind] if offered else []
