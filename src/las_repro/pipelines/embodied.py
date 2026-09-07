@@ -753,26 +753,48 @@ class PromptRenderer:
                             if evidence_summary is not None else None)
         except ValueError as error:
             raise PromptRenderError(str(error)) from None
-        prompt = self.render(
-            "scene_semantics",
-            {
+        from .scene_model_view import (
+            build_scene_model_view, full_model_view, MAX_PROMPT_BYTES, MAX_REPAIR_BYTES,
+        )
+        if len(_canonical_json(repair).encode("utf-8")) > MAX_REPAIR_BYTES:
+            raise PromptRenderError("scene repair data exceeds its byte limit")
+        model_view = build_scene_model_view(trusted)
+
+        def render_view(view, repair_data):
+            data = view["data"]
+            hints = {"metadata": view["metadata"]}
+            if data is not None:
+                hints.update({k: data[k] for k in (
+                    "evidence", "lifecycle", "entities", "completeness")})
+            rendered = self.render("scene_semantics", {
                 "VIDEO_DURATION_SECONDS_JSON": _prompt_video_duration(video_duration),
-                "SEGMENTS_JSON": table,
-                "KNOWN_TARGETS_JSON": trusted_target_skeleton(table),
-                "CV_EVIDENCE_AVAILABILITY_JSON": {
-                    "available": evidence_summary is not None,
-                },
+                "SEGMENTS_JSON": data["segments"] if data is not None else table,
+                "KNOWN_TARGETS_JSON": trusted["known_targets"],
+                "CV_EVIDENCE_AVAILABILITY_JSON": {"available": evidence_summary is not None},
                 "SCENE_SPATIAL_PROVENANCE_OPTIONS_JSON": spatial_options,
                 "SCENE_SPATIAL_FIELDS_JSON": {
                     "location_fields": list(SceneLocationChoice.model_fields),
                     "relation_fields": list(SceneRelationChoice.model_fields),
                 },
-                "VALIDATION_REPAIR_JSON": repair,
-            },
-        )
-        if summary_json is None:
-            return prompt
-        return prompt + "\n\n[CV_EVIDENCE_SUMMARY_JSON]\n" + summary_json
+                "SCENE_MODEL_VIEW_JSON": hints,
+                "VALIDATION_REPAIR_JSON": repair_data,
+            })
+            if data is None and summary_json is not None:
+                rendered += "\n\n[CV_EVIDENCE_SUMMARY_JSON]\n" + summary_json
+            return rendered
+
+        # Decide from immutable data plus a fixed repair allowance. Never select
+        # another mode based on the current attempt's validator issue codes.
+        initial = render_view(model_view, None)
+        if (model_view["data"] is not None
+                and len(initial.encode("utf-8")) + MAX_REPAIR_BYTES > MAX_PROMPT_BYTES):
+            model_view = full_model_view(trusted, reason="prompt_bytes",
+                                         counts=model_view["metadata"]["counts"])
+            initial = render_view(model_view, None)
+        prompt = initial if repair is None else render_view(model_view, repair)
+        if model_view["data"] is not None and len(prompt.encode("utf-8")) > MAX_PROMPT_BYTES:
+            raise PromptRenderError("compact scene prompt exceeds its byte limit")
+        return prompt
 
     def occlusion_semantics(
         self,

@@ -86,43 +86,8 @@ def _claim_shape(option: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
-def scene_spatial_prompt_data(
-    summary: CvEvidenceSummary | None,
-    segments: list[dict[str, Any]],
-    *,
-    duration: float,
-) -> tuple[dict[str, Any] | None, str | None]:
-    """Return (optional choices envelope, exact original summary JSON suffix).
-
-    JSON null is fixed prompt syntax when not even an empty envelope fits. The
-    evidence payload is never compacted or rewritten to create extra headroom.
-    """
-    if type(segments) is not list or len(segments) > 10_000:
-        raise ValueError("scene segment table is not materializable")
-    for row in segments:
-        if (
-            not isinstance(row, dict)
-            or any(
-                type(row.get(k)) not in (int, float) or not math.isfinite(row[k])
-                for k in ("start", "end")
-            )
-            or not 0 <= row["start"] < row["end"] <= duration
-        ):
-            raise ValueError("scene segment bounds are invalid")
-        if type(row.get("segment_index")) is not int or row["segment_index"] < 0:
-            raise ValueError("scene segment index is invalid")
-    envelope = {"options": [], "options_complete": True}
-    if summary is None:
-        return envelope, None
-    if type(summary) is not CvEvidenceSummary or summary.status != "available":
-        raise ValueError("CV evidence must be an available bounded summary")
-    # prompt_record preflights model_construct/subclass attacks and revalidates
-    # the entire immutable source once, including its content identity.
-    suffix = _json(summary.prompt_record())
-    budget = min(MAX_OPTION_BYTES, summary.prompt_char_limit - len(suffix))
-    if len(_json({"options": [], "options_complete": False}).encode()) > budget:
-        return None, suffix
-
+def scene_object_bindings(summary: CvEvidenceSummary, segments: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
+    """Resolve scene IDs using the same ambiguity rules as authenticated offers."""
     tokens = defaultdict(set)
     for entity in summary.entities:
         for token in (entity.entity_id, entity.canonical_label, *entity.aliases):
@@ -162,6 +127,47 @@ def scene_spatial_prompt_data(
         except ValueError:
             # Such a binding cannot be copied into the unchanged scene schema.
             del bindings[entity_id]
+    return bindings
+
+
+def scene_spatial_prompt_data(
+    summary: CvEvidenceSummary | None,
+    segments: list[dict[str, Any]],
+    *,
+    duration: float,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Return (optional choices envelope, exact original summary JSON suffix).
+
+    JSON null is fixed prompt syntax when not even an empty envelope fits. The
+    evidence payload is never compacted or rewritten to create extra headroom.
+    """
+    if type(segments) is not list or len(segments) > 10_000:
+        raise ValueError("scene segment table is not materializable")
+    for row in segments:
+        if (
+            not isinstance(row, dict)
+            or any(
+                type(row.get(k)) not in (int, float) or not math.isfinite(row[k])
+                for k in ("start", "end")
+            )
+            or not 0 <= row["start"] < row["end"] <= duration
+        ):
+            raise ValueError("scene segment bounds are invalid")
+        if type(row.get("segment_index")) is not int or row["segment_index"] < 0:
+            raise ValueError("scene segment index is invalid")
+    envelope = {"options": [], "options_complete": True}
+    if summary is None:
+        return envelope, None
+    if type(summary) is not CvEvidenceSummary or summary.status != "available":
+        raise ValueError("CV evidence must be an available bounded summary")
+    # prompt_record preflights model_construct/subclass attacks and revalidates
+    # the entire immutable source once, including its content identity.
+    suffix = _json(summary.prompt_record())
+    budget = min(MAX_OPTION_BYTES, summary.prompt_char_limit - len(suffix))
+    if len(_json({"options": [], "options_complete": False}).encode()) > budget:
+        return None, suffix
+
+    bindings = scene_object_bindings(summary, segments)
     tracks = {
         t.track_id: t
         for t in summary.tracks

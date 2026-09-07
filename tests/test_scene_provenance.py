@@ -170,7 +170,7 @@ def test_budget_is_shared_and_selection_covers_objects_and_time():
     assert envelope["options_complete"] is False
     size = len(json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode())
     assert size <= 24000
-    suffix = prompt.split("[CV_EVIDENCE_SUMMARY_JSON]\n")[1]
+    suffix = json.dumps(summary.prompt_record(), ensure_ascii=False, separators=(",", ":"))
     assert size + len(suffix) <= summary.prompt_char_limit
     assert {f"item_{i}" for i in range(6)} <= {
         x for o in envelope["options"] for x in o["object_ids"]
@@ -211,9 +211,8 @@ def test_no_room_uses_null_without_changing_summary_or_availability():
     tight = tight.model_copy(update={"summary_id": _summary_identity(tight)})
     envelope, prompt = options(tight, segments)
     assert envelope is None
-    assert prompt.endswith(
-        json.dumps(tight.prompt_record(), ensure_ascii=False, separators=(",", ":"))
-    )
+    from las_repro.pipelines.scene_choices import prepare_scene_choices
+    assert prepare_scene_choices(tight, segments, duration=segments[-1]["end"]).context()["evidence_summary"] == tight.model_dump(mode="json")
     assert '[CV_EVIDENCE_AVAILABILITY_JSON]\n{"available":true}' in prompt
     small = summary.model_copy(update={"prompt_char_limit": len(suffix) + 45})
     small = small.model_copy(update={"summary_id": _summary_identity(small)})
@@ -501,7 +500,7 @@ def test_selection_covers_every_eligible_object_before_repeating_lexical_hubs(co
     }
     encoded = json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode()
     assert len(encoded) <= 24000
-    suffix = prompt.split("[CV_EVIDENCE_SUMMARY_JSON]\n")[1]
+    suffix = json.dumps(summary.prompt_record(), ensure_ascii=False, separators=(",", ":"))
     assert len(encoded) + len(suffix) <= summary.prompt_char_limit
     assert envelope["options_complete"] is False
     assert options(summary, segments)[0] == envelope

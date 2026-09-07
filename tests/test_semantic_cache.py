@@ -832,3 +832,44 @@ def test_boundary_v7_does_not_replay_v6_generic_failure(store, tmp_path, monkeyp
     assert provider.calls == 2
     assert rows[0].result['_schema_validation']['issue_codes'] == ['BOUNDARY_PLAN_ENUM_VALUE']
     assert rows[1].result['_schema_validation']['issue_codes'] == [CODES[0]]
+
+
+@pytest.mark.parametrize('change', ['mode', 'view_version', 'visible_data', 'hidden_source'])
+def test_compact_scene_cache_binds_view_and_full_original_context(store, tmp_path, monkeypatch, change):
+    import copy
+    import las_repro.pipelines.scene_model_view as view_module
+    from test_scene_choices import fixture
+    from las_repro.cv.summary import CvEvidenceSummary
+    from las_repro.pipelines.embodied import PromptRenderer
+    from las_repro.pipelines.scene_choices import prepare_scene_choices, project_scene_choices, scene_response_contract
+    draft, context = fixture()
+    summary = CvEvidenceSummary.model_validate(context['evidence_summary'])
+    segments = copy.deepcopy(context['segments'])
+    renderer = PromptRenderer()
+    initial_prompt = renderer.scene_semantics(segments, video_duration=context['duration'], evidence_summary=summary)
+    contract = scene_response_contract(context).schema_json
+    public = canonical(project_scene_choices(draft, context))
+    provider = Provider(response=draft); model = provider.model()
+    overrides = dict(schema_name='SceneSemanticsChoices', schema_context=context,
+                     end=context['duration'], prompt=initial_prompt)
+    first = job(store, tmp_path, stage='scene_semantics', overrides=overrides)
+    run(store, model)
+    if change == 'mode':
+        monkeypatch.setattr(view_module, 'MAX_DATA_BYTES', 0)
+    elif change == 'view_version':
+        monkeypatch.setattr(view_module, 'VIEW_VERSION', 'scene-model-view-test-next')
+    else:
+        segments[0]['description' if change == 'visible_data' else 'internal_note'] = 'extra source information'
+        context = prepare_scene_choices(summary, segments, duration=context['duration']).context()
+    changed_prompt = renderer.scene_semantics(segments, video_duration=context['duration'], evidence_summary=summary)
+    assert (changed_prompt == initial_prompt) is (change == 'hidden_source')
+    overrides.update(schema_context=context, prompt=changed_prompt)
+    second = job(store, tmp_path, stage='scene_semantics', overrides=overrides)
+    run(store, model)
+    third = job(store, tmp_path, stage='scene_semantics', overrides=overrides)
+    run(store, model)
+    rows = [store.get_inference_job(j.job_id) for j in (first, second, third)]
+    assert [r.metrics['semantic_cache_hit'] for r in rows] == [False, False, True]
+    assert scene_response_contract(context).schema_json == contract
+    assert all(canonical(project_scene_choices(r.result, context)) == public for r in rows)
+    assert all(canonical(r.result) == canonical(draft) for r in rows)

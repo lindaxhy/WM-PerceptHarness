@@ -34,7 +34,7 @@ from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
 from las_repro.pipelines.scene_semantics import trusted_target_skeleton
 from las_repro.pipelines.scene_choices import (
     authenticate_scene_context, compact_scene_options, project_scene_choices,
-    SceneLocationChoice, SceneRelationChoice,
+    SceneLocationChoice, SceneRelationChoice, SceneInputPackage, canonical,
 )
 from las_repro.workers import _model_request
 
@@ -200,7 +200,7 @@ def rebuild_prompt(
     stage: str,
     repair: Mapping[str, Any] | None = None,
 ) -> tuple[str, str]:
-    """Rebuild the current packaged prompt from exact old JSON data.
+    """Rebuild exact scene-version data or the current occlusion template.
 
     The returned digest covers all immutable extracted JSON plus the optional
     scene evidence suffix.  Repair codes are intentionally excluded so the
@@ -221,12 +221,21 @@ def rebuild_prompt(
             or any(not isinstance(code, str) or not code for code in issue_codes)
         ):
             raise OperatorError("REPAIR_INVALID")
+    if stage == "scene_semantics" and "SCENE_MODEL_VIEW_JSON" in values:
+        from las_repro.pipelines.scene_model_view import MAX_REPAIR_BYTES
+        if len(_json_bytes(repair)) > MAX_REPAIR_BYTES:
+            raise OperatorError("REPAIR_INVALID")
     rendered_values = dict(values)
     rendered_values["VALIDATION_REPAIR_JSON"] = (
         None if repair is None else {"issue_codes": list(repair["issue_codes"])}
     )
     try:
-        prompt = PromptRenderer().render(stage, rendered_values)
+        if stage == "scene_semantics" and "SCENE_MODEL_VIEW_JSON" not in values:
+            # Historical scene bundles retain their recorded full-view template.
+            # Their immutable source is still authenticated in bundle validation.
+            prompt = _render_exact_template(original_template, rendered_values)
+        else:
+            prompt = PromptRenderer().render(stage, rendered_values)
     except Exception:
         raise OperatorError("CURRENT_PROMPT_RENDER_FAILED") from None
     immutable = {
@@ -391,6 +400,10 @@ def run_stage(
         raise OperatorError("STAGE_INVALID") from None
     if not isinstance(payload, Mapping) or not isinstance(schema_context, Mapping):
         raise OperatorError("STAGE_INVALID")
+
+    if stage == "scene_semantics":
+        values, _, suffix = _extract_prompt_data(original_prompt, original_template, stage)
+        _validate_scene_alignment(values, suffix, schema_context)
 
     prompt, stable_data_digest = rebuild_prompt(
         original_prompt, original_template, stage
@@ -682,6 +695,21 @@ def _validate_scene_alignment(
         context = authenticate_scene_context(context)
     except Exception:
         raise OperatorError("SCENE_CONTEXT_INVALID") from None
+    if "SCENE_MODEL_VIEW_JSON" in values:
+        try:
+            summary_value = context["evidence_summary"]
+            summary = CvEvidenceSummary.model_validate(summary_value) if summary_value is not None else None
+            expected_prompt = PromptRenderer().scene_semantics(
+                context["segments"], video_duration=context["duration"],
+                evidence_summary=summary, scene_input=SceneInputPackage(canonical(context)))
+            template = (Path(las_repro.__file__).parent / "prompts" / "scene_semantics.txt").read_text()
+            expected_values, _, expected_suffix = _extract_prompt_data(
+                expected_prompt, template, "scene_semantics")
+            if canonical(values) != canonical(expected_values) or canonical(suffix) != canonical(expected_suffix):
+                raise ValueError("scene model view differs from authenticated source")
+        except Exception:
+            raise OperatorError("SCENE_PROMPT_CONTEXT_MISMATCH") from None
+        return
     summary_value = context["evidence_summary"]
     summary = None
     if summary_value is None:

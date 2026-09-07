@@ -127,13 +127,14 @@ def _scene_variables(summary: CvEvidenceSummary | None = None) -> dict[str, obje
 
 def _scene_prompt_pair(summary: CvEvidenceSummary | None = None) -> tuple[str, str, dict[str, object]]:
     variables = _scene_variables(summary)
-    current_template = _current_template("scene_semantics")
+    current_template = (Path(__file__).parent / "fixtures/prompts/scene_semantics_v2.txt").read_text()
     old_template = current_template.replace(
         "You extract overlapping scene semantics",
         "You previously extracted overlapping scene semantics",
         1,
     )
-    current_prompt = PromptRenderer().render("scene_semantics", variables)
+    from scripts.reverify_semantic_stages import _render_exact_template
+    current_prompt = _render_exact_template(current_template, variables)
     old_prompt = current_prompt.replace(
         "You extract overlapping scene semantics",
         "You previously extracted overlapping scene semantics",
@@ -238,7 +239,7 @@ class _Model:
         self._usage = {}
 
 
-def test_rebuild_prompt_round_trips_old_data_and_renders_current_code_only_repair() -> None:
+def test_rebuild_prompt_preserves_historical_scene_template_and_changes_only_repair() -> None:
     summary = _summary()
     original_template, original_prompt, variables = _scene_prompt_pair(summary)
 
@@ -252,12 +253,13 @@ def test_rebuild_prompt_round_trips_old_data_and_renders_current_code_only_repai
         repair={"issue_codes": ["SCENE_EVENT_TYPE_ENUM_VALUE"]},
     )
 
-    expected_initial = PromptRenderer().render("scene_semantics", variables)
+    from scripts.reverify_semantic_stages import _render_exact_template
+    expected_initial = _render_exact_template(original_template, variables)
     repaired_variables = dict(variables)
     repaired_variables["VALIDATION_REPAIR_JSON"] = {
         "issue_codes": ["SCENE_EVENT_TYPE_ENUM_VALUE"]
     }
-    expected_repaired = PromptRenderer().render("scene_semantics", repaired_variables)
+    expected_repaired = _render_exact_template(original_template, repaired_variables)
     suffix = "\n\n[CV_EVIDENCE_SUMMARY_JSON]\n" + _prompt_json(summary.prompt_record())
     assert initial == expected_initial + suffix
     assert repaired == expected_repaired + suffix
@@ -302,7 +304,7 @@ def test_run_stage_accepts_current_positive_output_in_one_call_and_keeps_raw_pri
     assert re.fullmatch(r"[0-9a-f]{64}", report["attempts"][0]["request_sha256"])
     assert re.fullmatch(r"[0-9a-f]{64}", report["attempts"][0]["response_sha256"])
     assert len(model.requests) == 1
-    assert model.requests[0].prompt != stage["payload"]["prompt"]
+    assert model.requests[0].prompt == stage["payload"]["prompt"]
     raw = json.loads((output_dir / "full_0001.scene_semantics.call-1.raw.private.json").read_text())
     validated = json.loads((output_dir / "full_0001.scene_semantics.validated.private.json").read_text())
     assert raw == positive == validated
@@ -704,7 +706,7 @@ def test_scene_operator_repairs_event_enum_from_immutable_context(tmp_path, repa
     assert initial.span == repair.span
     assert initial.prompt.replace('null\n\nClosed choice repair',
         json.dumps({'issue_codes': [code]}, separators=(',', ':')) + '\n\nClosed choice repair') == repair.prompt
-    assert '0906-scene-choice-refs-v2' in repair.prompt
+    assert '0907-scene-choice-refs-v3' in repair.prompt
     meanings = dict(line[2:].split(': ', 1) for line in repair.prompt.splitlines()
                     if line.startswith('- SCENE_SEMANTICS_CHOICES_') and ': ' in line)
     assert 'use unknown if no allowed type fits' in meanings[code]

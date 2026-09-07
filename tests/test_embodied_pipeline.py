@@ -121,7 +121,7 @@ def test_scene_prompt_declares_cv_availability_and_flat_spatial_fields(
     )
 
     for prompt in (initial, repair):
-        assert prompt.startswith("[prompt_version]\n0906-scene-choice-refs-v2\n")
+        assert prompt.startswith("[prompt_version]\n0907-scene-choice-refs-v3\n")
         assert '[CV_EVIDENCE_AVAILABILITY_JSON]\n{"available":false}' in prompt
         assert (
             "[SCENE_SPATIAL_FIELDS_JSON]\n"
@@ -1981,8 +1981,9 @@ def test_hybrid_optional_branches_complete_independently(tmp_path, monkeypatch, 
             )
         ]
     for request in harness.model.calls:
-        if request.stage in {"embodied_enrichment", "scene_semantics"}:
+        if request.stage == "embodied_enrichment":
             assert ("[CV_EVIDENCE_SUMMARY_JSON]" in request.prompt) is not unavailable
+        if request.stage in {"embodied_enrichment", "scene_semantics"}:
             assert "masks/" not in request.prompt
         if request.stage == "scene_semantics":
             assert (
@@ -3203,7 +3204,7 @@ def test_enrichment_enum_repair_exposes_only_closed_field_family(
             "issue_codes": [expected],
         }
     }
-    repair_prompt = harness.model.calls[-1].prompt
+    repair_prompt = [call.prompt for call in harness.model.calls if call.stage == "embodied_enrichment"][-1]
     raw_location = f'["segments",0,"{field}"]'
     for private_detail in (
         invalid_token,
