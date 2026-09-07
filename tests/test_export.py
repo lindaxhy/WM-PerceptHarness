@@ -594,12 +594,12 @@ def test_export_rejects_incomplete_nonfinite_or_frame_collapsed_results_without_
             "fine segment duration",
         ),
         (
-            lambda result: result["segments"][0].update({"description": "x" * 61}),
+            lambda result: result["segments"][0].update({"description": "x" * 201}),
             "caption limit",
         ),
         (
             lambda result: result["segments"][0].update(
-                {"description": "right Hand reaches container"}
+                {"description": " right hand reaches container"}
             ),
             "caption style",
         ),
@@ -817,17 +817,17 @@ def test_writer_revalidates_dataclass_values_and_rejects_subclasses(
     with pytest.raises(ActionCaptionExportError, match="action caption is invalid"):
         write_action_captions_jsonl(destination, [spoofed])
 
-    uppercase_caption = "right Hand moves object"
-    uppercase_source = row.source_description.replace(
+    multiline_caption = "right hand moves object\nsecond line"
+    multiline_source = row.source_description.replace(
         "action=right hand reaches the red container",
-        f"action={uppercase_caption}",
+        f"action={multiline_caption}",
     )
     with pytest.raises(ActionCaptionExportError, match="action caption is invalid"):
         replace(
             row,
-            caption=uppercase_caption,
-            caption_char_count=len(uppercase_caption),
-            source_description=uppercase_source,
+            caption=multiline_caption,
+            caption_char_count=len(multiline_caption),
+            source_description=multiline_source,
         )
 
 

@@ -1,0 +1,12 @@
+{
+  "schema": "las_terminal_operator_pins_v1",
+  "source_commit": "c1259157bafb89553afba61b36c4b6c55b357b3a",
+  "scope": "Collection including terminal failures; completed-only scores are diagnostic, not full cohort acceptance.",
+  "scripts": {
+    "run_cohort_collect_failures.py": "1fb1293bdf4fcb5f5b6a3a4218d7ce9e1a1df477ba22bded97f98baaf27f23e3",
+    "capture_completed_subset_metadata.py": "268a8a43b7b6485e349dadce95e3c7fad8539f0f4f2e2873fbf23534645fa7f1",
+    "capture_terminal_semantic_contracts.py": "b98b0fdf4368db50128f63ce4356e2302b4daefe5a5926c476246bb4d3d00060",
+    "capture_terminal_cv_index.py": "0963894de972592cee35b9c447afd62b90d418760b9b15abf400085fe5d1b7e9",
+    "capture_terminal_summary.py": "004a204233b6585a546f8b93e7029f88004d057b6aac51b4659182cd55be1e5b"
+  }
+}

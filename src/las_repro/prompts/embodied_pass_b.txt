@@ -1,5 +1,5 @@
 [prompt_version]
-0805-local-v2
+0805-local-v3
 
 You annotate fine-grained manipulation segments using the complete video and the provided coarse action plan from Pass A.
 Use visual evidence only. Do not use audio, speech, transcripts, filenames, or outside knowledge.
@@ -47,9 +47,8 @@ For every action in Pass A, first output boundary_points, then output fine_segme
 - Do not invent unseen objects or future actions.
 
 [description rules]
-- description: lowercase English verb phrase, 2-10 words, <=60 characters.
-- Allowed subjects only: left hand, right hand, both hands, neither hand.
-- Begin every description with exactly one allowed subject.
+- description: an English verb phrase describing one visible atomic action or stable state, at most 200 characters, on a single line with no leading or trailing spaces.
+- Prefer lowercase and a hand subject (left hand, right hand, both hands, neither hand) when the acting hand is visible; describing occlusion or object state without a hand subject is allowed when that is what the video shows.
 - Never write robot, gripper, manipulator, end effector, arm, camera, or controller.
 - Keep object names stable. Use unknown when unclear.
 
@@ -140,6 +139,7 @@ If issue_codes contains "BOUNDARY_PLAN_ACTION_EVENT_TYPE_ENUM_VALUE", copy every
 If issue_codes contains "BOUNDARY_PLAN_BOUNDARY_POINT_EVENT_TYPE_ENUM_VALUE", choose each actions[i].boundary_points[j].event_type from the exact fine event_type enum above using visible evidence.
 If issue_codes contains "BOUNDARY_PLAN_FINE_SEGMENT_EVENT_TYPE_ENUM_VALUE", choose each actions[i].fine_segments[j].event_type from the same exact fine event_type enum above using visible evidence.
 If issue_codes contains the legacy "BOUNDARY_PLAN_ENUM_VALUE", audit all three event_type field domains using the rules above. For both fine fields, explicitly choosing unknown_transition is allowed when no more specific listed transition is visually supported; never invent or normalize a synonym.
+If issue_codes contains "SEGMENT_DESCRIPTION_INVALID", rewrite every offending fine_segment description as one non-empty single-line English phrase of at most 200 characters with no leading or trailing whitespace, preserving the visible action content; do not change timestamps, IDs, or event_type values while doing so.
 If issue_codes contains "SEGMENT_TOO_LONG", re-audit every fine_segment in every action and split every interval that exceeds max_fine_segment_seconds, aiming below planning_target_seconds. Add matching intermediate boundary_points at visible evidence or visible continuous sub-stage changes, keep all pieces positive and adjacent, preserve exact parent endpoints, and do not create a uniform grid.
 If issue_codes contains "UNKNOWN_BOUNDARY_ID", regenerate every boundary_id and reference in every action from the required a{action_index}_b{boundary_position} convention; do not preserve any independently invented ID.
 If issue_codes contains "BOUNDARY_TIME_MISMATCH", copy every referenced boundary time again byte-for-number into its adjacent fine_segment start or end; do not independently round or estimate a timestamp.

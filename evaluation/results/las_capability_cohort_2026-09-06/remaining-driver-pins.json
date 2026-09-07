@@ -1,0 +1,8 @@
+{
+  "purpose": "Observe or submit only previously unsubmitted fifth sample after preserved full_0021 terminal failure",
+  "source_script_sha256": "3ec8fe48140f3c0350bf1f90b16e3ace186d9b149f1c5c45cef6b5a724beefc2",
+  "derived_script_sha256": "bf15b3692ca9321023690ecde1f07aaf10793f22e0483d06f90d060956de8526",
+  "only_change": "samples tuple restricted to full_0004",
+  "product_source_unchanged": true,
+  "failed_task_resubmitted": false
+}

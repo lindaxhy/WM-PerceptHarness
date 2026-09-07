@@ -271,7 +271,7 @@ def test_enrichment_prompt_allows_touch_exactly_once(renderer: PromptRenderer) -
 
     assert skill_allowlist.count("touch") == 1
     assert "touch" in skill_allowlist.split(": ", 1)[1].split("|")
-    assert EMBODIED_PROMPT_VERSION == "0805-local-v2"
+    assert EMBODIED_PROMPT_VERSION == "0805-local-v3"
 
 
 @pytest.mark.parametrize(
@@ -1033,7 +1033,7 @@ def test_prompt_assets_state_exact_schemas_enums_and_visual_only_rules(
     assert EMBODIED_PROMPT_VERSION in prompts["enrichment"]
     assert "0805-local-v1" in prompts["active"]
     assert EMBODIED_PROMPT_VERSION in prompts["pass_a"]
-    assert "0805-local-v2" in prompts["pass_b"]
+    assert "0805-local-v3" in prompts["pass_b"]
     assert all("visual evidence only" in prompt.casefold() for prompt in prompts.values())
     assert all("do not use audio" in prompt.casefold() for prompt in prompts.values())
     assert all("{{" not in prompt for prompt in prompts.values())
@@ -1067,9 +1067,8 @@ def test_prompt_assets_state_exact_schemas_enums_and_visual_only_rules(
         "duration must be hard <= max_fine_segment_seconds"
         in prompts["pass_b"]
     )
-    assert "lowercase English verb phrase, 2-10 words, <=60 characters" in prompts[
-        "pass_b"
-    ]
+    assert "at most 200 characters" in prompts["pass_b"]
+    assert "SEGMENT_DESCRIPTION_INVALID" in prompts["pass_b"]
     fine_enum = prompts["pass_b"].split("[fine event_type enum]\n", 1)[1].split(
         "\n\n[output schema and topology example]", 1
     )[0]

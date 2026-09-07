@@ -1993,10 +1993,11 @@ def test_boundary_plan_requires_fine_segments_from_adjacent_boundary_points(
 @pytest.mark.parametrize(
     "description",
     [
-        "hand places the apple into container",
-        "Right hand places the apple",
-        "right hand moves this object through an excessively wordy visible action phrase",
-        "right hand " + "moves " * 10,
+        " leading whitespace kept",
+        "trailing whitespace kept ",
+        "line one\nline two",
+        "carriage\rreturn",
+        "right hand " + "moves the visible red container " * 8,
     ],
 )
 def test_boundary_plan_rejects_fine_descriptions_outside_export_contract(
@@ -2014,6 +2015,27 @@ def test_boundary_plan_rejects_fine_descriptions_outside_export_contract(
     assert "SEGMENT_DESCRIPTION_INVALID" in {
         issue.code for issue in error.value.issues
     }
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        "hand places the apple into container",
+        "Right hand places the apple",
+        "right hand moves this object through an excessively wordy visible action phrase",
+        "The wicker basket becomes hidden behind the moving light blue board.",
+    ],
+)
+def test_boundary_plan_accepts_las_reference_style_descriptions(
+    valid_boundary_plan: BoundaryPlan,
+    coarse_plan: CoarsePlan,
+    description: str,
+) -> None:
+    """Official-LAS-style captions (mixed case, free subject, >10 words) pass."""
+    accepted = copy.deepcopy(valid_boundary_plan)
+    accepted.actions[0].fine_segments[0].description = description
+
+    validate_boundary_plan(accepted, coarse_plan)
 
 
 def _repairable_boundary_output() -> tuple[dict[str, Any], dict[str, Any]]:
@@ -2162,7 +2184,8 @@ def test_boundary_topology_fallback_uses_valid_parent_caption_for_invalid_fine_c
     """Observed repair output may reuse its validated visible parent phase safely."""
     coarse, boundary = _repairable_boundary_output()
     boundary["actions"][0]["fine_segments"][0]["description"] = (
-        "hand moves red container"
+        "right hand moves the red container "
+        + "past the visible shelf edge " * 8
     )
 
     repaired = DEFAULT_OUTPUT_SCHEMAS.sanitize(
@@ -2184,13 +2207,12 @@ def test_boundary_topology_fallback_uses_valid_parent_caption_for_invalid_fine_c
 
 
 def test_boundary_topology_fallback_rejects_invalid_fine_and_parent_captions():
-    """Fallback must not manufacture an actor when no valid visible caption exists."""
+    """Fallback must not manufacture a caption when no valid one exists."""
     coarse, boundary = _repairable_boundary_output()
-    coarse["actions"][0]["description"] = "hand moves red container"
-    boundary["actions"][0]["description"] = "hand moves red container"
-    boundary["actions"][0]["fine_segments"][0]["description"] = (
-        "hand moves red container"
-    )
+    oversized = "right hand moves the red container " + "far across the table " * 12
+    coarse["actions"][0]["description"] = oversized
+    boundary["actions"][0]["description"] = oversized
+    boundary["actions"][0]["fine_segments"][0]["description"] = oversized
 
     repaired = DEFAULT_OUTPUT_SCHEMAS.sanitize(
         "BoundaryPlan",

@@ -1,0 +1,83 @@
+{
+  "schema": "las_capability_cohort_evidence_v1",
+  "status": "cohort_completed_with_failure",
+  "source_commit": "c1259157bafb89553afba61b36c4b6c55b357b3a",
+  "wheel_sha256": "a98de394ceae82933f325d817833a6c1e3ad24e8641baf79a94c56613ed9a26b",
+  "control": {
+    "samples": 5,
+    "valid_results": 5,
+    "scene_available": 5,
+    "model_generate_calls": 23,
+    "sam_calls": 0,
+    "wall_seconds": {
+      "full_0001": 147.57276940345764,
+      "full_0002": 92.53495955467224,
+      "full_0004": 112.56759810447693,
+      "full_0021": 66.87090253829956,
+      "full_0024": 41.91861128807068
+    }
+  },
+  "hybrid": {
+    "status": "cold_and_cache_observed",
+    "cold_samples": 5,
+    "valid_cold_results": 4,
+    "failed_cold_samples": [
+      "full_0021"
+    ],
+    "scene_available": 2,
+    "positive_occlusion_events": 20,
+    "model_generate_calls": 26,
+    "sam_calls": 5,
+    "cold_wall_seconds": {
+      "full_0001": 627.4473388195038,
+      "full_0002": 536.2734100818634,
+      "full_0004": 616.4864995479584,
+      "full_0021": 246.53395414352417,
+      "full_0024": 139.42286658287048
+    },
+    "all_five_completed_gate": "failed",
+    "cache_all_five_jobs_hit": true,
+    "new_model_calls_during_cache": 0,
+    "new_sam_calls_during_cache": 0,
+    "cache_failed_samples": [
+      "full_0021"
+    ],
+    "subset_scores": "completed-subset-scores.json",
+    "subset_scores_scope": "Four completed samples only; no five-sample action-drop or precision acceptance claim."
+  },
+  "human_review": {
+    "status": "not_supplied"
+  },
+  "browser": {
+    "status": "unverified"
+  },
+  "files": {
+    "completed-subset-scores.json": "b94dbd4acfc27fb927972c2cdfeac013c1904ff97abb5f03333357f722d7b779",
+    "control/cold-evaluation-metadata.json": "c542a31f872dafd70e641786cc5825e47961448234b98ee735866daf415ee92d",
+    "control/cold-semantic-contracts.json": "c66e33d29b4cb4ef98a3506372b91c2521984a352b09e304854e0c7dc8aabf0a",
+    "control/results/full_0001.json": "058b96094cde3be341156846a7dc31b50ea9536768e30a24f73de1abc550b4f6",
+    "control/results/full_0002.json": "b2efa3da756cfea9e6409d2a34f3e2e5674dab95a7adeeda152b9febea468d34",
+    "control/results/full_0004.json": "ff62875c6d4693fea9a144e4a4b0c53985b26b242e0914b9ed94a0bdc0796696",
+    "control/results/full_0021.json": "9a937e8ef8ef0ca174aece5ddec9f142d751e35d616e789eade86c8f328c7d0b",
+    "control/results/full_0024.json": "558e6a089983a91ad4270bb6dd2c7183c03b0b4739f11328b3134146b6a63d9c",
+    "control/scores.json": "368bfa410b5422a0d7f62399bd77d7df64c62987a47737a7affd0e8928727490",
+    "hybrid/cache-all-terminal-semantic-contracts.json": "e920709538cfc02d7abf595c814e0bba9e75567e30b229d663b3e3b56c093121",
+    "hybrid/cache-completed-subset-metadata.json": "40e861f0a8e66aff909bdd441c569d91c8f722deac36c3fdd8a03725b76b316e",
+    "hybrid/cache-results/full_0001.json": "c43fa9fef0a8c1102f159eb31d4d9d8b7ab90ca36c8e8769d8dd15e0cf14ce8e",
+    "hybrid/cache-results/full_0002.json": "5842f1ff1b830a412663182f5c38959f85626ced935e96bf08451c38c214e2b9",
+    "hybrid/cache-results/full_0004.json": "ecbda4fc70170806f1290d6bc209f206635ee8bf9327fd28e5e8589c5e1efab0",
+    "hybrid/cache-results/full_0024.json": "ee177510cd2e6a5f477739e8eaba039ec7ed1f4596dfed35e40fdcfdec4464eb",
+    "hybrid/cohort-terminal-summary.json": "3255e46bdcb0961562e802c2a99af75fadf827ba862a53aaf5bb617ea0c3c863",
+    "hybrid/cold-all-terminal-semantic-contracts.json": "af44b076766a9327b9c6a20a27b6cb92b338e12a74a6007b0bc0ba5e3f5076db",
+    "hybrid/cold-completed-subset-metadata.json": "dbe0744f8e8b1067be60828b6372b980d1f6aa9d37fbef62a6bbf2dc3fdcf592",
+    "hybrid/cold-cv-artifact-index.json": "8a861a51fef92694b49675fd45165e87ff449b99bc69a54b6d2a2fd684ec2e17",
+    "hybrid/cold-results/full_0001.json": "6030fa15f5fd2bce19999923ee6b561b3400c596db10d9f068a1798e0d538b23",
+    "hybrid/cold-results/full_0002.json": "ba90cdd3a8b2c7ecb53b494cd66474657f51522fe56b353c98be1875ac1e059b",
+    "hybrid/cold-results/full_0004.json": "d55247d0e6ea56bd3b150a95738885ce83dbb257f74a8b9756f956c6115854e3",
+    "hybrid/cold-results/full_0024.json": "cdb29586aeaebd3db0cacd36936894ef78878e773d9cd6859ae0d38f841273c7",
+    "operator-pins.json": "b53ea986300dba9dc23cfaceb7eff983bbb5a44ea46c3b103fee92a74bb8b2e1",
+    "physical-alias-diagnostic.json": "1c5a62202497358fc2c5ac00649b2aa1ba2decb2a4af7a6abfca08e8f4f0b4c9",
+    "remaining-driver-pins.json": "b0587d71349a8ec093e468c36c6d7ed74826d38a5bc27b636bd03807f8e8ebb1",
+    "terminal-operator-pins.json": "0dff17f40f5e98ec095efef19e8aa902218b57b75186415495cf5298e56a509e"
+  }
+}

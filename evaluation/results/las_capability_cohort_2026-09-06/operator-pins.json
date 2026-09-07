@@ -1,0 +1,38 @@
+{
+  "aggregate_cohort_generate_ceiling": 90,
+  "cache_repeat_expected_new_ark_calls": 0,
+  "cache_repeat_expected_new_sam_calls": 0,
+  "capture_context": "control cohort in progress; preparation record preserved separately",
+  "cold_sam_jobs": 5,
+  "max_ark_generate_calls": 84,
+  "operator_sha256": {
+    "capture_metadata.py": "e28166f2ddf2f7535776b5b1e94a0fb18815a84a4963e43c34e4a34381bd3b45",
+    "capture_semantic_contracts.py": "3713867494c6b4462a700e4676e882b573c45fbb70fd70ddd3c9aa0ac5e2ace4",
+    "observe_cv_calls.py": "bc8ac85a48e8639ddbe2e77d229abc3a9abeda4e84a2fca089d15f480f8f5520",
+    "observe_semantic_calls.py": "4f6bc7aefd5021065c9f7d4d52651065c2320bb12b0fd5de5cf57671f389cca6",
+    "run_cohort.py": "3ec8fe48140f3c0350bf1f90b16e3ace186d9b149f1c5c45cef6b5a724beefc2",
+    "runtime_lifecycle.py": "bdd0aa547857f0a66a53a2e162ef26e39965f0669a2847fa0a89d981c202408d",
+    "start_runtime.sh": "b3c384758bda16839e5e3e7931799e1a4013eaca728bc5491f3693546e6fb785"
+  },
+  "prior_cohort_v1_generate_calls": 6,
+  "schema": "las_capability_cohort_operator_pins_v1",
+  "semantic_settings": {
+    "image_pixel_limit": {
+      "max_pixels": 131072,
+      "min_pixels": 4096
+    },
+    "media_resolution": "medium",
+    "recorded_clip_context": "high",
+    "recorded_reasoning_effort": "high",
+    "thinking": "disabled"
+  },
+  "source_commit": "c1259157bafb89553afba61b36c4b6c55b357b3a",
+  "source_videos": {
+    "full_0001": "c3243c46bad68d3b2772e82648e45b68e75a1893b0ce27edecd450226464c1e9",
+    "full_0002": "6741b6184b847b6096e4282b1e0f76142714870b258ca16a19606e0441f0973f",
+    "full_0004": "34bc1833f713419c694c97af544f5c4148f0b03e02913415f4a3eb2be8660d09",
+    "full_0021": "1cd6b0752bd3b7f1ca987d470d8e65d9247a4f0751c7f891c6824b63751eff05",
+    "full_0024": "a7a696bcdd835c083b27ca3705d13a2f22e069ebec9038581354fed39e6fbbe8"
+  },
+  "wheel_sha256": "a98de394ceae82933f325d817833a6c1e3ad24e8641baf79a94c56613ed9a26b"
+}

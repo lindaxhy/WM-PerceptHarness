@@ -1,0 +1,107 @@
+{
+  "local_artifact_root": "outputs/las-capability-20260906/cv-artifacts",
+  "records": [
+    {
+      "artifact_bytes": 18203228,
+      "artifact_file_count": 33,
+      "artifact_key": "6607d807545dff6d260f1e2f38a6f18a155c28d09dea4915bd5b63070459eb7c",
+      "cache_relative_path": "66/6607d807545dff6d260f1e2f38a6f18a155c28d09dea4915bd5b63070459eb7c",
+      "manifest_sha256": "56ab2ef853251508158de891c3f2792e3e761814a30d78b5efed5f98af6182c0",
+      "metrics": {
+        "cache_hit": false,
+        "entity_prompts": 8,
+        "execution_chunk_frames": 8,
+        "inference_seconds": 307.86166394199245,
+        "oom_retry": false,
+        "peak_allocated_bytes": 21720439808,
+        "processed_frames": 328,
+        "track_count": 15
+      },
+      "sample_id": "full_0001",
+      "source_video_sha256": "c3243c46bad68d3b2772e82648e45b68e75a1893b0ce27edecd450226464c1e9",
+      "task_status": "COMPLETED"
+    },
+    {
+      "artifact_bytes": 37703902,
+      "artifact_file_count": 27,
+      "artifact_key": "a3ab8dbcbcd3423319899a1629cb0f85729819eb78c3b760e04d77ee9418f515",
+      "cache_relative_path": "a3/a3ab8dbcbcd3423319899a1629cb0f85729819eb78c3b760e04d77ee9418f515",
+      "manifest_sha256": "586eddb17dd11b5ec42f829050956bf36629f3174f8563696507f980e7360951",
+      "metrics": {
+        "cache_hit": false,
+        "entity_prompts": 5,
+        "execution_chunk_frames": 8,
+        "inference_seconds": 336.7128382810042,
+        "oom_retry": false,
+        "peak_allocated_bytes": 22791950336,
+        "processed_frames": 441,
+        "track_count": 10
+      },
+      "sample_id": "full_0002",
+      "source_video_sha256": "6741b6184b847b6096e4282b1e0f76142714870b258ca16a19606e0441f0973f",
+      "task_status": "COMPLETED"
+    },
+    {
+      "artifact_bytes": 38542495,
+      "artifact_file_count": 33,
+      "artifact_key": "d22d230152d50bfc465755375b83fb042b1587f6b3692ff70e020566a439125c",
+      "cache_relative_path": "d2/d22d230152d50bfc465755375b83fb042b1587f6b3692ff70e020566a439125c",
+      "manifest_sha256": "58ff346bba387a1869ed13be9303545668ea97902ac01089c767a69c19fc1a0b",
+      "metrics": {
+        "cache_hit": false,
+        "entity_prompts": 8,
+        "execution_chunk_frames": 8,
+        "inference_seconds": 290.31566130399005,
+        "oom_retry": false,
+        "peak_allocated_bytes": 19450697216,
+        "processed_frames": 264,
+        "track_count": 17
+      },
+      "sample_id": "full_0004",
+      "source_video_sha256": "34bc1833f713419c694c97af544f5c4148f0b03e02913415f4a3eb2be8660d09",
+      "task_status": "COMPLETED"
+    },
+    {
+      "artifact_bytes": 13308985,
+      "artifact_file_count": 25,
+      "artifact_key": "f76442517fb745bf1005ddff471215dc89d1eb11d5826f5bc2ccd82b55521db5",
+      "cache_relative_path": "f7/f76442517fb745bf1005ddff471215dc89d1eb11d5826f5bc2ccd82b55521db5",
+      "manifest_sha256": "00f6ca91e9e35ada7d2a9664c397a5726668eed10189fee84ef3edd7d1d82a44",
+      "metrics": {
+        "cache_hit": false,
+        "entity_prompts": 7,
+        "execution_chunk_frames": 8,
+        "inference_seconds": 179.8950283949962,
+        "oom_retry": false,
+        "peak_allocated_bytes": 18014354944,
+        "processed_frames": 219,
+        "track_count": 13
+      },
+      "sample_id": "full_0021",
+      "source_video_sha256": "1cd6b0752bd3b7f1ca987d470d8e65d9247a4f0751c7f891c6824b63751eff05",
+      "task_status": "FAILED"
+    },
+    {
+      "artifact_bytes": 1149785,
+      "artifact_file_count": 5,
+      "artifact_key": "63044d2b2f9b9644af6305b958a27339f5645438cb00aaa17bb236966da29cb4",
+      "cache_relative_path": "63/63044d2b2f9b9644af6305b958a27339f5645438cb00aaa17bb236966da29cb4",
+      "manifest_sha256": "bb100c591c85211229f2fd43abf83fb900918d19c129397de165c76484d3a1a1",
+      "metrics": {
+        "cache_hit": false,
+        "entity_prompts": 4,
+        "execution_chunk_frames": 8,
+        "inference_seconds": 51.33000484597869,
+        "oom_retry": false,
+        "peak_allocated_bytes": 16423086080,
+        "processed_frames": 137,
+        "track_count": 3
+      },
+      "sample_id": "full_0024",
+      "source_video_sha256": "a7a696bcdd835c083b27ca3705d13a2f22e069ebec9038581354fed39e6fbbe8",
+      "task_status": "COMPLETED"
+    }
+  ],
+  "schema": "las_capability_cv_artifact_index_v1",
+  "source_commit": "c1259157bafb89553afba61b36c4b6c55b357b3a"
+}

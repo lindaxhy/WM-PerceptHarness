@@ -1,0 +1,75 @@
+{
+  "schema": "las_physical_alias_diagnostic_v1",
+  "source_commit": "c1259157bafb89553afba61b36c4b6c55b357b3a",
+  "sample_id": "full_0001",
+  "artifact_key": "6607d807545dff6d260f1e2f38a6f18a155c28d09dea4915bd5b63070459eb7c",
+  "manifest_sha256": "56ab2ef853251508158de891c3f2792e3e761814a30d78b5efed5f98af6182c0",
+  "tracks": [
+    "left_hand_1",
+    "right_hand_0"
+  ],
+  "witnesses": [
+    {
+      "source_frame_index": 81,
+      "timestamp": 2.7,
+      "left_pixels": 28150,
+      "right_pixels": 23564,
+      "intersection_pixels": 0,
+      "union_pixels": 51714,
+      "mask_iou": 0.0
+    },
+    {
+      "source_frame_index": 99,
+      "timestamp": 3.3,
+      "left_pixels": 34214,
+      "right_pixels": 21916,
+      "intersection_pixels": 0,
+      "union_pixels": 56130,
+      "mask_iou": 0.0
+    },
+    {
+      "source_frame_index": 109,
+      "timestamp": 3.633333,
+      "left_pixels": 42853,
+      "right_pixels": 41013,
+      "intersection_pixels": 40859,
+      "union_pixels": 43007,
+      "mask_iou": 0.9500546422675379
+    },
+    {
+      "source_frame_index": 123,
+      "timestamp": 4.1,
+      "left_pixels": 44366,
+      "right_pixels": 43067,
+      "intersection_pixels": 43010,
+      "union_pixels": 44423,
+      "mask_iou": 0.9681921527136843
+    },
+    {
+      "source_frame_index": 246,
+      "timestamp": 8.2,
+      "left_pixels": 48370,
+      "right_pixels": 46239,
+      "intersection_pixels": 46182,
+      "union_pixels": 48427,
+      "mask_iou": 0.953641563590559
+    },
+    {
+      "source_frame_index": 279,
+      "timestamp": 9.3,
+      "left_pixels": 1036,
+      "right_pixels": 1045,
+      "intersection_pixels": 1036,
+      "union_pixels": 1045,
+      "mask_iou": 0.9913875598086125
+    }
+  ],
+  "conclusion": "Distinct physical identities are unresolved for terminal reciprocal hand occlusion claims; no global track merge is justified.",
+  "earlier_partial_occlusion": "unresolved",
+  "human_review": false,
+  "model_calls": 0,
+  "new_sam_calls": 0,
+  "mask_arrays_read": 12,
+  "decoded_mask_bytes": 11059200,
+  "geometry_cues_present_in_model_input": true
+}

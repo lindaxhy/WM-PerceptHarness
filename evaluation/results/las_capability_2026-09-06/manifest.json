@@ -59,5 +59,7 @@
   "latest_offline_diagnostic_source_commit": "4c1fa7c57967928c0993afa1232d70657acd2308",
   "cohort_generate_calls_separate": 6,
   "total_observed_model_api_or_generate_attempts": 28,
-  "latest_local_verification_source_commit": "c1259157bafb89553afba61b36c4b6c55b357b3a"
+  "latest_local_verification_source_commit": "c1259157bafb89553afba61b36c4b6c55b357b3a",
+  "count_scope": "Diagnostics and preserved cohort-v1 control only; subsequent cohort-v2 tracked separately.",
+  "new_cohort_manifest": "../las_capability_cohort_2026-09-06/manifest.json"
 }
