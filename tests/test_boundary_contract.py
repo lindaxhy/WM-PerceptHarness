@@ -65,7 +65,7 @@ def test_boundary_factory_authenticates_and_compiles_exact_existing_vocabularies
 
 @pytest.mark.parametrize('change', ['missing', 'extra', 'schema_injection', 'invalid_flag',
     'nan', 'zero', 'bool_max', 'string_max', 'bad_coarse_enum', 'empty_actions',
-    'nonzero_start', 'gap', 'repeated_index', 'nonpositive', 'empty_entities', 'infinite_end'])
+    'repeated_index', 'nonpositive', 'empty_entities', 'infinite_end'])
 def test_invalid_boundary_context_cannot_compile(change):
     _, context = boundary_fixture()
     if change == 'missing': del context['coarse_plan']
@@ -77,8 +77,6 @@ def test_invalid_boundary_context_cannot_compile(change):
     coarse = context.get('coarse_plan', {})
     if change == 'bad_coarse_enum': coarse['actions'][0]['event_type'] = 'private synonym'
     if change == 'empty_actions': coarse['actions'] = []
-    if change == 'nonzero_start': coarse['actions'][0]['start'] = .1
-    if change == 'gap': coarse['actions'][1]['start'] = 1.1
     if change == 'repeated_index': coarse['actions'][1]['action_index'] = 0
     if change == 'nonpositive': coarse['actions'][1]['end'] = 1.0
     if change == 'empty_entities': coarse['entity_candidates'] = []
@@ -176,7 +174,7 @@ def test_explicit_unknown_transition_preserves_model_output_and_valid_schema():
 def test_task2k_preserves_public_schemas_and_scene_response_bytes():
     from las_repro.pipelines.scene_choices import SceneSemanticsChoices, prepare_scene_choices
     for model, expected in [(BoundaryPlan, 'c072d2ff4f715ca04e2d11137e2d027a41a01be80633192ae9939df848d862ba'),
-                            (SceneSemanticsChoices, 'a28a4040ab43191beb9c69794f470c616a63936b27df1ab48206c6c8665da03f')]:
+                            (SceneSemanticsChoices, '7e644b9577192c31f936fffcf9ec8d931fe0b7d76942beff86a72d6ea1a57a80')]:
         encoded = json.dumps(model.model_json_schema(), sort_keys=True, separators=(',', ':'))
         assert hashlib.sha256(encoded.encode()).hexdigest() == expected
     empty = prepare_scene_choices(None, [], duration=1.0).context()

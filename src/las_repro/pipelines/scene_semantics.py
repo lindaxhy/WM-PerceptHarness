@@ -10,7 +10,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .validators import Actor, TemporalIssue, TemporalValidationError
+from .validators import Actor, Skill, TemporalIssue, TemporalValidationError
 
 
 Timestamp = Annotated[float, Field(ge=0, strict=True, allow_inf_nan=False)]
@@ -23,26 +23,8 @@ ObjectId = Annotated[
 ]
 
 
-class SceneEventType(StrEnum):
-    MOVE = "move"
-    TRANSPORT = "transport"
-    GRASP = "grasp"
-    REACH = "reach"
-    RELEASE = "release"
-    LIFT = "lift"
-    PLACE = "place"
-    APPROACH = "approach"
-    CONTACT = "contact"
-    PUSH = "push"
-    PULL = "pull"
-    ROTATE = "rotate"
-    STOP = "stop"
-    AUTONOMOUS_MOTION = "autonomous_motion"
-    STATE_CHANGE = "state_change"
-    OCCLUSION_ENTER = "occlusion_enter"
-    OCCLUDED = "occluded"
-    OCCLUSION_EXIT = "occlusion_exit"
-    UNKNOWN = "unknown"
+SceneEventType = Skill
+"""Scene events and fine skills share the official LAS vocabulary."""
 
 
 class OutcomeStatus(StrEnum):

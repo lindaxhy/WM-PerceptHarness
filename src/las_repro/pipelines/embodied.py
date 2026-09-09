@@ -52,7 +52,7 @@ from .validators import (
 )
 
 
-EMBODIED_PROMPT_VERSION = "0805-local-v4"
+EMBODIED_PROMPT_VERSION = "0805-local-v5"
 
 Probe = Callable[[Path], VideoMetadata]
 WaitJobs = Callable[
@@ -345,10 +345,11 @@ class EmbodiedActionPipeline:
             degradation_count=sum(s == "unavailable" for s in
                                   (cv_evidence["status"], scene_status, occlusion["status"])))
         result = build_hybrid_result(task_description=coarse.task_description,
+            duration=span.end,
             segments=segments, scene=scene.model_dump(mode="json"), scene_status=scene_status,
             cv_evidence=cv_evidence, evidence_summary=summary, warnings=warnings,
             performance=performance, occlusion=occlusion,
-            action_history=("initial", "repair") if enrichment_job.ordinal else ("initial",),
+            action_history=_repair_history_for(enrichment_job.ordinal),
             scene_history=scene_history)
         validate_hybrid_result(result, evidence_summary=summary,
             frame_pts=[frame.timestamp_seconds for frame in timeline.frames] if summary is not None else None,
@@ -1071,155 +1072,32 @@ def _fine_segment_requirements(
     maximum: float,
 ) -> _TrustedCanonicalJSON:
     maximum_fraction = Fraction(Decimal(str(maximum)))
-    planning_target = _planning_target(maximum, maximum_fraction)
-    planning_target_fraction = Fraction(Decimal(str(planning_target)))
     requirements: list[str] = []
     for action in plan.actions:
         duration = Fraction(Decimal(str(action.end))) - Fraction(
             Decimal(str(action.start))
         )
         minimum_count = _ceiling_fraction_ratio(duration, maximum_fraction)
-        suggested_count = _ceiling_fraction_ratio(
-            duration,
-            planning_target_fraction,
-        )
-        boundary_slots = _boundary_slots(
-            action_index=action.action_index,
-            start=action.start,
-            end=action.end,
-            count=suggested_count,
-            maximum=maximum,
-        )
         requirements.append(
             '{"action_index":'
             f"{action.action_index},"
             '"duration_seconds":'
             f"{_terminating_fraction_json_number(duration)},"
             '"minimum_fine_segment_count":'
-            f"{minimum_count},"
-            '"suggested_fine_segment_count":'
-            f"{suggested_count},"
-            '"exact_boundary_point_count":'
-            f"{suggested_count + 1},"
-            '"exact_fine_segment_count":'
-            f"{suggested_count},"
-            '"boundary_slots":'
-            f"{_canonical_json(boundary_slots)}}}"
+            f"{minimum_count}}}"
         )
     return _TrustedCanonicalJSON(
         '{"max_fine_segment_seconds":'
         f"{_canonical_json(maximum)},"
-        '"planning_target_seconds":'
-        f"{_canonical_json(planning_target)},"
         '"actions":['
         f"{','.join(requirements)}]}}"
     )
-
-
-def _planning_target(maximum: float, maximum_fraction: Fraction) -> float:
-    """Return a representable 90% target, or the hard cap at float underflow."""
-    candidate = float(maximum_fraction * Fraction(9, 10))
-    if candidate <= 0 or candidate >= maximum:
-        next_lower = math.nextafter(maximum, 0.0)
-        return next_lower if next_lower > 0 else maximum
-    return candidate
 
 
 def _ceiling_fraction_ratio(numerator: Fraction, denominator: Fraction) -> int:
     ratio_numerator = numerator.numerator * denominator.denominator
     ratio_denominator = numerator.denominator * denominator.numerator
     return (ratio_numerator + ratio_denominator - 1) // ratio_denominator
-
-
-def _boundary_slots(
-    *,
-    action_index: int,
-    start: float,
-    end: float,
-    count: int,
-    maximum: float,
-) -> list[dict[str, Any]]:
-    """Build binary64 windows whose worst adjacent choices satisfy the cap.
-
-    For ideal step ``s`` and slack ``d = min(s, cap - s) / 4``, the
-    smallest adjacent separation is ``s - 2d > 0`` and the largest possible
-    segment is ``s + 2d <= cap``. Rounding both bounds inward can only tighten
-    those guarantees. The zero-slack case is necessary when one segment spans
-    exactly the smallest representable configured cap.
-    """
-    if count < 1 or count + 1 > _MAX_BOUNDARY_SLOTS_PER_ACTION:
-        raise PromptRenderError("pass_b boundary slot count is not materializable")
-
-    start_fraction = Fraction.from_float(start)
-    end_fraction = Fraction.from_float(end)
-    maximum_fraction = Fraction.from_float(maximum)
-    step = (end_fraction - start_fraction) / count
-    if step <= 0 or step > maximum_fraction:
-        raise PromptRenderError("pass_b boundary slots are not feasible")
-    slack = min(step, maximum_fraction - step) / 4
-
-    slots: list[dict[str, Any]] = []
-    for position in range(count + 1):
-        if position == 0:
-            center = minimum = maximum_time = start
-        elif position == count:
-            center = minimum = maximum_time = end
-        else:
-            exact_center = start_fraction + step * position
-            exact_minimum = exact_center - slack
-            exact_maximum = exact_center + slack
-            minimum = _inward_binary64(exact_minimum, lower=True)
-            maximum_time = _inward_binary64(exact_maximum, lower=False)
-            if minimum > maximum_time:
-                raise PromptRenderError("pass_b boundary slots are not representable")
-            center = float(exact_center)
-            center = min(max(center, minimum), maximum_time)
-        slots.append(
-            {
-                "boundary_position": position,
-                "boundary_id": f"a{action_index}_b{position}",
-                "ideal_partition_center_seconds": center,
-                "inclusive_time_window": {
-                    "minimum_seconds": minimum,
-                    "maximum_seconds": maximum_time,
-                },
-            }
-        )
-
-    _validate_boundary_slot_guarantees(slots, maximum_fraction)
-    return slots
-
-
-def _inward_binary64(value: Fraction, *, lower: bool) -> float:
-    candidate = float(value)
-    represented = Fraction.from_float(candidate)
-    if lower and represented < value:
-        candidate = math.nextafter(candidate, math.inf)
-    elif not lower and represented > value:
-        candidate = math.nextafter(candidate, -math.inf)
-    if not math.isfinite(candidate) or candidate < 0:
-        raise PromptRenderError("pass_b boundary slots are not representable")
-    return candidate
-
-
-def _validate_boundary_slot_guarantees(
-    slots: Sequence[Mapping[str, Any]],
-    maximum: Fraction,
-) -> None:
-    for previous, following in zip(slots[:-1], slots[1:], strict=True):
-        previous_window = previous["inclusive_time_window"]
-        following_window = following["inclusive_time_window"]
-        assert isinstance(previous_window, Mapping)
-        assert isinstance(following_window, Mapping)
-        previous_minimum = Fraction.from_float(previous_window["minimum_seconds"])
-        previous_maximum = Fraction.from_float(previous_window["maximum_seconds"])
-        following_minimum = Fraction.from_float(following_window["minimum_seconds"])
-        following_maximum = Fraction.from_float(following_window["maximum_seconds"])
-        if (
-            following_minimum <= previous_maximum
-            or following_maximum - previous_minimum > maximum
-        ):
-            raise PromptRenderError("pass_b boundary slots are not feasible")
 
 
 def _terminating_fraction_json_number(value: Fraction) -> str:

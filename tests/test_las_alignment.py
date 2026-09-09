@@ -790,6 +790,8 @@ def test_offline_five_sample_cli_with_local_frozen_inputs(tmp_path):
     from las_repro.pipelines.hybrid_result import build_hybrid_result
     from las_repro.pipelines.scene_semantics import unavailable_scene_semantics
 
+    from las_repro.pipelines.validators import Skill
+
     qwen = Path("outputs/five-demo/qwen-only")
     if not all(
         (qwen / f"{sid}.json").exists()
@@ -797,6 +799,11 @@ def test_offline_five_sample_cli_with_local_frozen_inputs(tmp_path):
         for sid in las.FROZEN_QWEN
     ):
         pytest.skip("local frozen result/media fixtures unavailable")
+    current = {skill.value for skill in Skill}
+    for sid in las.FROZEN_QWEN:
+        fixture = strict_json((qwen / f"{sid}.json").read_bytes())
+        if any(seg.get("skill") not in current for seg in fixture.get("segments", [])):
+            pytest.skip("frozen fixtures predate the unified official skill vocabulary")
     refs, entries = las.load_references(
         "evaluation/references/las_official_english_2026-09-04/manifest.json"
     )

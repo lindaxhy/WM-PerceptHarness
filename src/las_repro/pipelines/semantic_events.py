@@ -7,6 +7,10 @@ from collections.abc import Mapping, Sequence
 from numbers import Real
 from typing import Any
 
+from .validators import Skill
+
+_SKILL_VALUES = frozenset(item.value for item in Skill)
+
 
 _ACTOR_PROJECTION = {
     "left_hand": "left_hand", "left_gripper": "left_hand",
@@ -14,15 +18,7 @@ _ACTOR_PROJECTION = {
     "both_hands": "both_hands", "both_grippers": "both_hands",
     "robot_arm": "robot_arm", "unknown": "unknown",
 }
-_ACTION_PROJECTION = {
-    "grasp": "grasp", "pick": "grasp",
-    "move": "motion", "lift": "motion", "push": "motion",
-    "pull": "motion", "rotate": "motion", "place": "motion",
-    "reach": "reach", "release": "release", "hold": "hold",
-    "touch": "contact", "open": "open", "close": "close",
-    "retract": "retract", "roll": "motion", "static": "static",
-    "unknown": "unknown",
-}
+
 _EVENT_KEYS = {
     "event_index", "start", "end", "actor", "action", "target",
     "description", "confidence", "source_segment_indices",
@@ -42,13 +38,17 @@ def build_semantic_events(
     for previous, current in zip(checked, checked[1:], strict=False):
         if current["segment_index"] != previous["segment_index"] + 1:
             raise ValueError("semantic event segment indices must be contiguous")
-        if current["start"] != previous["end"]:
-            raise ValueError("semantic event segment times must be contiguous")
+        if current["start"] < previous["end"]:
+            raise ValueError("semantic event segments must not overlap")
 
     groups: list[list[dict[str, Any]]] = []
     for segment in checked:
         key = (segment["actor"], segment["action"], segment["target_key"])
-        if groups and groups[-1][0]["group_key"] == key:
+        if (
+            groups
+            and groups[-1][0]["group_key"] == key
+            and segment["start"] == groups[-1][-1]["end"]
+        ):
             groups[-1].append(segment)
         else:
             segment["group_key"] = key
@@ -118,7 +118,7 @@ def _checked_segment(value: Mapping[str, Any], position: int) -> dict[str, Any]:
     skill = value.get("skill")
     if type(actor) is not str or actor not in _ACTOR_PROJECTION:
         raise ValueError("semantic event actor is invalid")
-    if type(skill) is not str or skill not in _ACTION_PROJECTION:
+    if type(skill) is not str or skill not in _SKILL_VALUES:
         raise ValueError("semantic event skill is invalid")
     target = value.get("target")
     description = value.get("description")
@@ -131,7 +131,7 @@ def _checked_segment(value: Mapping[str, Any], position: int) -> dict[str, Any]:
         "start": start,
         "end": end,
         "actor": _ACTOR_PROJECTION[actor],
-        "action": _ACTION_PROJECTION[skill],
+        "action": skill,
         "target": target,
         "target_key": " ".join(target.casefold().split()),
         "description": description,

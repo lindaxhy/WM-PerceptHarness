@@ -346,7 +346,7 @@ def test_settings_defaults_and_environment_overrides(monkeypatch, tmp_path):
     assert settings.gpu_devices == (1, 2)
     assert settings.segment_seconds == 30.0
     assert settings.segment_overlap_seconds == 2.0
-    assert settings.max_fine_segment_seconds == 1.0
+    assert settings.max_fine_segment_seconds == 30.0
     assert settings.lease_seconds == 300
     assert settings.tos_access_key.get_secret_value() == "access-secret"
 

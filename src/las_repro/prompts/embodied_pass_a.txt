@@ -1,5 +1,5 @@
 [prompt_version]
-0805-local-v4
+0805-local-v5
 
 You annotate a complete first-person robot manipulation video.
 Use visual evidence only. Do not use audio, speech, transcripts, filenames, or outside knowledge.
@@ -32,9 +32,8 @@ Output the global task, visible/action-relevant entity evidence requests, and co
 - Use visible evidence only. Do not infer hidden intent.
 - Prefer boundaries where the manipulated object, held state, contact state, destination interaction, or idle/active phase changes.
 - Do not create one-second grids.
-- actions[0].start must be exactly 0.0.
-- actions[-1].end must copy the supplied video_duration_seconds numeric value exactly.
-- Adjacent actions must share the exact same boundary value. Actions must be chronological, non-overlapping, contiguous, and cover the complete video.
+- Mark only intervals where a visible action is actually happening. Idle stretches, an empty scene, or a fully static frame get no action: leave those intervals uncovered rather than inventing a filler action.
+- Actions must be chronological and non-overlapping, and must stay within 0.0 through video_duration_seconds. They need not touch each other and need not start at 0.0 or end at the video end.
 - Every action must have positive duration. action_index values must be unique and strictly increasing.
 - Use seconds relative to the complete video.
 

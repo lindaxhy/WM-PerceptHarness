@@ -10,7 +10,6 @@ from fastapi.testclient import TestClient
 
 from las_repro.api import create_app
 from las_repro.config import Settings
-from las_repro.export import iter_action_captions
 from las_repro.pipelines.hybrid_result import (
     build_hybrid_result,
     validate_hybrid_result,
@@ -602,7 +601,7 @@ def test_poll_preserves_validated_hybrid_provenance_usage_and_cache_digest(
     )
     assert body["data"] == stored_snapshot
     assert store.get_task(task_id).result == stored_snapshot
-    assert len(list(iter_action_captions("poll", body["data"], source_fps=10.0))) == 1
+    assert len(body["data"]["segments"]) == 1
 
 
 def test_poll_preserves_valid_hybrid_result_with_null_provider_metrics(

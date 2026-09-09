@@ -31,7 +31,7 @@ def _segment(
 
 
 def test_compatible_segments_merge_with_weighted_confidence_and_hand_projection():
-    """Losing broad action continuity would preserve the measured fragmentation gap."""
+    """Same-skill adjacent segments must merge with duration-weighted confidence."""
     segments = [
         _segment(0, 0.0, 0.4, confidence=0.5),
         _segment(
@@ -39,9 +39,9 @@ def test_compatible_segments_merge_with_weighted_confidence_and_hand_projection(
             0.4,
             1.0,
             actor="right_hand",
-            skill="lift",
+            skill="move",
             target=" red   container ",
-            description="right hand lifts red container",
+            description="right hand slides red container left",
             confidence=1.0,
         ),
     ]
@@ -52,10 +52,10 @@ def test_compatible_segments_merge_with_weighted_confidence_and_hand_projection(
             "start": 0.0,
             "end": 1.0,
             "actor": "right_hand",
-            "action": "motion",
+            "action": "move",
             "target": "Red Container",
             "description": (
-                "right hand moves red container; right hand lifts red container"
+                "right hand moves red container; right hand slides red container left"
             ),
             "confidence": pytest.approx(0.8),
             "source_segment_indices": [0, 1],
@@ -76,44 +76,57 @@ def test_actor_action_and_target_changes_split_semantic_events():
 
     assert [event["event_index"] for event in events] == [0, 1, 2, 3]
     assert [(event["actor"], event["action"], event["target"]) for event in events] == [
-        ("right_hand", "motion", "Red Container"),
-        ("left_hand", "motion", "Red Container"),
+        ("right_hand", "move", "Red Container"),
+        ("left_hand", "move", "Red Container"),
         ("left_hand", "grasp", "Red Container"),
-        ("left_hand", "motion", "blue cup"),
+        ("left_hand", "move", "blue cup"),
     ]
     assert [event["source_segment_indices"] for event in events] == [[0], [1], [2], [3]]
 
 
-def test_roll_and_static_skills_project_into_closed_families():
-    """The two autonomous-scene skills must group without widening hand actions."""
+def test_autonomous_motion_passes_through_without_projection():
+    """Object self-motion keeps its official label instead of a family alias."""
     events = build_semantic_events(
         [
             _segment(
                 0, 0.0, 0.5,
                 actor="unknown",
-                skill="roll",
+                skill="autonomous_motion",
                 target="red apple",
                 description="red apple rolls down the ramp",
             ),
             _segment(
                 1, 0.5, 1.0,
                 actor="unknown",
-                skill="static",
-                target="none",
-                description="table stays empty",
+                skill="stop",
+                target="red apple",
+                description="red apple comes to rest in the container",
             ),
         ]
     )
 
-    assert [event["action"] for event in events] == ["motion", "static"]
+    assert [event["action"] for event in events] == ["autonomous_motion", "stop"]
     assert [event["source_segment_indices"] for event in events] == [[0], [1]]
 
 
-def test_projection_rejects_noncontiguous_or_unknown_input_values():
+def test_projection_rejects_overlap_or_unknown_input_values():
     """The additive output must fail closed if called before segment validation."""
-    with pytest.raises(ValueError, match="contiguous"):
-        build_semantic_events([_segment(0, 0.0, 0.4), _segment(1, 0.5, 1.0)])
+    with pytest.raises(ValueError, match="overlap"):
+        build_semantic_events([_segment(0, 0.0, 0.6), _segment(1, 0.5, 1.0)])
     with pytest.raises(ValueError, match="actor"):
         build_semantic_events([_segment(0, 0.0, 1.0, actor="private_actor")])
     with pytest.raises(ValueError, match="skill"):
         build_semantic_events([_segment(0, 0.0, 1.0, skill="private_skill")])
+
+
+def test_projection_keeps_gap_separated_same_key_segments_apart():
+    """A visible pause must split events even when actor, action, and target repeat."""
+    events = build_semantic_events(
+        [_segment(0, 0.0, 0.4), _segment(1, 0.7, 1.0)]
+    )
+
+    assert [event["source_segment_indices"] for event in events] == [[0], [1]]
+    assert [(event["start"], event["end"]) for event in events] == [
+        (0.0, 0.4),
+        (0.7, 1.0),
+    ]

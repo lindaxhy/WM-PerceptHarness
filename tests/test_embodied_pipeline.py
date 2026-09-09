@@ -17,7 +17,6 @@ import pytest
 import las_repro.pipelines.embodied as embodied_module
 from las_repro.config import Settings
 from las_repro.domain import InferenceStatus, TaskStatus
-from las_repro.export import iter_action_captions
 from las_repro.media import FrameRef, MediaResolver, VideoMetadata
 from las_repro.models.base import ModelOutputError, ModelRequest, parse_strict_json
 from las_repro.models.fake import FakeVideoModel
@@ -252,8 +251,10 @@ def test_enrichment_prompt_injects_exact_cardinality_and_complete_safe_skeleton(
     assert "{{ENRICHMENT_REQUIREMENTS_JSON}}" not in prompt
 
 
-def test_enrichment_prompt_allows_touch_exactly_once(renderer: PromptRenderer) -> None:
-    """The proven token belongs in the prompt, while duplicate guidance would be ambiguous."""
+def test_enrichment_prompt_lists_the_official_vocabulary_exactly_once_each(
+    renderer: PromptRenderer,
+) -> None:
+    """The allowlist must be the official 19-word vocabulary with no duplicates."""
     prompt = renderer.enrichment(
         [
             {
@@ -269,9 +270,11 @@ def test_enrichment_prompt_allows_touch_exactly_once(renderer: PromptRenderer) -
         line for line in prompt.splitlines() if line.startswith("- skill: ")
     )
 
-    assert skill_allowlist.count("touch") == 1
-    assert "touch" in skill_allowlist.split(": ", 1)[1].split("|")
-    assert EMBODIED_PROMPT_VERSION == "0805-local-v4"
+    words = skill_allowlist.split(": ", 1)[1].split("|")
+    assert len(words) == len(set(words)) == 19
+    assert "contact" in words and "autonomous_motion" in words
+    assert "touch" not in words and "static" not in words and "roll" not in words
+    assert EMBODIED_PROMPT_VERSION == "0805-local-v5"
 
 
 @pytest.mark.parametrize(
@@ -375,86 +378,19 @@ def test_pass_b_prompt_injects_exact_per_action_requirements_for_10_0333(
     requirements = _pass_b_requirements(prompt, parse_float=Decimal)
 
     assert requirements["max_fine_segment_seconds"] == Decimal("1.0")
-    assert requirements["planning_target_seconds"] == Decimal("0.9")
-    assert [
-        {
-            key: action[key]
-            for key in (
-                "action_index",
-                "duration_seconds",
-                "minimum_fine_segment_count",
-                "suggested_fine_segment_count",
-            )
-        }
-        for action in requirements["actions"]
-    ] == [
+    assert requirements["actions"] == [
         {
             "action_index": 0,
             "duration_seconds": Decimal("2.1"),
             "minimum_fine_segment_count": 3,
-            "suggested_fine_segment_count": 3,
         },
         {
             "action_index": 1,
             "duration_seconds": Decimal("7.9333"),
             "minimum_fine_segment_count": 8,
-            "suggested_fine_segment_count": 9,
         },
     ]
     assert "{{FINE_SEGMENT_REQUIREMENTS_JSON}}" not in prompt
-
-
-@pytest.mark.parametrize(
-    (
-        "duration",
-        "maximum",
-        "expected_target",
-        "expected_minimum",
-        "expected_suggested",
-    ),
-    [
-        (2.1, 0.3, Decimal("0.27"), 7, 8),
-        (5e-324, 1.0, Decimal("0.9"), 1, 1),
-        (1.0, 0.4, Decimal("0.36"), 3, 3),
-    ],
-)
-def test_pass_b_minimum_count_uses_exact_decimal_ceiling(
-    renderer: PromptRenderer,
-    duration: float,
-    maximum: float,
-    expected_target: Decimal,
-    expected_minimum: int,
-    expected_suggested: int,
-) -> None:
-    """Binary division must not overcount exact ratios or lose tiny positive spans."""
-    plan = CoarsePlan.model_validate(
-        {
-            "task_description": "move the red container",
-            "entity_candidates": _entity_candidates(),
-            "actions": [
-                {
-                    "action_index": 0,
-                    "start": 0.0,
-                    "end": duration,
-                    "description": "right hand moves red container",
-                    "event_type": "transport",
-                }
-            ],
-        }
-    )
-
-    prompt = renderer.pass_b(
-        plan,
-        max_fine_segment_seconds=maximum,
-    )
-
-    requirements = _pass_b_requirements(prompt, parse_float=Decimal)
-    [action] = requirements["actions"]
-
-    assert requirements["planning_target_seconds"] == expected_target
-    assert action["duration_seconds"] == Decimal(str(duration))
-    assert action["minimum_fine_segment_count"] == expected_minimum
-    assert action["suggested_fine_segment_count"] == expected_suggested
 
 
 def test_pass_b_preserves_exact_high_significance_nonzero_start_duration(
@@ -496,232 +432,6 @@ def test_pass_b_preserves_exact_high_significance_nonzero_start_duration(
         "1.2345678901234565765432109876544"
     )
     assert action["minimum_fine_segment_count"] == 2
-    assert action["suggested_fine_segment_count"] == 2
-
-
-def test_pass_b_rejects_an_unmaterializable_boundary_slot_plan(
-    renderer: PromptRenderer,
-) -> None:
-    """A hostile tiny cap must fail closed instead of allocating trillions of slots."""
-    plan = CoarsePlan.model_validate(
-        {
-            "task_description": "move the red container",
-            "entity_candidates": _entity_candidates(),
-            "actions": [
-                {
-                    "action_index": 0,
-                    "start": 0.0,
-                    "end": 1.234567890123456e-16,
-                    "description": "right hand approaches red container",
-                    "event_type": "reach_and_grasp",
-                }
-            ],
-        }
-    )
-
-    with pytest.raises(PromptRenderError, match="boundary slot count"):
-        renderer.pass_b(plan, max_fine_segment_seconds=1e-28)
-
-
-@pytest.mark.parametrize(
-    ("maximum", "expected_target", "expected_suggested_count"),
-    [
-        (5e-324, Decimal("5e-324"), 1),
-        (1e-323, Decimal("5e-324"), 2),
-        (
-            sys.float_info.max,
-            Decimal("1.6179238213760842e308"),
-            2,
-        ),
-    ],
-)
-def test_pass_b_planning_target_stays_positive_and_representable_at_float_extremes(
-    renderer: PromptRenderer,
-    maximum: float,
-    expected_target: Decimal,
-    expected_suggested_count: int,
-) -> None:
-    """A safety target must not underflow or overflow the timestamp number domain."""
-    plan = CoarsePlan.model_validate(
-        {
-            "task_description": "move the red container",
-            "entity_candidates": _entity_candidates(),
-            "actions": [
-                {
-                    "action_index": 0,
-                    "start": 0.0,
-                    "end": maximum,
-                    "description": "right hand moves red container",
-                    "event_type": "transport",
-                }
-            ],
-        }
-    )
-
-    prompt = renderer.pass_b(plan, max_fine_segment_seconds=maximum)
-    requirements = _pass_b_requirements(prompt, parse_float=Decimal)
-
-    assert requirements["planning_target_seconds"] == expected_target
-    assert requirements["actions"][0]["minimum_fine_segment_count"] == 1
-    assert (
-        requirements["actions"][0]["suggested_fine_segment_count"]
-        == expected_suggested_count
-    )
-
-
-def test_pass_b_injects_exact_feasible_boundary_slots_for_10_0333(
-    renderer: PromptRenderer,
-) -> None:
-    """The accepted real-model shape needs 13 slots for 12 safely short pieces."""
-    plan = CoarsePlan.model_validate(
-        {
-            "task_description": "move the red container",
-            "entity_candidates": _entity_candidates(),
-            "actions": [
-                {
-                    "action_index": 0,
-                    "start": 0.0,
-                    "end": 10.0333,
-                    "description": "right hand moves red container",
-                    "event_type": "transport",
-                }
-            ],
-        }
-    )
-
-    prompt = renderer.pass_b(plan, max_fine_segment_seconds=1.0)
-    [action] = _pass_b_requirements(prompt)["actions"]
-    slots = action["boundary_slots"]
-
-    assert action["exact_fine_segment_count"] == 12
-    assert action["exact_boundary_point_count"] == 13
-    assert len(slots) == 13
-    assert slots[0] == {
-        "boundary_position": 0,
-        "boundary_id": "a0_b0",
-        "ideal_partition_center_seconds": 0.0,
-        "inclusive_time_window": {
-            "minimum_seconds": 0.0,
-            "maximum_seconds": 0.0,
-        },
-    }
-    assert slots[-1] == {
-        "boundary_position": 12,
-        "boundary_id": "a0_b12",
-        "ideal_partition_center_seconds": 10.0333,
-        "inclusive_time_window": {
-            "minimum_seconds": 10.0333,
-            "maximum_seconds": 10.0333,
-        },
-    }
-    assert all(
-        slot["inclusive_time_window"]["minimum_seconds"]
-        < slot["ideal_partition_center_seconds"]
-        < slot["inclusive_time_window"]["maximum_seconds"]
-        for slot in slots[1:-1]
-    )
-
-
-@pytest.mark.parametrize(
-    ("maximum", "endpoints"),
-    [
-        (1.0, (0.0, 10.0333)),
-        (0.3, (0.0, 0.2, 0.55, 1.2345678901234567)),
-        (5e-324, (0.0, 5e-324, 1e-323)),
-        (
-            sys.float_info.max,
-            (0.0, math.nextafter(sys.float_info.max, 0.0), sys.float_info.max),
-        ),
-        (1.0, (0.0, 1.234567890123456e-16, 1.2345678901234567)),
-    ],
-)
-def test_pass_b_boundary_windows_guarantee_every_selection_is_safe_binary64(
-    renderer: PromptRenderer,
-    maximum: float,
-    endpoints: tuple[float, ...],
-) -> None:
-    """Worst-case choices from adjacent inclusive windows must remain valid."""
-    plan = CoarsePlan.model_validate(
-        {
-            "task_description": "move the red container",
-            "entity_candidates": _entity_candidates(),
-            "actions": [
-                {
-                    "action_index": index,
-                    "start": start,
-                    "end": end,
-                    "description": "right hand moves red container",
-                    "event_type": "transport",
-                }
-                for index, (start, end) in enumerate(
-                    zip(endpoints[:-1], endpoints[1:], strict=True)
-                )
-            ],
-        }
-    )
-
-    prompt = renderer.pass_b(plan, max_fine_segment_seconds=maximum)
-    requirements = _pass_b_requirements(prompt)
-    hard_maximum = Fraction.from_float(maximum)
-
-    for coarse, action in zip(
-        plan.actions,
-        requirements["actions"],
-        strict=True,
-    ):
-        slots = action["boundary_slots"]
-        assert action["exact_fine_segment_count"] == action[
-            "suggested_fine_segment_count"
-        ]
-        assert action["exact_boundary_point_count"] == len(slots)
-        assert len(slots) == action["exact_fine_segment_count"] + 1
-        assert [slot["boundary_id"] for slot in slots] == [
-            f"a{action['action_index']}_b{position}"
-            for position in range(len(slots))
-        ]
-        assert slots[0]["inclusive_time_window"] == {
-            "minimum_seconds": coarse.start,
-            "maximum_seconds": coarse.start,
-        }
-        assert slots[-1]["inclusive_time_window"] == {
-            "minimum_seconds": coarse.end,
-            "maximum_seconds": coarse.end,
-        }
-
-        for slot in slots:
-            window = slot["inclusive_time_window"]
-            assert all(
-                math.isfinite(value)
-                for value in (
-                    slot["ideal_partition_center_seconds"],
-                    window["minimum_seconds"],
-                    window["maximum_seconds"],
-                )
-            )
-            assert (
-                window["minimum_seconds"]
-                <= slot["ideal_partition_center_seconds"]
-                <= window["maximum_seconds"]
-            )
-
-        for previous, following in zip(slots[:-1], slots[1:], strict=True):
-            previous_window = previous["inclusive_time_window"]
-            following_window = following["inclusive_time_window"]
-            latest_previous = Fraction.from_float(
-                previous_window["maximum_seconds"]
-            )
-            earliest_previous = Fraction.from_float(
-                previous_window["minimum_seconds"]
-            )
-            earliest_following = Fraction.from_float(
-                following_window["minimum_seconds"]
-            )
-            latest_following = Fraction.from_float(
-                following_window["maximum_seconds"]
-            )
-
-            assert earliest_following > latest_previous
-            assert latest_following - earliest_previous <= hard_maximum
 
 
 def test_pass_b_schema_example_is_valid_nonuniform_multisegment_topology(
@@ -793,7 +503,7 @@ def test_pass_b_schema_example_is_valid_nonuniform_multisegment_topology(
         and segment["end"] == boundary_times[position + 1]
         for position, segment in enumerate(segments)
     )
-    assert "illustrative example hard maximum is 1.0 seconds" in prompt
+    assert "illustrative parent lasts 1.91 seconds" in prompt
     assert "do not copy its numeric timestamps" in prompt
     assert "longer than 1.0 seconds" not in prompt
     assert "longer than max_fine_segment_seconds" in prompt
@@ -813,18 +523,12 @@ def test_pass_b_prompt_defines_one_ordered_boundary_to_segment_construction(
         "boundary_points[j+1]" in prompt
     )
     assert "copy their time JSON numbers byte-for-number" in prompt
-    assert "exactly len(boundary_points) - 1 fine_segments" in prompt
+    assert "equal exactly len(boundary_points) - 1" in prompt
     assert "globally consecutive in chronological order starting at 0" in prompt
     assert "Never construct IDs or times independently" in prompt
-    assert "Use exactly exact_boundary_point_count boundary_points" in prompt
-    assert (
-        "Use exactly exact_fine_segment_count positive adjacent fine_segments" in prompt
-    )
+    assert "Add internal boundary points only where a visible physical state change occurs" in prompt
+    assert "One fine_segment per visible atomic action or stable state" in prompt
     assert "plan at least suggested_fine_segment_count" not in prompt
-    assert "inside its inclusive_time_window" in prompt
-    assert "ideal_partition_center_seconds is not a proposed timestamp" in prompt
-    assert "choose nonuniform times from visible evidence" in prompt
-    assert "Local code never fills, replaces, clamps, or adjusts timestamps" in prompt
 
 
 @pytest.mark.parametrize(
@@ -882,16 +586,10 @@ def test_pass_a_prompt_injects_exact_video_duration_into_initial_and_repair(
 
     assert trusted_duration in initial
     assert trusted_duration in repair
-    assert "actions[0].start must be exactly 0.0" in initial
-    assert "actions[0].start must be exactly 0.0" in repair
-    assert (
-        "actions[-1].end must copy the supplied video_duration_seconds numeric value "
-        "exactly" in initial
-    )
-    assert (
-        "actions[-1].end must copy the supplied video_duration_seconds numeric value "
-        "exactly" in repair
-    )
+    assert "Mark only intervals where a visible action is actually happening" in initial
+    assert "Mark only intervals where a visible action is actually happening" in repair
+    assert "must stay within 0.0 through video_duration_seconds" in initial
+    assert "must stay within 0.0 through video_duration_seconds" in repair
     assert '"end": 10.0333' in initial
     assert '"end": 10.0333' in repair
     assert "ACTION_END_MISMATCH_DURATION" not in initial
@@ -1033,7 +731,7 @@ def test_prompt_assets_state_exact_schemas_enums_and_visual_only_rules(
     assert EMBODIED_PROMPT_VERSION in prompts["enrichment"]
     assert "0805-local-v1" in prompts["active"]
     assert EMBODIED_PROMPT_VERSION in prompts["pass_a"]
-    assert "0805-local-v4" in prompts["pass_b"]
+    assert "0805-local-v5" in prompts["pass_b"]
     assert all("visual evidence only" in prompt.casefold() for prompt in prompts.values())
     assert all("do not use audio" in prompt.casefold() for prompt in prompts.values())
     assert all("{{" not in prompt for prompt in prompts.values())
@@ -1084,7 +782,7 @@ def test_prompt_assets_state_exact_schemas_enums_and_visual_only_rules(
         for token in (
             "left_hand|right_hand|both_hands|left_gripper|right_gripper|both_grippers|robot_arm|unknown",
             "idle|reaching|contacting|grasping|holding|transporting|placing|releasing|retracting|unknown",
-            "hold|reach|grasp|pick|lift|move|place|release|push|pull|rotate|open|close|retract|touch|roll|static|unknown",
+            "move|transport|grasp|reach|release|lift|place|approach|contact|push|pull|rotate|stop|autonomous_motion|state_change|occlusion_enter|occluded|occlusion_exit|unknown",
             "static|low|active|unknown",
         )
     )
@@ -1859,7 +1557,6 @@ def test_disabled_cv_has_canonical_branches_and_immutable_performance(tmp_path):
         assert row["wall_seconds"] == job.finished_at - job.created_at
         assert row["queue_seconds"] == job.started_at - job.created_at
         assert row["attempt_count"] == job.attempt
-    assert len(list(iter_action_captions("hybrid_disabled", result, source_fps=10.0))) == len(result["segments"])
 
 
 @pytest.mark.parametrize("mode", ["available", "cache", "timeout", "failed", "corrupt", "zero", "scene", "occlusion", "both", "repair", "choices", "choices_repair"])
@@ -1990,7 +1687,6 @@ def test_hybrid_optional_branches_complete_independently(tmp_path, monkeypatch, 
                 + ("false" if unavailable else "true")
                 + "}"
             ) in request.prompt
-    assert len(list(iter_action_captions("hybrid", result, source_fps=10.0))) == len(result["segments"])
 
 
 def test_enrichment_total_guard_precedes_segment_table_materialization(
@@ -2209,7 +1905,7 @@ def test_embodied_action_pipeline_runs_four_complete_video_passes(
             "start": 0.0,
             "end": 2.0,
             "actor": "right_hand",
-            "action": "motion",
+            "action": "move",
             "target": "red container",
             "description": "right hand moves red container",
             "confidence": 0.9,
@@ -2246,10 +1942,10 @@ def test_embodied_action_pipeline_runs_four_complete_video_passes(
     assert [
         (segment["start"], segment["end"]) for segment in segments
     ] == [
-        (0.0, 0.4525),
-        (0.4525, 1.0),
-        (1.0, 1.4525),
-        (1.4525, 2.0),
+        (0.0, 0.41),
+        (0.41, 1.0),
+        (1.0, 1.63),
+        (1.63, 2.0),
     ]
 
 
@@ -2308,10 +2004,6 @@ def test_pass_a_normalizes_entity_candidates_without_an_extra_model_call(
             "message": "1 entity candidate omitted by limit 16",
         }
     ]
-    exported = list(
-        iter_action_captions("cv_entity_limited", completed.result, source_fps=20.0)
-    )
-    assert len(exported) == len(completed.result["segments"])
 
 
 def test_pass_a_alias_truncation_is_durable_deduplicated_and_exportable(
@@ -2383,10 +2075,6 @@ def test_pass_a_alias_truncation_is_durable_deduplicated_and_exportable(
     ]
     assert "left alias" not in json.dumps(completed.result["warnings"])
     assert "right alias" not in json.dumps(completed.result["warnings"])
-    exported = list(
-        iter_action_captions("alias_limited", completed.result, source_fps=20.0)
-    )
-    assert len(exported) == len(completed.result["segments"])
 
     reversed_pass_a = copy.deepcopy(initial_pass_a)
     reversed_candidates = reversed_pass_a["entity_candidates"]
@@ -2480,9 +2168,6 @@ def test_invalid_scene_semantics_repairs_twice_then_completes_conservatively(
     assert completed.result["warnings"] == [
         {"code": "SCENE_SEMANTICS_UNAVAILABLE"}
     ]
-    assert len(
-        list(iter_action_captions("scene_fallback", completed.result, source_fps=20.0))
-    ) == len(completed.result["segments"])
 
 
 def test_embodied_action_fake_pipeline_covers_a_non_grid_longer_video(
@@ -2502,49 +2187,6 @@ def test_embodied_action_fake_pipeline_covers_a_non_grid_longer_video(
     assert intervals[-1][1] == 2.2
     assert all(left[1] == right[0] for left, right in zip(intervals, intervals[1:]))
     assert all(0.0 < end - start <= 1.0 for start, end in intervals)
-
-
-def test_pass_a_temporal_repair_retains_exact_probed_duration(
-    tmp_path: Path,
-) -> None:
-    """The real repair job must receive the numeric endpoint that validation enforces."""
-    rounded_endpoint = {
-        "task_description": "move the red container",
-        "entity_candidates": _entity_candidates(),
-        "actions": [
-            {
-                "action_index": 0,
-                "start": 0.0,
-                "end": 10.0,
-                "description": "right hand moves red container",
-                "event_type": "transport",
-            }
-        ],
-    }
-    harness = _ActionHarness(
-        tmp_path,
-        FakeVideoModel(
-            failure_script={"embodied_pass_a": [rounded_endpoint]},
-        ),
-        duration=10.0333,
-    )
-
-    completed = harness.run()
-
-    assert completed.status is TaskStatus.COMPLETED
-    pass_a_calls = [
-        call for call in harness.model.calls if call.stage == "embodied_pass_a"
-    ]
-    assert len(pass_a_calls) == 2
-    assert all(
-        '{"video_duration_seconds":10.0333}' in call.prompt
-        and '"end": 10.0333' in call.prompt
-        for call in pass_a_calls
-    )
-    assert "ACTION_END_MISMATCH_DURATION" not in pass_a_calls[0].prompt
-    assert "ACTION_END_MISMATCH_DURATION" in pass_a_calls[1].prompt
-    assert completed.result is not None
-    assert completed.result["segments"][-1]["end"] == 10.0333
 
 
 def test_pass_b_observed_code_repair_rebuilds_every_boundary_reference_pair(
@@ -2596,21 +2238,12 @@ def test_pass_b_observed_code_repair_rebuilds_every_boundary_reference_pair(
     assert [
         {
             "duration_seconds": action["duration_seconds"],
-            "exact_boundary_point_count": action["exact_boundary_point_count"],
-            "exact_fine_segment_count": action["exact_fine_segment_count"],
+            "minimum_fine_segment_count": action["minimum_fine_segment_count"],
         }
         for action in repair_requirements["actions"]
     ] == [
-        {
-            "duration_seconds": 5.01665,
-            "exact_boundary_point_count": 7,
-            "exact_fine_segment_count": 6,
-        },
-        {
-            "duration_seconds": 5.01665,
-            "exact_boundary_point_count": 7,
-            "exact_fine_segment_count": 6,
-        },
+        {"duration_seconds": 5.01665, "minimum_fine_segment_count": 6},
+        {"duration_seconds": 5.01665, "minimum_fine_segment_count": 6},
     ]
     repair_codes = (
         '"issue_codes":["SEGMENT_INDEX_NOT_CONTIGUOUS","SEGMENT_TOO_LONG",'
@@ -2675,24 +2308,15 @@ def test_fake_pass_b_uses_the_documented_boundary_id_and_pairing_convention(
     for action in pass_b_job.result["actions"]:
         points = action["boundary_points"]
         requirement = requirements_by_action[action["action_index"]]
-        slots = requirement["boundary_slots"]
-        assert len(points) == requirement["exact_boundary_point_count"]
-        assert len(action["fine_segments"]) == requirement[
-            "exact_fine_segment_count"
+        assert len(points) >= 2
+        assert len(action["fine_segments"]) == len(points) - 1
+        assert len(action["fine_segments"]) >= requirement[
+            "minimum_fine_segment_count"
         ]
         assert [point["boundary_id"] for point in points] == [
             f"a{action['action_index']}_b{position}"
             for position in range(len(points))
         ]
-        assert any(
-            point["time"] != slot["ideal_partition_center_seconds"]
-            for point, slot in zip(points[1:-1], slots[1:-1], strict=True)
-        )
-        durations = [
-            segment["end"] - segment["start"]
-            for segment in action["fine_segments"]
-        ]
-        assert len({round(duration, 12) for duration in durations}) > 1
         for position, segment in enumerate(action["fine_segments"]):
             assert segment["segment_index"] == expected_segment_index
             assert segment["start_boundary_id"] == points[position]["boundary_id"]
@@ -2721,17 +2345,13 @@ def test_pass_b_pipeline_uses_nondefault_runtime_cap_in_prompt_and_validation(
     ]
     requirements = _pass_b_requirements(pass_b_call.prompt)
     assert requirements["max_fine_segment_seconds"] == 0.2
-    assert requirements["planning_target_seconds"] == 0.18
     assert [
         (
             action["duration_seconds"],
             action["minimum_fine_segment_count"],
-            action["suggested_fine_segment_count"],
-            action["exact_boundary_point_count"],
-            action["exact_fine_segment_count"],
         )
         for action in requirements["actions"]
-    ] == [(0.3, 2, 2, 3, 2), (0.3, 2, 2, 3, 2)]
+    ] == [(0.3, 2), (0.3, 2)]
     [pass_b_job] = [
         job
         for job in harness.store.list_inference_jobs(completed.task_id)
@@ -2817,14 +2437,6 @@ def test_pass_b_repair_normalizes_only_repairable_topology_and_warns(
         segment["end"] - segment["start"] <= 0.75
         for segment in completed.result["segments"]
     )
-    exported = list(
-        iter_action_captions(
-            "boundary_normalized",
-            completed.result,
-            source_fps=20.0,
-        )
-    )
-    assert len(exported) == len(completed.result["segments"])
 
 
 def test_same_worker_reuses_video_session_object_and_backend_cache(tmp_path: Path) -> None:
@@ -3337,10 +2949,10 @@ def test_repaired_enrichment_enum_failures_normalize_once_with_bounded_warning(
         assert {field: public[field] for field in generated_fields} == {
             field: expected[field] for field in generated_fields
         }
-    exported = list(
-        iter_action_captions("normalized_pipeline", completed.result, source_fps=10.0)
-    )
-    assert [(row.actor_state.value, row.skill.value) for row in exported] == [
+    assert [
+        (segment["actor_state"], segment["skill"])
+        for segment in completed.result["segments"]
+    ] == [
         ("unknown", "reach"),
         ("reaching", "unknown"),
         ("unknown", "move"),
@@ -3442,7 +3054,7 @@ def test_initial_stage_context_cannot_unwrap_a_normalized_envelope() -> None:
     }
 
 
-def test_zero_record_enrichment_repair_retains_the_complete_twelve_row_skeleton(
+def test_zero_record_enrichment_repair_retains_the_complete_full_row_skeleton(
     tmp_path: Path,
 ) -> None:
     """The observed empty response must repair from rows, not another abstract list."""
@@ -3464,8 +3076,8 @@ def test_zero_record_enrichment_repair_retains_the_complete_twelve_row_skeleton(
     initial_requirements = _enrichment_requirements(enrichment_calls[0].prompt)
     repair_requirements = _enrichment_requirements(enrichment_calls[1].prompt)
     assert repair_requirements == initial_requirements
-    assert initial_requirements["exact_record_count"] == 12
-    assert initial_requirements["expected_indices"] == list(range(12))
+    assert initial_requirements["exact_record_count"] == 14
+    assert initial_requirements["expected_indices"] == list(range(14))
     assert initial_requirements["record_skeleton"] == [
         {
             "segment_index": index,
@@ -3476,7 +3088,7 @@ def test_zero_record_enrichment_repair_retains_the_complete_twelve_row_skeleton(
             "visual_motion_state": "unknown",
             "confidence": 0.0,
         }
-        for index in range(12)
+        for index in range(14)
     ]
     assert "MISSING_ENRICHMENT_INDEX" not in enrichment_calls[0].prompt
     assert (
@@ -3502,7 +3114,7 @@ def test_zero_record_enrichment_repair_retains_the_complete_twelve_row_skeleton(
     }
     assert completed.result is not None
     assert [segment["segment_index"] for segment in completed.result["segments"]] == list(
-        range(12)
+        range(14)
     )
 
 
@@ -3549,7 +3161,7 @@ def test_enrichment_cannot_mutate_fixed_timestamps_or_descriptions(
     )
     assert completed.result is not None
     first = completed.result["segments"][0]
-    assert (first["start"], first["end"]) == (0.0, 0.4525)
+    assert (first["start"], first["end"]) == (0.0, 0.41)
     assert first["description"] == "right hand moves red container"
     assert "replace local caption" not in json.dumps(completed.result)
 

@@ -1,5 +1,5 @@
 [prompt_version]
-0805-local-v4
+0805-local-v5
 
 You enrich an immutable table of validated fine segments from a complete manipulation video.
 Use visual evidence only. Do not use audio, speech, transcripts, filenames, or outside knowledge.
@@ -20,7 +20,7 @@ Copy every record_skeleton row into the output segments array. Never delete a re
 [allowed enums]
 - actor: left_hand|right_hand|both_hands|left_gripper|right_gripper|both_grippers|robot_arm|unknown
 - actor_state: idle|reaching|contacting|grasping|holding|transporting|placing|releasing|retracting|unknown
-- skill: hold|reach|grasp|pick|lift|move|place|release|push|pull|rotate|open|close|retract|touch|roll|static|unknown
+- skill: move|transport|grasp|reach|release|lift|place|approach|contact|push|pull|rotate|stop|autonomous_motion|state_change|occlusion_enter|occluded|occlusion_exit|unknown
 - visual_motion_state: static|low|active|unknown
 - confidence: finite JSON number from 0.0 through 1.0
 - target: stable non-blank canonical English object name, none, or unknown
@@ -31,8 +31,9 @@ Copy every record_skeleton row into the output segments array. Never delete a re
 - Keep target names stable across adjacent segments.
 - During transport, place, or release, target remains the manipulated object rather than the destination.
 - Use none for an empty retracting or idle hand. Use unknown when visual evidence is insufficient.
-- Use roll when an object moves on its own with no visible hand or gripper contact, such as rolling, sliding, or falling; pair it with actor unknown.
-- Use static when the fixed segment shows no action and no object motion, such as an empty scene or a fully stationary frame; pair it with actor unknown.
+- Skill meanings: move is repositioning without a held object emphasis; transport is carrying a held object; approach is closing distance before contact; contact is touching without securing a grip; stop is visible motion coming to rest; state_change is a visible object state transition such as opening, closing, or deformation.
+- Use autonomous_motion when an object moves on its own with no visible hand or gripper contact, such as rolling, sliding, or falling; pair it with actor unknown.
+- The occlusion_enter, occluded, and occlusion_exit values belong to the scene branch; do not use them for a manipulation segment.
 - Do not infer intent, hidden controller state, contact, material, function, or motion that is not visible.
 
 [output schema]

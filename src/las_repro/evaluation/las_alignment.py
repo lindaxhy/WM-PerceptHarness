@@ -1250,7 +1250,7 @@ def evaluate_run(
             "media_resolution": "medium",
             "clip_context": "high",
             "reasoning_effort": "high",
-            "max_fine_segment_seconds": 1.0,
+            "max_fine_segment_seconds": 30.0,
             "query_sha256": "bf94e33ffb1dc1ccd40f225766281ad39b3c7f18d4b3b6d6280e2b04d37f9f2a",
             "cv": None,
         }

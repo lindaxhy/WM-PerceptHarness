@@ -167,6 +167,7 @@ def build_hybrid_result(
     cv_evidence,
     warnings,
     performance,
+    duration=None,
     evidence_summary=None,
     action_history=("initial",),
     scene_history=("initial",),
@@ -209,8 +210,11 @@ def build_hybrid_result(
         for row in scene[key]:
             row["repair_history"] = list(scene_history)
     legacy_scene = [legacy_scene_event_projection(event) for event in events]
+    if duration is None:
+        duration = segments[-1]["end"] if segments else 0.0
     result = {
         "task_description": task_description,
+        "duration": float(duration),
         "segments": copy.deepcopy(segments),
         **scene,
         "semantic_events": copy.deepcopy(legacy_scene),
@@ -352,7 +356,7 @@ def validate_hybrid_result(
         raise ValueError("hybrid result must be an object")
     _exact(
         result,
-        {"task_description", "segments", "grouped_semantic_events"}
+        {"task_description", "duration", "segments", "grouped_semantic_events"}
         | SCENE_KEYS
         | HYBRID_KEYS
         | ({"warnings"} if "warnings" in result else set()),
@@ -404,7 +408,14 @@ def validate_hybrid_result(
     expected_actions = build_semantic_events(segments)
     if not segments:
         raise ValueError("hybrid segments are empty")
-    duration = segments[-1]["end"]
+    duration = result["duration"]
+    if isinstance(duration, bool) or not isinstance(duration, (int, float)):
+        raise ValueError("hybrid duration must be a number")
+    duration = float(duration)
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError("hybrid duration must be finite and positive")
+    if segments[0]["start"] < 0 or segments[-1]["end"] > duration:
+        raise ValueError("segments must stay within the hybrid duration")
     actions = branches["action_events"]
     if type(actions) is not list or len(actions) != len(expected_actions):
         raise ValueError("canonical action count is invalid")

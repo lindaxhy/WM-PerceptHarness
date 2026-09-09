@@ -619,8 +619,8 @@ def test_models_reject_nonfinite_times_invalid_enums_and_enrichment_shape():
         )
 
 
-def test_enrichment_accepts_proven_touch_skill_without_widening_skill_vocabulary():
-    """Missing ``touch`` would reject the replayed payload or admit unproven aliases."""
+def test_enrichment_skill_vocabulary_matches_official_las_event_types():
+    """Drifting from the official 19-word vocabulary would silently split taxonomies."""
     enrichment = EnrichmentResult.model_validate(
         {
             "segments": [
@@ -628,7 +628,7 @@ def test_enrichment_accepts_proven_touch_skill_without_widening_skill_vocabulary
                     "segment_index": 0,
                     "actor": "right_gripper",
                     "actor_state": "contacting",
-                    "skill": "touch",
+                    "skill": "contact",
                     "target": "container",
                     "visual_motion_state": "low",
                     "confidence": 0.9,
@@ -637,26 +637,27 @@ def test_enrichment_accepts_proven_touch_skill_without_widening_skill_vocabulary
         }
     )
 
-    assert enrichment.segments[0].skill is Skill.TOUCH
+    assert enrichment.segments[0].skill is Skill.CONTACT
     assert {skill.name: skill.value for skill in Skill} == {
-        "HOLD": "hold",
-        "REACH": "reach",
-        "GRASP": "grasp",
-        "PICK": "pick",
-        "LIFT": "lift",
         "MOVE": "move",
-        "PLACE": "place",
+        "TRANSPORT": "transport",
+        "GRASP": "grasp",
+        "REACH": "reach",
         "RELEASE": "release",
+        "LIFT": "lift",
+        "PLACE": "place",
+        "APPROACH": "approach",
+        "CONTACT": "contact",
         "PUSH": "push",
         "PULL": "pull",
         "ROTATE": "rotate",
-        "OPEN": "open",
-        "CLOSE": "close",
-        "RETRACT": "retract",
+        "STOP": "stop",
+        "AUTONOMOUS_MOTION": "autonomous_motion",
+        "STATE_CHANGE": "state_change",
+        "OCCLUSION_ENTER": "occlusion_enter",
+        "OCCLUDED": "occluded",
+        "OCCLUSION_EXIT": "occlusion_exit",
         "UNKNOWN": "unknown",
-        "TOUCH": "touch",
-        "ROLL": "roll",
-        "STATIC": "static",
     }
     with pytest.raises(ValidationError):
         EnrichmentResult.model_validate(
@@ -1706,14 +1707,13 @@ def test_coarse_plan_reports_all_coverage_index_and_duration_issues():
         validate_coarse_plan(plan, duration=1.0)
 
     assert [issue.code for issue in error.value.issues] == [
-        "ACTION_START_NOT_ZERO",
         "DUPLICATE_ACTION_INDEX",
         "ACTION_INDEX_NOT_ORDERED",
         "ACTION_NONPOSITIVE_DURATION",
+        "ACTION_OUTSIDE_VIDEO",
         "ACTION_OVERLAP",
-        "ACTION_END_MISMATCH_DURATION",
     ]
-    assert error.value.issues[0].path == ("actions", 0, "start")
+    assert error.value.issues[0].path == ("actions", 1, "action_index")
 
 
 def test_boundary_plan_rejects_gap_and_invalid_reference(
@@ -1829,9 +1829,9 @@ def test_boundary_plan_rejects_noncontiguous_parent_actions_and_long_segments(
 
 @pytest.mark.parametrize(
     ("replacement_start", "expected_code"),
-    [(1.11, "ACTION_GAP"), (0.89, "ACTION_OVERLAP")],
+    [(0.89, "ACTION_OVERLAP")],
 )
-def test_boundary_plan_rejects_cross_action_gaps_and_overlaps_beyond_tolerance(
+def test_boundary_plan_rejects_cross_action_overlaps_beyond_tolerance(
     valid_boundary_plan: BoundaryPlan,
     coarse_plan: CoarsePlan,
     replacement_start: float,
@@ -1849,7 +1849,7 @@ def test_boundary_plan_rejects_cross_action_gaps_and_overlaps_beyond_tolerance(
 
 @pytest.mark.parametrize(
     ("delta", "expected_code"),
-    [(0.000001, "ACTION_GAP"), (-0.000001, "ACTION_OVERLAP")],
+    [(-0.000001, "ACTION_OVERLAP")],
 )
 def test_coarse_plan_rejects_real_topology_errors_inside_legacy_tolerance(
     coarse_plan: CoarsePlan, delta: float, expected_code: str
@@ -1865,16 +1865,20 @@ def test_coarse_plan_rejects_real_topology_errors_inside_legacy_tolerance(
     assert broken.actions[1].start == 1.0 + delta
 
 
-def test_coarse_plan_rejects_small_video_endpoint_drift(coarse_plan: CoarsePlan):
+def test_coarse_plan_accepts_sparse_endpoints_but_rejects_out_of_video(
+    coarse_plan: CoarsePlan,
+):
+    sparse = copy.deepcopy(coarse_plan)
+    sparse.actions[-1].end = 1.9
+    validate_coarse_plan(sparse, duration=2.0, tolerance=0.05)
+
     broken = copy.deepcopy(coarse_plan)
-    broken.actions[-1].end = 1.999999
+    broken.actions[-1].end = 2.2
 
     with pytest.raises(TemporalValidationError) as error:
         validate_coarse_plan(broken, duration=2.0, tolerance=0.05)
 
-    assert "ACTION_END_MISMATCH_DURATION" in {
-        issue.code for issue in error.value.issues
-    }
+    assert "ACTION_OUTSIDE_VIDEO" in {issue.code for issue in error.value.issues}
 
 
 def test_boundary_plan_rejects_small_segment_gap_inside_legacy_tolerance(

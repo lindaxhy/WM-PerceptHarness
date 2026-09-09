@@ -767,7 +767,7 @@ def test_boundary_initial_repair_formats_and_closed_failure_replay(store, tmp_pa
     repair_context = {**context, 'allow_topology_fallback': True}
     repair_data = dict(schema_name='BoundaryPlan', issue_codes=[CODES[index]])
     repair_prompt = renderer.pass_b(context['coarse_plan'], max_fine_segment_seconds=1.0, repair=repair_data)
-    assert repair_prompt.startswith('[prompt_version]\n0805-local-v4\n')
+    assert repair_prompt.startswith('[prompt_version]\n0805-local-v5\n')
     assert CODES[index] in repair_prompt
     assert 'actions[i].event_type' in repair_prompt
     assert 'boundary_points[j].event_type' in repair_prompt
@@ -796,7 +796,7 @@ def test_boundary_invalid_context_fails_worker_before_provider(store, tmp_path, 
     from test_boundary_contract import boundary_fixture
     draft, context = boundary_fixture()
     if change == 'flag': context['allow_topology_fallback'] = 'yes'
-    if change == 'coarse_topology': context['coarse_plan']['actions'][0]['start'] = .1
+    if change == 'coarse_topology': context['coarse_plan']['actions'][0]['start'] = 9.9
     if change == 'maximum': context['max_segment_seconds'] = 0
     if change == 'schema': context['schema'] = {'type': 'string'}
     provider = Provider(response=draft)

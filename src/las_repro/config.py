@@ -114,7 +114,7 @@ class Settings(BaseSettings):
     max_model_output_chars: int = Field(default=1_000_000, gt=0)
     segment_seconds: float = 30.0
     segment_overlap_seconds: float = 2.0
-    max_fine_segment_seconds: float = 1.0
+    max_fine_segment_seconds: float = 30.0
     lease_seconds: int = 300
     gpu_devices: CsvInts = (0, 1, 2)
     cv_device: NonnegativeInteger = 3

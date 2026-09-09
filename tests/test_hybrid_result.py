@@ -47,7 +47,7 @@ def test_canonical_projection_preserves_legacy_fields_and_empty_evidence():
         "start": 0.0,
         "end": 1.0,
         "actor": "right_hand",
-        "action": "motion",
+        "action": "move",
         "target": "cup",
         "description": "hand moves cup",
         "confidence": 0.8,

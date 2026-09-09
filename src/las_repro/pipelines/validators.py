@@ -51,23 +51,26 @@ class ActorState(StrEnum):
 
 
 class Skill(StrEnum):
-    HOLD = "hold"
-    REACH = "reach"
-    GRASP = "grasp"
-    PICK = "pick"
-    LIFT = "lift"
+    """The official LAS semantic event vocabulary, shared by every branch."""
+
     MOVE = "move"
-    PLACE = "place"
+    TRANSPORT = "transport"
+    GRASP = "grasp"
+    REACH = "reach"
     RELEASE = "release"
+    LIFT = "lift"
+    PLACE = "place"
+    APPROACH = "approach"
+    CONTACT = "contact"
     PUSH = "push"
     PULL = "pull"
     ROTATE = "rotate"
-    OPEN = "open"
-    CLOSE = "close"
-    RETRACT = "retract"
-    TOUCH = "touch"
-    ROLL = "roll"
-    STATIC = "static"
+    STOP = "stop"
+    AUTONOMOUS_MOTION = "autonomous_motion"
+    STATE_CHANGE = "state_change"
+    OCCLUSION_ENTER = "occlusion_enter"
+    OCCLUDED = "occluded"
+    OCCLUSION_EXIT = "occlusion_exit"
     UNKNOWN = "unknown"
 
 
@@ -261,13 +264,6 @@ def validate_coarse_plan(
     if not actions:
         _issue(issues, "EMPTY_ACTIONS", ("actions",), "at least one action is required")
     else:
-        if not _equal(actions[0].start, 0.0, comparison_epsilon):
-            _issue(
-                issues,
-                "ACTION_START_NOT_ZERO",
-                ("actions", 0, "start"),
-                "first action must start at 0",
-            )
         _validate_action_indices(actions, issues)
         for index, action in enumerate(actions):
             if not _strictly_before(action.start, action.end):
@@ -277,24 +273,23 @@ def validate_coarse_plan(
                     ("actions", index),
                     "action end must be greater than start",
                 )
-            if index:
-                _validate_adjacency(
+            if (
+                action.start < -comparison_epsilon
+                or action.end > duration + comparison_epsilon
+            ):
+                _issue(
                     issues,
-                    previous_end=actions[index - 1].end,
-                    current_start=action.start,
-                    tolerance=comparison_epsilon,
-                    path=("actions", index, "start"),
-                    gap_code="ACTION_GAP",
-                    overlap_code="ACTION_OVERLAP",
-                    noun="actions",
+                    "ACTION_OUTSIDE_VIDEO",
+                    ("actions", index),
+                    "action must stay within the probed video",
                 )
-        if not _equal(actions[-1].end, duration, comparison_epsilon):
-            _issue(
-                issues,
-                "ACTION_END_MISMATCH_DURATION",
-                ("actions", len(actions) - 1, "end"),
-                "last action must end at the video duration",
-            )
+            if index and actions[index - 1].end > action.start + comparison_epsilon:
+                _issue(
+                    issues,
+                    "ACTION_OVERLAP",
+                    ("actions", index, "start"),
+                    "actions must not overlap",
+                )
     if not plan.entity_candidates and any(
         _action_requires_entity_candidate(action) for action in actions
     ):
@@ -496,16 +491,12 @@ def _validate_action_topology(
                 ("actions", position),
                 "action end must be greater than start",
             )
-        if position:
-            _validate_adjacency(
+        if position and actions[position - 1].end > action.start + tolerance:
+            _issue(
                 issues,
-                previous_end=actions[position - 1].end,
-                current_start=action.start,
-                tolerance=tolerance,
-                path=("actions", position, "start"),
-                gap_code="ACTION_GAP",
-                overlap_code="ACTION_OVERLAP",
-                noun="actions",
+                "ACTION_OVERLAP",
+                ("actions", position, "start"),
+                "actions must not overlap",
             )
 
 
