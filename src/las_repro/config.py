@@ -168,8 +168,8 @@ class Settings(BaseSettings):
     @field_validator("cv_device")
     @classmethod
     def validate_cv_device(cls, value: int) -> int:
-        if value != 3:
-            raise ValueError("cv_device must use physical GPU 3")
+        if value not in (0, 1, 2, 3):
+            raise ValueError("cv_device must use one physical GPU 0-3")
         return value
 
     @field_validator("cv_checkpoint_sha256")
