@@ -52,7 +52,7 @@ from .validators import (
 )
 
 
-EMBODIED_PROMPT_VERSION = "0805-local-v3"
+EMBODIED_PROMPT_VERSION = "0805-local-v4"
 
 Probe = Callable[[Path], VideoMetadata]
 WaitJobs = Callable[
@@ -311,8 +311,9 @@ class EmbodiedActionPipeline:
                 ),
                 affinity_anchor=pass_a_job,
                 metadata=metadata,
+                max_attempts=3,
             )
-            scene_history = ("initial", "repair") if scene_job.ordinal else ("initial",)
+            scene_history = _repair_history_for(scene_job.ordinal)
             scene_data = project_scene_choices(scene_data, scene_input.context(),
                                                repair_history=scene_history)
         except (TemporalValidationError, EmbodiedActionPipelineError):
@@ -417,10 +418,13 @@ class EmbodiedActionPipeline:
         render_prompt: Callable[[Mapping[str, Any] | None], str],
         affinity_anchor: InferenceJob | None,
         metadata: VideoMetadata,
+        max_attempts: int = 2,
     ) -> tuple[dict[str, Any], InferenceJob, NormalizedSchemaOutput | None]:
+        if max_attempts not in (2, 3):
+            raise ValueError("max_attempts must be 2 or 3")
         repair: dict[str, Any] | None = None
         first_job: InferenceJob | None = None
-        for ordinal in range(2):
+        for ordinal in range(max_attempts):
             anchor = affinity_anchor if affinity_anchor is not None else first_job
             affinity_worker_id, affinity_fallback_seconds = _action_affinity(
                 anchor,
@@ -431,9 +435,9 @@ class EmbodiedActionPipeline:
             prompt = render_prompt(repair)
             job_schema_context = dict(schema_context)
             if schema_name == "BoundaryPlan":
-                job_schema_context["allow_topology_fallback"] = ordinal == 1
+                job_schema_context["allow_topology_fallback"] = ordinal == max_attempts - 1
             if schema_name == "EnrichmentResult":
-                job_schema_context["allow_enum_unknown_fallback"] = ordinal == 1
+                job_schema_context["allow_enum_unknown_fallback"] = ordinal == max_attempts - 1
             [job] = context.store.create_inference_jobs(
                 task.task_id,
                 [
@@ -465,25 +469,19 @@ class EmbodiedActionPipeline:
             except InferenceJobFailed:
                 raise EmbodiedActionPipelineError(
                     f"{_stage_label(stage)} inference failed",
-                    repair_history=(
-                        ("initial", "repair") if ordinal else ("initial",)
-                    ),
+                    repair_history=_repair_history_for(ordinal),
                 ) from None
             except JobWaitTimeout:
                 raise EmbodiedActionPipelineError(
                     f"{_stage_label(stage)} inference timed out",
-                    repair_history=(
-                        ("initial", "repair") if ordinal else ("initial",)
-                    ),
+                    repair_history=_repair_history_for(ordinal),
                 ) from None
 
             completed = context.store.get_inference_job(job.job_id)
             if completed is None or completed.completed_by is None:
                 raise EmbodiedActionPipelineError(
                     f"{_stage_label(stage)} completion is invalid",
-                    repair_history=(
-                        ("initial", "repair") if ordinal else ("initial",)
-                    ),
+                    repair_history=_repair_history_for(ordinal),
                 )
             if ordinal == 0:
                 first_job = completed
@@ -494,7 +492,7 @@ class EmbodiedActionPipeline:
             )
             if issue_codes is None:
                 return sanitized, completed, normalization
-            if ordinal == 1:
+            if ordinal == max_attempts - 1:
                 raise _stage_validation_error(stage, issue_codes)
             repair = {"issue_codes": list(issue_codes)}
 
@@ -546,16 +544,13 @@ class EmbodiedActionPipeline:
                 ),
                 affinity_anchor=affinity_anchor,
                 metadata=metadata,
+                max_attempts=3,
             )
         except TemporalValidationError:
-            return OcclusionDecisionSet(decisions=()), ("initial", "repair")
+            return OcclusionDecisionSet(decisions=()), ("initial", "repair", "repair")
         except EmbodiedActionPipelineError as error:
             return OcclusionDecisionSet(decisions=()), error.repair_history
-        history = (
-            ("initial", "repair")
-            if getattr(completed, "ordinal", 0) == 1
-            else ("initial",)
-        )
+        history = _repair_history_for(getattr(completed, "ordinal", 0))
         return OcclusionDecisionSet.model_validate(data), history
 
 
@@ -1475,6 +1470,11 @@ def _boundary_normalization_warning(
         "issue_codes": list(normalization.issue_codes),
         "count": normalization.normalized_field_count,
     }
+
+
+def _repair_history_for(ordinal: int) -> tuple[str, ...]:
+    """Return the closed provenance history for a zero-based attempt ordinal."""
+    return ("initial",) + ("repair",) * ordinal
 
 
 def _stage_validation_error(

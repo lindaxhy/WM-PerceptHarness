@@ -35,7 +35,7 @@ from .pipelines.hybrid_result import HYBRID_KEYS, validate_audit_warning, valida
 _ANNOTATION_STAGE = "boundary_fine_segments_0805"
 _TIME_EPSILON = 1e-9
 _MAX_FINE_SEGMENT_SECONDS = 1.0
-_MAX_CAPTION_CHARACTERS = 60
+_MAX_CAPTION_CHARACTERS = 70
 _CAPTION_ID = re.compile(r".+_cap_[0-9]{4,}")
 _UNSUPPORTED_DIRECTORY_SYNC_ERRNOS = frozenset(
     {

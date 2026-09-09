@@ -121,7 +121,7 @@ def test_scene_prompt_declares_cv_availability_and_flat_spatial_fields(
     )
 
     for prompt in (initial, repair):
-        assert prompt.startswith("[prompt_version]\n0907-scene-choice-refs-v3\n")
+        assert prompt.startswith("[prompt_version]\n0907-scene-choice-refs-v4\n")
         assert '[CV_EVIDENCE_AVAILABILITY_JSON]\n{"available":false}' in prompt
         assert (
             "[SCENE_SPATIAL_FIELDS_JSON]\n"
@@ -271,7 +271,7 @@ def test_enrichment_prompt_allows_touch_exactly_once(renderer: PromptRenderer) -
 
     assert skill_allowlist.count("touch") == 1
     assert "touch" in skill_allowlist.split(": ", 1)[1].split("|")
-    assert EMBODIED_PROMPT_VERSION == "0805-local-v3"
+    assert EMBODIED_PROMPT_VERSION == "0805-local-v4"
 
 
 @pytest.mark.parametrize(
@@ -1033,7 +1033,7 @@ def test_prompt_assets_state_exact_schemas_enums_and_visual_only_rules(
     assert EMBODIED_PROMPT_VERSION in prompts["enrichment"]
     assert "0805-local-v1" in prompts["active"]
     assert EMBODIED_PROMPT_VERSION in prompts["pass_a"]
-    assert "0805-local-v3" in prompts["pass_b"]
+    assert "0805-local-v4" in prompts["pass_b"]
     assert all("visual evidence only" in prompt.casefold() for prompt in prompts.values())
     assert all("do not use audio" in prompt.casefold() for prompt in prompts.values())
     assert all("{{" not in prompt for prompt in prompts.values())
@@ -1084,7 +1084,7 @@ def test_prompt_assets_state_exact_schemas_enums_and_visual_only_rules(
         for token in (
             "left_hand|right_hand|both_hands|left_gripper|right_gripper|both_grippers|robot_arm|unknown",
             "idle|reaching|contacting|grasping|holding|transporting|placing|releasing|retracting|unknown",
-            "hold|reach|grasp|pick|lift|move|place|release|push|pull|rotate|open|close|retract|touch|unknown",
+            "hold|reach|grasp|pick|lift|move|place|release|push|pull|rotate|open|close|retract|touch|roll|static|unknown",
             "static|low|active|unknown",
         )
     )
@@ -1870,9 +1870,9 @@ def test_hybrid_optional_branches_complete_independently(tmp_path, monkeypatch, 
     from las_repro.cv.worker import CVEvidenceWorker
     script = {}
     if mode in {"scene", "both"}:
-        script["scene_semantics"] = [{}, {}]
+        script["scene_semantics"] = [{}, {}, {}]
     if mode in {"occlusion", "both"}:
-        script["occlusion_semantics"] = [{}, {}]
+        script["occlusion_semantics"] = [{}, {}, {}]
     if mode == "repair":
         script["embodied_enrichment"] = [{}]
     class ChoiceModel(FakeVideoModel):
@@ -2406,10 +2406,10 @@ def test_pass_a_alias_truncation_is_durable_deduplicated_and_exportable(
     assert reversed_completed.result["warnings"] == completed.result["warnings"]
 
 
-def test_invalid_scene_semantics_repairs_once_then_completes_conservatively(
+def test_scene_semantics_third_attempt_recovers_without_degradation(
     tmp_path: Path,
 ) -> None:
-    """A schema-format miss must not discard an otherwise exportable fine track."""
+    """Two schema misses leave a final repair attempt that restores full output."""
     invalid = {"objects": [{"private": "must not persist"}]}
     harness = _ActionHarness(
         tmp_path,
@@ -2426,7 +2426,46 @@ def test_invalid_scene_semantics_repairs_once_then_completes_conservatively(
         for job in harness.store.list_inference_jobs(completed.task_id)
         if job.stage == "scene_semantics"
     ]
-    assert [job.ordinal for job in jobs] == [0, 1]
+    assert [job.ordinal for job in jobs] == [0, 1, 2]
+    assert all("private" not in json.dumps(job.result) for job in jobs)
+    assert completed.result is not None
+    assert "warnings" not in completed.result
+    assert completed.result["objects"]
+    scene_rows = completed.result["annotation_branches"]["scene_facts"]["events"]
+    assert scene_rows
+    assert all(
+        row["repair_history"] == ["initial", "repair", "repair"]
+        for row in scene_rows
+    )
+
+
+def test_invalid_scene_semantics_repairs_twice_then_completes_conservatively(
+    tmp_path: Path,
+) -> None:
+    """A schema-format miss must not discard an otherwise exportable fine track."""
+    invalid = {"objects": [{"private": "must not persist"}]}
+    harness = _ActionHarness(
+        tmp_path,
+        FakeVideoModel(
+            failure_script={
+                "scene_semantics": [
+                    invalid,
+                    copy.deepcopy(invalid),
+                    copy.deepcopy(invalid),
+                ]
+            }
+        ),
+    )
+
+    completed = harness.run()
+
+    assert completed.status is TaskStatus.COMPLETED
+    jobs = [
+        job
+        for job in harness.store.list_inference_jobs(completed.task_id)
+        if job.stage == "scene_semantics"
+    ]
+    assert [job.ordinal for job in jobs] == [0, 1, 2]
     assert all("private" not in json.dumps(job.result) for job in jobs)
     assert completed.result is not None
     assert completed.result["objects"] == []

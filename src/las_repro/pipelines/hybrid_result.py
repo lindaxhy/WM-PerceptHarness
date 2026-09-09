@@ -299,7 +299,7 @@ def validate_event_provenance(
     ]
     if event["source_segment_indices"] != expected:
         issues.append("SOURCE_SEGMENTS_INVALID")
-    if event["repair_history"] not in (["initial"], ["initial", "repair"]):
+    if event["repair_history"] not in (["initial"], ["initial", "repair"], ["initial", "repair", "repair"]):
         issues.append("PROVENANCE_INVALID")
     if event["evidence_mode"] != (
         "hybrid" if event["source_track_ids"] else "vlm_only"
@@ -611,10 +611,8 @@ def validate_hybrid_result(
         + scene["relations"]
         + occlusion["events"]
     ):
-        history = (
-            ["initial", "repair"]
-            if stage_counts.get(event["model_stage"], 0) == 2
-            else ["initial"]
+        history = ["initial"] + ["repair"] * max(
+            0, stage_counts.get(event["model_stage"], 0) - 1
         )
         if event["repair_history"] != history:
             raise ValueError("event history differs from producing stage")
@@ -761,8 +759,13 @@ def _validate_performance(performance):
             if type(stage["cache_hit"]) is not bool:
                 raise ValueError("cache hit is invalid")
             validate_inference_job_metrics(stage["provider_metrics"])
+    _MAX_STAGE_JOBS = {
+        "cv_evidence": 1,
+        "scene_semantics": 3,
+        "occlusion_semantics": 3,
+    }
     if any(
-        count > (1 if name == "cv_evidence" else 2) for name, count in counts.items()
+        count > _MAX_STAGE_JOBS.get(name, 2) for name, count in counts.items()
     ) or performance["repair_count"] != sum(count - 1 for count in counts.values()):
         raise ValueError("repair count differs from immutable job rows")
 
@@ -871,6 +874,6 @@ def build_performance(
     return {
         "stages": rows,
         "total_seconds": total_seconds,
-        "repair_count": sum(job.ordinal == 1 for job in selected),
+        "repair_count": sum(job.ordinal > 0 for job in selected),
         "degradation_count": degradation_count,
     }

@@ -112,6 +112,29 @@ def test_export_uses_half_open_frame_spans_stable_ids_and_current_schema(
     assert rows[0].needs_review is False
 
 
+def test_captions_between_61_and_70_characters_export_without_review_flags(
+    embodied_result: dict[str, object],
+) -> None:
+    """The relaxed 70-character budget must not flag formerly-overlong captions."""
+    caption = "right hand moves the light brown wooden board toward the edge"
+    assert 61 <= len(caption) <= 70
+    segment = embodied_result["segments"][0]
+    segment["description"] = caption
+
+    rows = list(iter_action_captions("video_0001", embodied_result, source_fps=30.0))
+
+    assert rows[0].caption == caption
+    assert rows[0].over_caption_char_limit is False
+    assert rows[0].needs_review is False
+
+    flagged = "right hand keeps moving the light brown wooden board toward the far edge"
+    assert len(flagged) > 70
+    segment["description"] = flagged
+    rows = list(iter_action_captions("video_0001", embodied_result, source_fps=30.0))
+    assert rows[0].over_caption_char_limit is True
+    assert rows[0].needs_review is True
+
+
 def test_export_ignores_valid_additive_semantic_events(
     embodied_result: dict[str, object],
 ) -> None:

@@ -1,5 +1,5 @@
 [prompt_version]
-0805-local-v3
+0805-local-v4
 
 You enrich an immutable table of validated fine segments from a complete manipulation video.
 Use visual evidence only. Do not use audio, speech, transcripts, filenames, or outside knowledge.
@@ -20,7 +20,7 @@ Copy every record_skeleton row into the output segments array. Never delete a re
 [allowed enums]
 - actor: left_hand|right_hand|both_hands|left_gripper|right_gripper|both_grippers|robot_arm|unknown
 - actor_state: idle|reaching|contacting|grasping|holding|transporting|placing|releasing|retracting|unknown
-- skill: hold|reach|grasp|pick|lift|move|place|release|push|pull|rotate|open|close|retract|touch|unknown
+- skill: hold|reach|grasp|pick|lift|move|place|release|push|pull|rotate|open|close|retract|touch|roll|static|unknown
 - visual_motion_state: static|low|active|unknown
 - confidence: finite JSON number from 0.0 through 1.0
 - target: stable non-blank canonical English object name, none, or unknown
@@ -31,6 +31,8 @@ Copy every record_skeleton row into the output segments array. Never delete a re
 - Keep target names stable across adjacent segments.
 - During transport, place, or release, target remains the manipulated object rather than the destination.
 - Use none for an empty retracting or idle hand. Use unknown when visual evidence is insufficient.
+- Use roll when an object moves on its own with no visible hand or gripper contact, such as rolling, sliding, or falling; pair it with actor unknown.
+- Use static when the fixed segment shows no action and no object motion, such as an empty scene or a fully stationary frame; pair it with actor unknown.
 - Do not infer intent, hidden controller state, contact, material, function, or motion that is not visible.
 
 [output schema]

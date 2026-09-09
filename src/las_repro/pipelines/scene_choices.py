@@ -112,7 +112,7 @@ def project_scene_choices(result: Any, context: Any, *,
     from pydantic import ValidationError
 
     context = authenticate_scene_context(context)
-    if repair_history not in (('initial',), ('initial', 'repair')):
+    if repair_history not in (('initial',), ('initial', 'repair'), ('initial', 'repair', 'repair')):
         raise ValueError('scene repair history is invalid')
     def fail(suffix):
         raise DeclaredSchemaOutputError(('SCENE_SEMANTICS_CHOICES_' + suffix,))

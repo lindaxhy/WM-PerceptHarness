@@ -200,7 +200,7 @@ def project_occlusion_events(
     repair_history: tuple[str, ...],
 ) -> list[dict[str, Any]]:
     """Project only positive decisions into deterministic scoring records."""
-    if repair_history not in {("initial",), ("initial", "repair")}:
+    if repair_history not in {("initial",), ("initial", "repair"), ("initial", "repair", "repair")}:
         raise ValueError("repair_history is not a closed adjudication history")
     if type(tracks) is not tuple or any(type(track) is not CvTrack for track in tracks):
         raise TypeError("tracks must be a tuple of CvTrack values")

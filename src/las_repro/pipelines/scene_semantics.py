@@ -265,7 +265,8 @@ def validate_scene_semantics(
                 (not set(refs) <= object_ids, "OBJECT_REFERENCE_INVALID"),
                 (previous_key is not None and key < previous_key, "ORDER_INVALID"),
                 (not row.source_track_ids, "TRACKS_INVALID"),
-                (row.repair_history not in (["initial"], ["initial", "repair"]),
+                (row.repair_history not in (["initial"], ["initial", "repair"],
+                                            ["initial", "repair", "repair"]),
                  "PROVENANCE_INVALID"),
             )
             failed_codes = [code for failed, code in checks if failed]

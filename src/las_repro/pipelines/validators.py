@@ -66,6 +66,8 @@ class Skill(StrEnum):
     CLOSE = "close"
     RETRACT = "retract"
     TOUCH = "touch"
+    ROLL = "roll"
+    STATIC = "static"
     UNKNOWN = "unknown"
 
 

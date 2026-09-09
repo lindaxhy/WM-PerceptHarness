@@ -655,6 +655,8 @@ def test_enrichment_accepts_proven_touch_skill_without_widening_skill_vocabulary
         "RETRACT": "retract",
         "UNKNOWN": "unknown",
         "TOUCH": "touch",
+        "ROLL": "roll",
+        "STATIC": "static",
     }
     with pytest.raises(ValidationError):
         EnrichmentResult.model_validate(

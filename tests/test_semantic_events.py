@@ -84,6 +84,31 @@ def test_actor_action_and_target_changes_split_semantic_events():
     assert [event["source_segment_indices"] for event in events] == [[0], [1], [2], [3]]
 
 
+def test_roll_and_static_skills_project_into_closed_families():
+    """The two autonomous-scene skills must group without widening hand actions."""
+    events = build_semantic_events(
+        [
+            _segment(
+                0, 0.0, 0.5,
+                actor="unknown",
+                skill="roll",
+                target="red apple",
+                description="red apple rolls down the ramp",
+            ),
+            _segment(
+                1, 0.5, 1.0,
+                actor="unknown",
+                skill="static",
+                target="none",
+                description="table stays empty",
+            ),
+        ]
+    )
+
+    assert [event["action"] for event in events] == ["motion", "static"]
+    assert [event["source_segment_indices"] for event in events] == [[0], [1]]
+
+
 def test_projection_rejects_noncontiguous_or_unknown_input_values():
     """The additive output must fail closed if called before segment validation."""
     with pytest.raises(ValueError, match="contiguous"):

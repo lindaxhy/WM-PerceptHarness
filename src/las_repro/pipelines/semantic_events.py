@@ -20,7 +20,8 @@ _ACTION_PROJECTION = {
     "pull": "motion", "rotate": "motion", "place": "motion",
     "reach": "reach", "release": "release", "hold": "hold",
     "touch": "contact", "open": "open", "close": "close",
-    "retract": "retract", "unknown": "unknown",
+    "retract": "retract", "roll": "motion", "static": "static",
+    "unknown": "unknown",
 }
 _EVENT_KEYS = {
     "event_index", "start", "end", "actor", "action", "target",

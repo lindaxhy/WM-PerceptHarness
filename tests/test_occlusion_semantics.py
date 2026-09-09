@@ -375,7 +375,7 @@ def test_occlusion_prompt_isolates_trusted_data_and_repair_codes():
         repair={"issue_codes": ["OCCLUSION_INTERVAL_NOT_ALLOWED"]},
     )
 
-    assert prompt.startswith("[prompt_version]\n0906-occlusion-contract-v5\n")
+    assert prompt.startswith("[prompt_version]\n0906-occlusion-contract-v6\n")
     assert "[trusted occlusion candidate JSON data]" in prompt
     assert candidate.candidate_id in prompt
     assert "OCCLUSION_INTERVAL_NOT_ALLOWED" in prompt
@@ -593,12 +593,12 @@ def test_empty_candidate_tuple_skips_model_stage(monkeypatch):
     assert history == ("initial",)
 
 
-def test_invalid_initial_creates_exactly_one_repair_then_degrades(tmp_path):
+def test_invalid_initial_creates_two_repairs_then_degrades(tmp_path):
     candidate = _candidate()
     invalid = _positive_raw(candidate)
     invalid["decisions"][0]["events"][0]["start"] = 1.1
     model = FakeVideoModel(
-        failure_script={"occlusion_semantics": [invalid, invalid]}
+        failure_script={"occlusion_semantics": [invalid, invalid, invalid]}
     )
     pipeline, task, context, video_path, metadata = _occlusion_runtime(
         tmp_path, model
@@ -621,8 +621,8 @@ def test_invalid_initial_creates_exactly_one_repair_then_degrades(tmp_path):
 
     jobs = context.store.list_inference_jobs(task.task_id)
     assert decisions == OcclusionDecisionSet(decisions=())
-    assert history == ("initial", "repair")
-    assert [job.ordinal for job in jobs] == [0, 1]
+    assert history == ("initial", "repair", "repair")
+    assert [job.ordinal for job in jobs] == [0, 1, 2]
     assert all(job.status is InferenceStatus.COMPLETED for job in jobs)
 
 
