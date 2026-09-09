@@ -289,3 +289,53 @@ def test_legacy_event_enum_feedback_remains_generic():
     assert registry.sanitize('SceneSemantics', public, public_context) == {
         '_schema_validation': {'schema_name': 'SceneSemantics', 'status': 'invalid',
                                'issue_codes': ['SCENE_SEMANTICS_ENUM_VALUE']}}
+
+
+def test_scene_normalization_repairs_mechanical_faults_without_a_model_call():
+    """Sorting, renumbering, dangling targets, and bad predicates fix locally."""
+    from las_repro.pipelines.output_validation import (
+        DEFAULT_OUTPUT_SCHEMAS, NormalizedSchemaOutput,
+    )
+    from las_repro.pipelines.scene_choices import normalize_scene_choice_mechanics
+
+    draft, ctx = fixture()
+    draft['semantic_events'] = [
+        dict(event_index=0, start=0.5, end=0.99, event_type='move',
+             actor='unknown', target_object_id='item_0',
+             description='item moves late', confidence=0.7),
+        dict(event_index=1, start=0.01, end=0.4, event_type='move',
+             actor='unknown', target_object_id='not_declared',
+             description='item moves early', confidence=0.7),
+    ]
+    if draft['relations']:
+        draft['relations'][0]['relation'] = 'gripping'
+
+    fixed, codes, count = normalize_scene_choice_mechanics(draft)
+    assert 'SCENE_EVENT_START_NOT_ORDERED' in codes
+    assert 'SCENE_EVENT_UNKNOWN_OBJECT' in codes
+    assert count >= 2
+    assert [e['event_index'] for e in fixed['semantic_events']] == [0, 1]
+    assert fixed['semantic_events'][0]['start'] == 0.01
+    assert fixed['semantic_events'][0]['target_object_id'] == 'unknown'
+
+    flagged = dict(ctx)
+    flagged['allow_scene_normalization'] = True
+    sanitized = DEFAULT_OUTPUT_SCHEMAS.sanitize('SceneSemanticsChoices', draft, flagged)
+    assert sanitized['_schema_validation']['status'] == 'normalized'
+    normalized = DEFAULT_OUTPUT_SCHEMAS.normalized_result(
+        'SceneSemanticsChoices', sanitized, flagged
+    )
+    assert isinstance(normalized, NormalizedSchemaOutput)
+    assert normalized.issue_codes == tuple(codes)
+
+
+def test_scene_normalization_never_hides_a_non_mechanical_fault():
+    """A fault outside the mechanical set must still fail and trigger repair."""
+    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+
+    draft, ctx = fixture()
+    draft['outcome']['status'] = 'victorious'
+    flagged = dict(ctx)
+    flagged['allow_scene_normalization'] = True
+    sanitized = DEFAULT_OUTPUT_SCHEMAS.sanitize('SceneSemanticsChoices', draft, flagged)
+    assert sanitized['_schema_validation']['status'] == 'invalid'

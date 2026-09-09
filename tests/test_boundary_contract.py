@@ -174,11 +174,11 @@ def test_explicit_unknown_transition_preserves_model_output_and_valid_schema():
 def test_task2k_preserves_public_schemas_and_scene_response_bytes():
     from las_repro.pipelines.scene_choices import SceneSemanticsChoices, prepare_scene_choices
     for model, expected in [(BoundaryPlan, 'c072d2ff4f715ca04e2d11137e2d027a41a01be80633192ae9939df848d862ba'),
-                            (SceneSemanticsChoices, '7e644b9577192c31f936fffcf9ec8d931fe0b7d76942beff86a72d6ea1a57a80')]:
+                            (SceneSemanticsChoices, 'bc88e7d7990ffe2b2e0192ec0cf2da52fc968c239999547d76306ed94f877be6')]:
         encoded = json.dumps(model.model_json_schema(), sort_keys=True, separators=(',', ':'))
         assert hashlib.sha256(encoded.encode()).hexdigest() == expected
     empty = prepare_scene_choices(None, [], duration=1.0).context()
-    assert registry.model_response_contract('SceneSemanticsChoices', empty).schema_sha256 == 'ea341cf3f9675593b4193233c5ca3881351e7c70ab1fe4ff450ddc2430bc8e69'
+    assert registry.model_response_contract('SceneSemanticsChoices', empty).schema_sha256 == 'fae70dc716e87500ec1664b5f96bf73e6da7dca676a4a3fb5b6770325e0033fb'
 
     from test_scene_choices import fixture
-    assert registry.model_response_contract('SceneSemanticsChoices', fixture()[1]).schema_sha256 == 'cce8941ac7f90ed4baf69d5789fdc5f1c518a66ad4d33b5e5949db5cac399c48'
+    assert registry.model_response_contract('SceneSemanticsChoices', fixture()[1]).schema_sha256 == '961834ecd358d8f9539245a2703ddf6a7ab995841618734af31c79281581ba65'

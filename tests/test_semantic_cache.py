@@ -723,7 +723,7 @@ def test_current_scene_validator_does_not_replay_v5_generic_enum_failure(store, 
     with sqlite3.connect(store.database_path) as db:
         versions = {json.loads(row[0])['validator_contract_version'] for row in
                     db.execute('SELECT identity_json FROM semantic_results')}
-    assert versions == {'embodied-output-v5', 'embodied-output-v8'}
+    assert versions == {'embodied-output-v5', 'embodied-output-v9'}
 
 
 @pytest.mark.parametrize('field,index', [(None, 0), ('boundary_points', 1), ('fine_segments', 2)])
@@ -783,7 +783,7 @@ def test_boundary_initial_repair_formats_and_closed_failure_replay(store, tmp_pa
     assert 'private file' not in canonical(provider.request)
     with sqlite3.connect(store.database_path) as db:
         identities = [json.loads(row[0]) for row in db.execute('SELECT identity_json FROM semantic_results')]
-    assert {i['validator_contract_version'] for i in identities} == {'embodied-output-v8'}
+    assert {i['validator_contract_version'] for i in identities} == {'embodied-output-v9'}
     assert {i['schema_context']['allow_topology_fallback'] for i in identities} == {False, True}
     assert all(i['schema_context']['coarse_plan'] == context['coarse_plan'] for i in identities)
     assert all(i['schema_context']['max_segment_seconds'] == 1.0 for i in identities)

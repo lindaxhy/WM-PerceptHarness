@@ -293,7 +293,7 @@ class EmbodiedActionPipeline:
         scene_status = "available"
         scene_history = ("initial",)
         try:
-            scene_data, scene_job, _ = self._run_validated_stage(
+            scene_data, scene_job, scene_normalization = self._run_validated_stage(
                 task,
                 context,
                 media_path,
@@ -314,6 +314,8 @@ class EmbodiedActionPipeline:
                 max_attempts=3,
             )
             scene_history = _repair_history_for(scene_job.ordinal)
+            if scene_normalization is not None:
+                warnings.append(_scene_normalization_warning(scene_normalization))
             scene_data = project_scene_choices(scene_data, scene_input.context(),
                                                repair_history=scene_history)
         except (TemporalValidationError, EmbodiedActionPipelineError):
@@ -324,11 +326,15 @@ class EmbodiedActionPipeline:
         occlusion_started = time.monotonic()
         occlusion = {"status": cv_evidence["status"], "decisions": [], "events": []}
         if bundle is not None and bundle.candidates:
-            decisions, history = self.adjudicate_occlusions(
+            decisions, history, occlusion_normalization = self.adjudicate_occlusions(
                 task, context, media_path, span, fps, candidates=bundle.candidates,
                 normalized_entities=normalized_entities, evidence_summary=summary,
                 frame_pts=[frame.timestamp_seconds for frame in timeline.frames],
                 affinity_anchor=pass_a_job, metadata=metadata)
+            if occlusion_normalization is not None:
+                warnings.append(
+                    _occlusion_normalization_warning(occlusion_normalization)
+                )
             if len(decisions.decisions) != len(bundle.candidates):
                 occlusion["status"] = "unavailable"
                 warnings.append({"code": "OCCLUSION_UNAVAILABLE"})
@@ -439,6 +445,10 @@ class EmbodiedActionPipeline:
                 job_schema_context["allow_topology_fallback"] = ordinal == max_attempts - 1
             if schema_name == "EnrichmentResult":
                 job_schema_context["allow_enum_unknown_fallback"] = ordinal == max_attempts - 1
+            if schema_name == "SceneSemanticsChoices":
+                job_schema_context["allow_scene_normalization"] = True
+            if schema_name == "OcclusionDecisionSet":
+                job_schema_context["allow_occluder_unknown_fallback"] = True
             [job] = context.store.create_inference_jobs(
                 task.task_id,
                 [
@@ -513,13 +523,13 @@ class EmbodiedActionPipeline:
         frame_pts: Sequence[float],
         affinity_anchor: InferenceJob | None,
         metadata: VideoMetadata,
-    ) -> tuple[OcclusionDecisionSet, tuple[str, ...]]:
+    ) -> tuple[OcclusionDecisionSet, tuple[str, ...], NormalizedSchemaOutput | None]:
         """Run the isolated occlusion branch, degrading it conservatively."""
         candidate_tuple = tuple(candidates)
         if not candidate_tuple:
-            return OcclusionDecisionSet(decisions=()), ("initial",)
+            return OcclusionDecisionSet(decisions=()), ("initial",), None
         try:
-            data, completed, _ = self._run_validated_stage(
+            data, completed, normalization = self._run_validated_stage(
                 task,
                 context,
                 media_path,
@@ -548,11 +558,11 @@ class EmbodiedActionPipeline:
                 max_attempts=3,
             )
         except TemporalValidationError:
-            return OcclusionDecisionSet(decisions=()), ("initial", "repair", "repair")
+            return OcclusionDecisionSet(decisions=()), ("initial", "repair", "repair"), None
         except EmbodiedActionPipelineError as error:
-            return OcclusionDecisionSet(decisions=()), error.repair_history
+            return OcclusionDecisionSet(decisions=()), error.repair_history, None
         history = _repair_history_for(getattr(completed, "ordinal", 0))
-        return OcclusionDecisionSet.model_validate(data), history
+        return OcclusionDecisionSet.model_validate(data), history, normalization
 
 
 class PromptRenderer:
@@ -1336,6 +1346,25 @@ def _enrichment_normalization_warning(
             for issue_code, field in _ENRICHMENT_WARNING_FIELD_BY_CODE
             if issue_code in codes
         ],
+        "count": normalization.normalized_field_count,
+    }
+
+
+def _scene_normalization_warning(
+    normalization: NormalizedSchemaOutput,
+) -> dict[str, Any]:
+    return {
+        "code": "SCENE_MECHANICS_NORMALIZED",
+        "issue_codes": list(normalization.issue_codes),
+        "count": normalization.normalized_field_count,
+    }
+
+
+def _occlusion_normalization_warning(
+    normalization: NormalizedSchemaOutput,
+) -> dict[str, Any]:
+    return {
+        "code": "OCCLUSION_OCCLUDER_NORMALIZED",
         "count": normalization.normalized_field_count,
     }
 

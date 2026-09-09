@@ -375,7 +375,7 @@ def test_occlusion_prompt_isolates_trusted_data_and_repair_codes():
         repair={"issue_codes": ["OCCLUSION_INTERVAL_NOT_ALLOWED"]},
     )
 
-    assert prompt.startswith("[prompt_version]\n0906-occlusion-contract-v6\n")
+    assert prompt.startswith("[prompt_version]\n0906-occlusion-contract-v7\n")
     assert "[trusted occlusion candidate JSON data]" in prompt
     assert candidate.candidate_id in prompt
     assert "OCCLUSION_INTERVAL_NOT_ALLOWED" in prompt
@@ -575,7 +575,7 @@ def test_empty_candidate_tuple_skips_model_stage(monkeypatch):
         lambda *args, **kwargs: pytest.fail("empty candidates must skip Qwen"),
     )
 
-    decisions, history = pipeline.adjudicate_occlusions(
+    decisions, history, _ = pipeline.adjudicate_occlusions(
         None,
         None,
         None,
@@ -605,7 +605,7 @@ def test_invalid_initial_creates_two_repairs_then_degrades(tmp_path):
     )
     entities, summary = _trusted_prompt_inputs()
 
-    decisions, history = pipeline.adjudicate_occlusions(
+    decisions, history, _ = pipeline.adjudicate_occlusions(
         task,
         context,
         video_path,
@@ -640,7 +640,7 @@ def test_occlusion_inference_failure_or_timeout_degrades_with_truthful_history(
     )
     entities, summary = _trusted_prompt_inputs()
 
-    decisions, history = pipeline.adjudicate_occlusions(
+    decisions, history, _ = pipeline.adjudicate_occlusions(
         task,
         context,
         video_path,
@@ -658,3 +658,62 @@ def test_occlusion_inference_failure_or_timeout_degrades_with_truthful_history(
     assert decisions == OcclusionDecisionSet(decisions=())
     assert history == ("initial",)
     assert len(jobs) == 1
+
+
+def test_unproposed_occluder_normalizes_to_unknown_without_losing_intervals():
+    """Only the bad attribution resets; the anchored positive events survive."""
+    from las_repro.pipelines.output_validation import (
+        DEFAULT_OUTPUT_SCHEMAS, NormalizedSchemaOutput,
+    )
+
+    candidate = _candidate()
+    raw = _positive_raw(candidate)
+    raw["decisions"][0]["occluder_entity_id"] = "gray_board_never_proposed"
+    context = {
+        "duration": 3.0,
+        "candidates": [candidate.model_dump(mode="json")],
+        "allow_occluder_unknown_fallback": True,
+    }
+
+    sanitized = DEFAULT_OUTPUT_SCHEMAS.sanitize("OcclusionDecisionSet", raw, context)
+    assert sanitized["_schema_validation"] == {
+        "schema_name": "OcclusionDecisionSet",
+        "status": "normalized",
+        "issue_codes": ["OCCLUSION_OCCLUDER_NOT_PROPOSED"],
+        "normalized_field_count": 1,
+    }
+    decision = sanitized["data"]["decisions"][0]
+    assert decision["occluder_entity_id"] == "unknown"
+    assert decision["classification"] == "occlusion"
+    assert decision["events"] == [
+        {"event_type": "occluded", "start": 1.0, "end": 2.0}
+    ]
+    normalized = DEFAULT_OUTPUT_SCHEMAS.normalized_result(
+        "OcclusionDecisionSet", sanitized, context
+    )
+    assert isinstance(normalized, NormalizedSchemaOutput)
+
+
+def test_occluder_normalization_refuses_mixed_or_unflagged_failures():
+    """Any other issue, or a missing flag, must keep the strict invalid path."""
+    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+
+    candidate = _candidate()
+    raw = _positive_raw(candidate)
+    raw["decisions"][0]["occluder_entity_id"] = "gray_board_never_proposed"
+    unflagged = {
+        "duration": 3.0,
+        "candidates": [candidate.model_dump(mode="json")],
+    }
+    sanitized = DEFAULT_OUTPUT_SCHEMAS.sanitize("OcclusionDecisionSet", raw, unflagged)
+    assert sanitized["_schema_validation"]["status"] == "invalid"
+
+    mixed = _positive_raw(candidate)
+    mixed["decisions"][0]["occluder_entity_id"] = "gray_board_never_proposed"
+    mixed["decisions"][0]["events"] = [
+        {"event_type": "occluded", "start": 0.123, "end": 2.5}
+    ]
+    flagged = dict(unflagged)
+    flagged["allow_occluder_unknown_fallback"] = True
+    sanitized = DEFAULT_OUTPUT_SCHEMAS.sanitize("OcclusionDecisionSet", mixed, flagged)
+    assert sanitized["_schema_validation"]["status"] == "invalid"

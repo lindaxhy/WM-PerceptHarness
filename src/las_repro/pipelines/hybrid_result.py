@@ -63,6 +63,8 @@ AUDIT_WARNING_CODES = frozenset(
         "CV_ENTITY_LIMIT_APPLIED",
         "ENRICHMENT_ENUM_NORMALIZED_TO_UNKNOWN",
         "BOUNDARY_TOPOLOGY_NORMALIZED",
+        "SCENE_MECHANICS_NORMALIZED",
+        "OCCLUSION_OCCLUDER_NORMALIZED",
     }
 )
 _STATUSES = {"available", "unavailable", "disabled"}
@@ -554,6 +556,8 @@ def validate_hybrid_result(
         "BOUNDARY_TOPOLOGY_NORMALIZED": {"code", "issue_codes", "count"},
         "CV_ENTITY_LIMIT_APPLIED": {"code", "omitted_count", "limit", "message"},
         "ENTITY_ALIASES_TRUNCATED": {"code", "omitted_count"},
+        "SCENE_MECHANICS_NORMALIZED": {"code", "issue_codes", "count"},
+        "OCCLUSION_OCCLUDER_NORMALIZED": {"code", "count"},
         "CV_EVIDENCE_UNAVAILABLE": {"code"},
         "OCCLUSION_UNAVAILABLE": {"code"},
         "SCENE_SEMANTICS_UNAVAILABLE": {"code"},
@@ -683,6 +687,23 @@ def validate_audit_warning(
             counts.get(field, 0) for field in fields
         ):
             raise ValueError("normalization count lacks unknown output fields")
+    elif code == "SCENE_MECHANICS_NORMALIZED":
+        from .scene_choices import SCENE_NORMALIZATION_CODES
+
+        _exact(warning, {"code", "issue_codes", "count"})
+        issues = warning["issue_codes"]
+        if (
+            type(issues) is not list
+            or not issues
+            or issues != [item for item in SCENE_NORMALIZATION_CODES if item in issues]
+        ):
+            raise ValueError("scene normalization codes are invalid")
+        if type(warning["count"]) is not int or warning["count"] < len(issues):
+            raise ValueError("scene normalization count is invalid")
+    elif code == "OCCLUSION_OCCLUDER_NORMALIZED":
+        _exact(warning, {"code", "count"})
+        if type(warning["count"]) is not int or not 1 <= warning["count"] <= 256:
+            raise ValueError("occluder normalization count is invalid")
     elif code == "BOUNDARY_TOPOLOGY_NORMALIZED":
         _exact(warning, {"code", "issue_codes", "count"})
         issues = warning["issue_codes"]

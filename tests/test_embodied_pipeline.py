@@ -120,7 +120,7 @@ def test_scene_prompt_declares_cv_availability_and_flat_spatial_fields(
     )
 
     for prompt in (initial, repair):
-        assert prompt.startswith("[prompt_version]\n0907-scene-choice-refs-v4\n")
+        assert prompt.startswith("[prompt_version]\n0907-scene-choice-refs-v5\n")
         assert '[CV_EVIDENCE_AVAILABILITY_JSON]\n{"available":false}' in prompt
         assert (
             "[SCENE_SPATIAL_FIELDS_JSON]\n"

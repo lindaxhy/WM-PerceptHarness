@@ -366,6 +366,10 @@ class OutputSchemaRegistry:
                 result,
                 validation_context,
             )
+        if schema_name == "SceneSemanticsChoices":
+            return _normalized_scene_envelope(result, validation_context)
+        if schema_name == "OcclusionDecisionSet":
+            return _normalized_occlusion_envelope(result, validation_context)
         if schema_name != "EnrichmentResult":
             return None
         try:
@@ -483,6 +487,124 @@ class OutputSchemaRegistry:
                 "issue_codes": [entry.generic_issue_code],
             }
         }
+
+
+def _normalized_scene_envelope(
+    result: Mapping[str, Any],
+    validation_context: Mapping[str, Any] | None,
+) -> NormalizedSchemaOutput | None:
+    """Revalidate an exact mechanics-only SceneSemanticsChoices normalization."""
+    from .scene_choices import (
+        SCENE_NORMALIZATION_CODES, normalize_scene_choice_mechanics,
+        project_scene_choices, SceneSemanticsChoices,
+    )
+    try:
+        if set(result) != {SCHEMA_VALIDATION_FIELD, "data"}:
+            return None
+        envelope = result.get(SCHEMA_VALIDATION_FIELD)
+        data = result.get("data")
+        if not isinstance(envelope, Mapping) or set(envelope) != {
+            "schema_name",
+            "status",
+            "issue_codes",
+            "normalized_field_count",
+        }:
+            return None
+        codes = envelope.get("issue_codes")
+        count = envelope.get("normalized_field_count")
+        if (
+            envelope.get("schema_name") != "SceneSemanticsChoices"
+            or envelope.get("status") != "normalized"
+            or not isinstance(codes, list)
+            or not codes
+            or codes != [code for code in SCENE_NORMALIZATION_CODES if code in codes]
+            or isinstance(count, bool)
+            or not isinstance(count, int)
+            or count <= 0
+            or not isinstance(data, Mapping)
+        ):
+            return None
+        if (
+            not isinstance(validation_context, Mapping)
+            or validation_context.get("allow_scene_normalization") is not True
+        ):
+            return None
+        strict_context = {
+            k: v
+            for k, v in validation_context.items()
+            if k != "allow_scene_normalization"
+        }
+        fixed, refix_codes, _ = normalize_scene_choice_mechanics(data)
+        if refix_codes:
+            return None
+        project_scene_choices(data, strict_context)
+        canonical = SceneSemanticsChoices.model_validate(data).model_dump(mode="json")
+        return NormalizedSchemaOutput(
+            data=canonical,
+            issue_codes=tuple(codes),
+            normalized_field_count=count,
+        )
+    except Exception:
+        return None
+
+
+def _normalized_occlusion_envelope(
+    result: Mapping[str, Any],
+    validation_context: Mapping[str, Any] | None,
+) -> NormalizedSchemaOutput | None:
+    """Revalidate an exact occluder-only OcclusionDecisionSet normalization."""
+    try:
+        if set(result) != {SCHEMA_VALIDATION_FIELD, "data"}:
+            return None
+        envelope = result.get(SCHEMA_VALIDATION_FIELD)
+        data = result.get("data")
+        if not isinstance(envelope, Mapping) or set(envelope) != {
+            "schema_name",
+            "status",
+            "issue_codes",
+            "normalized_field_count",
+        }:
+            return None
+        codes = envelope.get("issue_codes")
+        count = envelope.get("normalized_field_count")
+        if (
+            envelope.get("schema_name") != "OcclusionDecisionSet"
+            or envelope.get("status") != "normalized"
+            or codes != ["OCCLUSION_OCCLUDER_NOT_PROPOSED"]
+            or isinstance(count, bool)
+            or not isinstance(count, int)
+            or count <= 0
+            or not isinstance(data, Mapping)
+        ):
+            return None
+        if (
+            not isinstance(validation_context, Mapping)
+            or validation_context.get("allow_occluder_unknown_fallback") is not True
+        ):
+            return None
+        strict_context = {
+            k: v
+            for k, v in validation_context.items()
+            if k != "allow_occluder_unknown_fallback"
+        }
+        canonical = _validate_occlusion_decision_output(data, strict_context)
+        if not isinstance(canonical, dict):
+            return None
+        unknowns = sum(
+            1
+            for decision in canonical.get("decisions", ())
+            if isinstance(decision, Mapping)
+            and decision.get("occluder_entity_id") == "unknown"
+        )
+        if count > unknowns:
+            return None
+        return NormalizedSchemaOutput(
+            data=canonical,
+            issue_codes=tuple(codes),
+            normalized_field_count=count,
+        )
+    except Exception:
+        return None
 
 
 def _validate_object_inventory(
@@ -1134,12 +1256,15 @@ def _validate_scene_semantics_output(
 
 def _validate_occlusion_decision_output(
     result: Mapping[str, Any], validation_context: Mapping[str, Any] | None
-) -> dict[str, Any]:
+) -> dict[str, Any] | NormalizedSchemaOutput:
     from ..cv.summary import CvEvidenceSummary, validate_candidate_identity_evidence
     keys = {"duration", "candidates"}
     if validation_context is not None and "evidence_summary" in validation_context:
         keys.add("evidence_summary")
+    if validation_context is not None and "allow_occluder_unknown_fallback" in validation_context:
+        keys.add("allow_occluder_unknown_fallback")
     context = _exact_context(validation_context, keys)
+    allow_occluder_fallback = context.get("allow_occluder_unknown_fallback") is True
     duration = _finite_real(context["duration"], positive=True)
     raw_candidates = context["candidates"]
     if type(raw_candidates) is not list or len(raw_candidates) > 256:
@@ -1167,10 +1292,61 @@ def _validate_occlusion_decision_output(
     try:
         validate_occlusion_decisions(decisions, candidates, duration=duration)
     except TemporalValidationError as error:
+        if allow_occluder_fallback:
+            normalized = _normalize_unproposed_occluders(
+                decisions, candidates, duration, error
+            )
+            if normalized is not None:
+                return normalized
         raise DeclaredSchemaOutputError(
             tuple(dict.fromkeys(issue.code for issue in error.issues))
         ) from None
     return decisions.model_dump(mode="json")
+
+
+def _normalize_unproposed_occluders(
+    decisions, candidates, duration, error
+) -> NormalizedSchemaOutput | None:
+    """Locally reset only unlisted occluder attributions to unknown.
+
+    Positive occlusion intervals stay: they are independently anchored to the
+    candidate's allowed_event_intervals, so dropping just the attribution is
+    the minimal information loss. Any other issue kind disables this path.
+    """
+    try:
+        positions: set[int] = set()
+        for issue in error.issues:
+            if issue.code != "OCCLUSION_OCCLUDER_NOT_PROPOSED":
+                return None
+            path = issue.path
+            if (
+                len(path) < 3
+                or path[0] != "decisions"
+                or isinstance(path[1], bool)
+                or not isinstance(path[1], int)
+                or path[2] != "occluder_entity_id"
+            ):
+                return None
+            positions.add(path[1])
+        if not positions:
+            return None
+        snapshot = decisions.model_dump(mode="json")
+        rows = snapshot.get("decisions")
+        if not isinstance(rows, list) or any(
+            position >= len(rows) for position in positions
+        ):
+            return None
+        for position in positions:
+            rows[position]["occluder_entity_id"] = "unknown"
+        reparsed = _model_from_json(OcclusionDecisionSet, snapshot)
+        validate_occlusion_decisions(reparsed, candidates, duration=duration)
+        return NormalizedSchemaOutput(
+            data=reparsed.model_dump(mode="json"),
+            issue_codes=("OCCLUSION_OCCLUDER_NOT_PROPOSED",),
+            normalized_field_count=len(positions),
+        )
+    except Exception:
+        return None
 
 
 def _enrichment_validation_context(

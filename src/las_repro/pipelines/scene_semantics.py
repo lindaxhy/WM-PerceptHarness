@@ -94,8 +94,9 @@ class SceneLocation(_SceneModel):
 
 class SceneRelation(_SceneModel):
     subject_object_id: ObjectId
-    relation: Literal["left_of", "right_of", "above", "below", "inside", "on",
-                      "overlapping", "near", "occluding", "unknown"]
+    relation: Literal["left_of", "right_of", "above", "below", "in_front_of",
+                      "behind", "inside", "on", "overlapping", "near",
+                      "occluding", "unknown"]
     object_object_id: ObjectId
     start: Timestamp
     end: Timestamp

@@ -169,12 +169,107 @@ def project_scene_choices(result: Any, context: Any, *,
     return _validate_scene_semantics_output(data, public_context)
 
 
+_RELATION_PREDICATES = frozenset(
+    SceneRelation.model_fields['relation'].annotation.__args__
+)
+SCENE_NORMALIZATION_CODES = (
+    'SCENE_EVENT_START_NOT_ORDERED',
+    'SCENE_EVENT_INDEX_NOT_CONTIGUOUS',
+    'SCENE_EVENT_UNKNOWN_OBJECT',
+    'SCENE_SEMANTICS_CHOICES_RELATION_PREDICATE_ENUM_VALUE',
+)
+
+
+def normalize_scene_choice_mechanics(result: Any) -> tuple[Any, tuple[str, ...], int]:
+    """Fix purely mechanical scene faults locally before strict validation.
+
+    Sorting and renumbering events, downgrading dangling event targets to
+    unknown, and dropping relation rows with an out-of-vocabulary predicate
+    never require another model call. Anything structurally unexpected is
+    left untouched for the strict validator to reject.
+    """
+    if type(result) is not dict:
+        return result, (), 0
+    fixed = json.loads(json.dumps(result))
+    codes: list[str] = []
+    count = 0
+    events = fixed.get('semantic_events')
+    if isinstance(events, list) and events and all(
+        isinstance(e, dict)
+        and type(e.get('start')) in (int, float)
+        and math.isfinite(e.get('start'))
+        for e in events
+    ):
+        ordered = sorted(events, key=lambda e: e['start'])
+        if ordered != events:
+            codes.append('SCENE_EVENT_START_NOT_ORDERED')
+            count += sum(a is not b for a, b in zip(events, ordered))
+        renumbered = 0
+        for position, event in enumerate(ordered):
+            if event.get('event_index') != position:
+                event['event_index'] = position
+                renumbered += 1
+        if renumbered and 'SCENE_EVENT_START_NOT_ORDERED' not in codes:
+            codes.append('SCENE_EVENT_INDEX_NOT_CONTIGUOUS')
+        count += renumbered
+        fixed['semantic_events'] = ordered
+        objects = fixed.get('objects')
+        if isinstance(objects, list):
+            declared = {
+                o.get('object_id')
+                for o in objects
+                if isinstance(o, dict) and isinstance(o.get('object_id'), str)
+            }
+            dangling = 0
+            for event in ordered:
+                target = event.get('target_object_id')
+                if isinstance(target, str) and target != 'unknown' and target not in declared:
+                    event['target_object_id'] = 'unknown'
+                    dangling += 1
+            if dangling:
+                codes.append('SCENE_EVENT_UNKNOWN_OBJECT')
+                count += dangling
+    relations = fixed.get('relations')
+    if isinstance(relations, list):
+        kept = [
+            row
+            for row in relations
+            if not isinstance(row, dict)
+            or not isinstance(row.get('relation'), str)
+            or row['relation'] in _RELATION_PREDICATES
+        ]
+        dropped = len(relations) - len(kept)
+        if dropped:
+            codes.append('SCENE_SEMANTICS_CHOICES_RELATION_PREDICATE_ENUM_VALUE')
+            count += dropped
+            fixed['relations'] = kept
+    if not codes:
+        return result, (), 0
+    return fixed, tuple(codes), count
+
+
 def validate_scene_choices(result: Any, context: Any) -> dict[str, Any]:
+    from .output_validation import NormalizedSchemaOutput
+
+    allow = type(context) is dict and context.get('allow_scene_normalization') is True
+    if allow:
+        context = {k: v for k, v in context.items() if k != 'allow_scene_normalization'}
+        fixed, codes, count = normalize_scene_choice_mechanics(result)
+        if codes:
+            projected = project_scene_choices(fixed, context)
+            SceneSemanticsChoices.model_validate(fixed)
+            return NormalizedSchemaOutput(
+                data=SceneSemanticsChoices.model_validate(fixed).model_dump(mode='json'),
+                issue_codes=codes,
+                normalized_field_count=count,
+            )
     project_scene_choices(result, context)
     return SceneSemanticsChoices.model_validate(result).model_dump(mode='json')
 
 
 def scene_response_contract(context: Any) -> ModelResponseContract:
+    if type(context) is dict and 'allow_scene_normalization' in context:
+        context = {k: v for k, v in context.items() if k != 'allow_scene_normalization'}
     context = authenticate_scene_context(context)
     source = SceneSemanticsChoices.model_json_schema()
     schema = compile_local_schema(source)
