@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import math
+import os
 import shutil
 import threading
 import time
@@ -309,12 +311,46 @@ class GPUWorker:
             if not isinstance(generated, Mapping):
                 raise ModelOutputError("model output must be a structured object")
             result = self._output_schemas.sanitize(request.schema_name, generated, context)
+            self._record_invalid_output(request, result, generated)
         except ModelOutputError:
             result = self._output_schemas.model_output_failure(request.schema_name)
             if result is None:
                 raise
         metrics = _model_request_metrics(self.model, inference_seconds=inference_seconds)
         return result, metrics
+
+    def _record_invalid_output(
+        self,
+        request: ModelRequest,
+        result: Mapping[str, Any],
+        generated: Mapping[str, Any],
+    ) -> None:
+        """Append the rejected raw model output to a diagnostics sidecar file.
+
+        Off by default: raw model output may carry private content, and the
+        validation contract intentionally persists only closed issue codes.
+        Set LAS_DEBUG_INVALID_OUTPUTS=1 on a trusted diagnostic host to
+        capture what the model actually wrote for stubborn failure codes.
+        Diagnostics must never break the job.
+        """
+        if os.environ.get("LAS_DEBUG_INVALID_OUTPUTS") != "1":
+            return
+        try:
+            envelope = result.get("_schema_validation")
+            if not isinstance(envelope, Mapping) or envelope.get("status") != "invalid":
+                return
+            path = Path(f"{self.store.database_path}.invalid-outputs.jsonl")
+            record = {
+                "time": time.time(),
+                "worker_id": self.worker_id,
+                "schema_name": request.schema_name,
+                "issue_codes": list(envelope.get("issue_codes", ())),
+                "raw_output": generated,
+            }
+            with open(path, "a", encoding="utf-8") as stream:
+                stream.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        except Exception:
+            pass
 
     def run_forever(
         self,
