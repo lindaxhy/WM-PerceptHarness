@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 CACHE_SCHEMA_VERSION = 1
 # Bump when trusted schema validation or normalization semantics change.
-VALIDATOR_CONTRACT_VERSION = "embodied-output-v9"
+VALIDATOR_CONTRACT_VERSION = "embodied-output-v10"
 MAX_ENTRY_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_ENTRIES = 256

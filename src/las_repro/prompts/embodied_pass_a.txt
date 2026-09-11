@@ -1,5 +1,5 @@
 [prompt_version]
-0805-local-v5
+0805-local-v6
 
 You annotate a complete first-person robot manipulation video.
 Use visual evidence only. Do not use audio, speech, transcripts, filenames, or outside knowledge.
@@ -26,6 +26,7 @@ Output the global task, visible/action-relevant entity evidence requests, and co
 - Include visible actors and visible manipulated objects needed by the action descriptions. Include a container, occluder, or surface only when it is visible or action-relevant.
 - Candidates are evidence requests, not claims of presence. They request later visual tracking; they do not prove that an entity exists, is visible throughout, or is occluded.
 - Never derive a candidate only from caller naming hints, filenames, outside knowledge, or hidden intent.
+- Name by shape and function first. Include a color word only when you are certain of it under the video's lighting; a wrong color in the name can break later visual tracking. Always provide at least two aliases with different attribute choices, for example a colorless variant of the name.
 
 [coarse action rules]
 - Each action is one meaningful physical phase.

@@ -651,22 +651,44 @@ class Sam31EvidenceProvider:
         budget: _ArtifactBudget | None = None,
     ) -> tuple[_PromptRun, ...]:
         dimensions = _sampled_frame_dimensions(sampled)
-        with _predictor_session(self._predictor, sampled) as session_id:
-            return tuple(
-                self._run_prompt(
+
+        def run_with_alias_fallback(entity: Any) -> _PromptRun:
+            """Retry an entity with its aliases when the canonical label finds nothing.
+
+            The canonical label is a VLM-chosen name; a wrong attribute in it
+            (for example a misjudged color) can push open-vocabulary matching
+            under threshold even though the entity is plainly visible. Aliases
+            from the same nomination frequently still match.
+            """
+            mask_path = (
+                masks_directory / f"{entity.entity_id}.npz"
+                if masks_directory is not None
+                else None
+            )
+            labels = (entity.canonical_label, *tuple(entity.aliases)[:2])
+            last: _PromptRun | None = None
+            for position, label in enumerate(labels):
+                run = self._run_prompt(
                     request,
                     sampled,
                     session_id,
                     entity,
                     dimensions,
-                    mask_path=(
-                        masks_directory / f"{entity.entity_id}.npz"
-                        if masks_directory is not None
-                        else None
-                    ),
+                    mask_path=mask_path,
                     budget=budget,
+                    prompt_text=label,
                 )
-                for entity in request.entities
+                if run.detections or position + 1 == len(labels):
+                    return run
+                last = run
+                if mask_path is not None:
+                    mask_path.unlink(missing_ok=True)
+            assert last is not None
+            return last
+
+        with _predictor_session(self._predictor, sampled) as session_id:
+            return tuple(
+                run_with_alias_fallback(entity) for entity in request.entities
             )
 
     def _run_prompt(
@@ -679,6 +701,7 @@ class Sam31EvidenceProvider:
         *,
         mask_path: Path | None,
         budget: _ArtifactBudget | None,
+        prompt_text: str | None = None,
     ) -> _PromptRun:
         self._predictor.handle_request(
             {"type": "reset_session", "session_id": session_id}
@@ -688,7 +711,7 @@ class Sam31EvidenceProvider:
                 "type": "add_prompt",
                 "session_id": session_id,
                 "frame_index": 0,
-                "text": entity.canonical_label,
+                "text": prompt_text or entity.canonical_label,
                 "output_prob_thresh": request.thresholds.min_confidence,
             }
         )

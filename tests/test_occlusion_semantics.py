@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import copy
 import json
 from pathlib import Path
@@ -375,7 +377,7 @@ def test_occlusion_prompt_isolates_trusted_data_and_repair_codes():
         repair={"issue_codes": ["OCCLUSION_INTERVAL_NOT_ALLOWED"]},
     )
 
-    assert prompt.startswith("[prompt_version]\n0906-occlusion-contract-v7\n")
+    assert prompt.startswith("[prompt_version]\n0906-occlusion-contract-v8\n")
     assert "[trusted occlusion candidate JSON data]" in prompt
     assert candidate.candidate_id in prompt
     assert "OCCLUSION_INTERVAL_NOT_ALLOWED" in prompt
@@ -717,3 +719,85 @@ def test_occluder_normalization_refuses_mixed_or_unflagged_failures():
     flagged["allow_occluder_unknown_fallback"] = True
     sanitized = DEFAULT_OUTPUT_SCHEMAS.sanitize("OcclusionDecisionSet", mixed, flagged)
     assert sanitized["_schema_validation"]["status"] == "invalid"
+
+
+def test_offered_boundary_intervals_complete_a_chosen_occluded_phase():
+    """A hidden phase implies its transitions when the candidate offered them."""
+    from las_repro.pipelines.output_validation import (
+        DEFAULT_OUTPUT_SCHEMAS, NormalizedSchemaOutput,
+    )
+    from las_repro.cv.summary import AllowedEventInterval, _candidate_identity
+
+    values = dict(
+        target_entity_id="apple",
+        target_track_id="apple_1",
+        possible_occluders=(
+            OccluderProvenance(
+                entity_id="board", track_id="board_1", supporting_frames=(3, 4)
+            ),
+        ),
+        possible_occluder_entity_ids=("board",),
+        allowed_event_intervals=(
+            AllowedEventInterval(event_type="occlusion_enter", start=0.97, end=1.0),
+            AllowedEventInterval(event_type="occluded", start=1.0, end=2.0),
+            AllowedEventInterval(event_type="occlusion_exit", start=2.0, end=2.03),
+        ),
+        last_visible_frame=2,
+        first_revisible_frame=5,
+        edge_departure=False,
+        low_confidence=False,
+        overlay_refs=("overlays/apple_1_000002.png",),
+        observation_support_complete=True,
+        relation_support_complete=True,
+        overlay_support_complete=True,
+        support_complete=True,
+        source_search_complete=True,
+    )
+    provisional = OcclusionCandidate.model_construct(
+        candidate_id="occ_000000000000_0001", **values
+    )
+    candidate = OcclusionCandidate(
+        candidate_id=_candidate_identity(provisional, 1), **values
+    )
+    raw = _positive_raw(candidate)
+    raw["decisions"][0]["events"] = [
+        {"event_type": "occluded", "start": 1.0, "end": 2.0}
+    ]
+    context = {
+        "duration": 3.0,
+        "candidates": [candidate.model_dump(mode="json")],
+        "allow_occluder_unknown_fallback": True,
+    }
+
+    sanitized = DEFAULT_OUTPUT_SCHEMAS.sanitize("OcclusionDecisionSet", raw, context)
+    assert sanitized["_schema_validation"] == {
+        "schema_name": "OcclusionDecisionSet",
+        "status": "normalized",
+        "issue_codes": ["OCCLUSION_BOUNDARIES_COMPLETED"],
+        "normalized_field_count": 2,
+    }
+    kinds = [e["event_type"] for e in sanitized["data"]["decisions"][0]["events"]]
+    assert kinds == ["occlusion_enter", "occluded", "occlusion_exit"]
+    normalized = DEFAULT_OUTPUT_SCHEMAS.normalized_result(
+        "OcclusionDecisionSet", sanitized, context
+    )
+    assert isinstance(normalized, NormalizedSchemaOutput)
+
+
+def test_boundary_completion_leaves_absent_offers_and_aligned_events_alone():
+    """Only intervals the candidate actually offered may be restored."""
+    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+
+    candidate = _candidate()
+    raw = _positive_raw(candidate)
+    raw["decisions"][0]["events"] = [
+        {"event_type": "occluded", "start": 1.0, "end": 2.0}
+    ]
+    context = {
+        "duration": 3.0,
+        "candidates": [candidate.model_dump(mode="json")],
+        "allow_occluder_unknown_fallback": True,
+    }
+    sanitized = DEFAULT_OUTPUT_SCHEMAS.sanitize("OcclusionDecisionSet", raw, context)
+    assert sanitized == raw
+    assert "normalized" not in json.dumps(sanitized)

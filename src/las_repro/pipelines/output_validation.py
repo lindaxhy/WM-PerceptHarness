@@ -570,7 +570,10 @@ def _normalized_occlusion_envelope(
         if (
             envelope.get("schema_name") != "OcclusionDecisionSet"
             or envelope.get("status") != "normalized"
-            or codes != ["OCCLUSION_OCCLUDER_NOT_PROPOSED"]
+            or codes not in (
+                ["OCCLUSION_OCCLUDER_NOT_PROPOSED"],
+                ["OCCLUSION_BOUNDARIES_COMPLETED"],
+            )
             or isinstance(count, bool)
             or not isinstance(count, int)
             or count <= 0
@@ -590,14 +593,15 @@ def _normalized_occlusion_envelope(
         canonical = _validate_occlusion_decision_output(data, strict_context)
         if not isinstance(canonical, dict):
             return None
-        unknowns = sum(
-            1
-            for decision in canonical.get("decisions", ())
-            if isinstance(decision, Mapping)
-            and decision.get("occluder_entity_id") == "unknown"
-        )
-        if count > unknowns:
-            return None
+        if codes == ["OCCLUSION_OCCLUDER_NOT_PROPOSED"]:
+            unknowns = sum(
+                1
+                for decision in canonical.get("decisions", ())
+                if isinstance(decision, Mapping)
+                and decision.get("occluder_entity_id") == "unknown"
+            )
+            if count > unknowns:
+                return None
         return NormalizedSchemaOutput(
             data=canonical,
             issue_codes=tuple(codes),
@@ -1301,7 +1305,67 @@ def _validate_occlusion_decision_output(
         raise DeclaredSchemaOutputError(
             tuple(dict.fromkeys(issue.code for issue in error.issues))
         ) from None
+    if allow_occluder_fallback:
+        completed = _complete_occlusion_boundaries(decisions, candidates, duration)
+        if completed is not None:
+            return completed
     return decisions.model_dump(mode="json")
+
+
+def _complete_occlusion_boundaries(
+    decisions, candidates, duration
+) -> NormalizedSchemaOutput | None:
+    """Add offered enter/exit intervals adjacent to a chosen occluded interval.
+
+    A hidden phase implies its transitions. When the candidate offered the
+    enter interval ending exactly at the chosen occluded start (or the exit
+    starting at its end) and the model omitted it, restoring the boundary is
+    mechanical: the interval is a closed offer, and selecting the middle
+    phase already asserts the transition happened.
+    """
+    try:
+        by_id = {c.candidate_id: c for c in candidates}
+        snapshot = decisions.model_dump(mode="json")
+        added = 0
+        for row in snapshot.get("decisions", ()):
+            if row.get("classification") != "occlusion":
+                continue
+            candidate = by_id.get(row.get("candidate_id"))
+            if candidate is None:
+                continue
+            events = row.get("events") or []
+            chosen = {(e["event_type"], e["start"], e["end"]) for e in events}
+            occluded = [e for e in events if e["event_type"] == "occluded"]
+            for interval in candidate.allowed_event_intervals:
+                kind = interval.event_type
+                key = (kind, interval.start, interval.end)
+                if kind == "occlusion_enter" and key not in chosen and any(
+                    o["start"] == interval.end for o in occluded
+                ):
+                    events.append({"event_type": kind, "start": interval.start,
+                                   "end": interval.end})
+                    chosen.add(key)
+                    added += 1
+                if kind == "occlusion_exit" and key not in chosen and any(
+                    o["end"] == interval.start for o in occluded
+                ):
+                    events.append({"event_type": kind, "start": interval.start,
+                                   "end": interval.end})
+                    chosen.add(key)
+                    added += 1
+            events.sort(key=lambda e: (e["start"], e["end"], e["event_type"]))
+            row["events"] = events
+        if not added:
+            return None
+        reparsed = _model_from_json(OcclusionDecisionSet, snapshot)
+        validate_occlusion_decisions(reparsed, candidates, duration=duration)
+        return NormalizedSchemaOutput(
+            data=reparsed.model_dump(mode="json"),
+            issue_codes=("OCCLUSION_BOUNDARIES_COMPLETED",),
+            normalized_field_count=added,
+        )
+    except Exception:
+        return None
 
 
 def _normalize_unproposed_occluders(

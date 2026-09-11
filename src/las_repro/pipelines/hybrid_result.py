@@ -65,6 +65,7 @@ AUDIT_WARNING_CODES = frozenset(
         "BOUNDARY_TOPOLOGY_NORMALIZED",
         "SCENE_MECHANICS_NORMALIZED",
         "OCCLUSION_OCCLUDER_NORMALIZED",
+        "OCCLUSION_BOUNDARIES_COMPLETED",
     }
 )
 _STATUSES = {"available", "unavailable", "disabled"}
@@ -558,6 +559,7 @@ def validate_hybrid_result(
         "ENTITY_ALIASES_TRUNCATED": {"code", "omitted_count"},
         "SCENE_MECHANICS_NORMALIZED": {"code", "issue_codes", "count"},
         "OCCLUSION_OCCLUDER_NORMALIZED": {"code", "count"},
+        "OCCLUSION_BOUNDARIES_COMPLETED": {"code", "count"},
         "CV_EVIDENCE_UNAVAILABLE": {"code"},
         "OCCLUSION_UNAVAILABLE": {"code"},
         "SCENE_SEMANTICS_UNAVAILABLE": {"code"},
@@ -700,10 +702,10 @@ def validate_audit_warning(
             raise ValueError("scene normalization codes are invalid")
         if type(warning["count"]) is not int or warning["count"] < len(issues):
             raise ValueError("scene normalization count is invalid")
-    elif code == "OCCLUSION_OCCLUDER_NORMALIZED":
+    elif code in ("OCCLUSION_OCCLUDER_NORMALIZED", "OCCLUSION_BOUNDARIES_COMPLETED"):
         _exact(warning, {"code", "count"})
-        if type(warning["count"]) is not int or not 1 <= warning["count"] <= 256:
-            raise ValueError("occluder normalization count is invalid")
+        if type(warning["count"]) is not int or not 1 <= warning["count"] <= 512:
+            raise ValueError("occlusion normalization count is invalid")
     elif code == "BOUNDARY_TOPOLOGY_NORMALIZED":
         _exact(warning, {"code", "issue_codes", "count"})
         issues = warning["issue_codes"]

@@ -52,7 +52,7 @@ from .validators import (
 )
 
 
-EMBODIED_PROMPT_VERSION = "0805-local-v5"
+EMBODIED_PROMPT_VERSION = "0805-local-v6"
 
 Probe = Callable[[Path], VideoMetadata]
 WaitJobs = Callable[
@@ -1363,8 +1363,13 @@ def _scene_normalization_warning(
 def _occlusion_normalization_warning(
     normalization: NormalizedSchemaOutput,
 ) -> dict[str, Any]:
+    code = (
+        "OCCLUSION_BOUNDARIES_COMPLETED"
+        if "OCCLUSION_BOUNDARIES_COMPLETED" in normalization.issue_codes
+        else "OCCLUSION_OCCLUDER_NORMALIZED"
+    )
     return {
-        "code": "OCCLUSION_OCCLUDER_NORMALIZED",
+        "code": code,
         "count": normalization.normalized_field_count,
     }
 

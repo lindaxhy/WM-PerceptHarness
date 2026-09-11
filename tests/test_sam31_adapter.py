@@ -3745,3 +3745,70 @@ def test_mask_and_overlay_files_are_owner_only(
     for artifact_file in artifact.files:
         mode = stat.S_IMODE((tmp_path / "staging" / artifact_file.path).stat().st_mode)
         assert mode == 0o600
+
+
+def test_alias_fallback_retries_empty_canonical_label(
+    tmp_path: Path, fake_torch: SimpleNamespace
+) -> None:
+    """A miscolored canonical name must not erase a visibly trackable entity."""
+
+    def empty_frames(request):
+        start = request["start_frame_index"]
+        stop = start + request["max_frame_num_to_track"]
+        return [
+            frame_output(index, object_ids=[], probabilities=[], boxes=[], masks=[])
+            for index in range(start, stop)
+        ]
+
+    def stream(session_number, prompt, request):
+        del session_number
+        if prompt == "red cup":
+            return empty_frames(request)
+        return PredictorDouble._default_stream(None, 0, prompt, request)
+
+    request = make_request(tmp_path)
+    predictor = PredictorDouble(stream=stream)
+    materializer = MaterializerDouble()
+    provider = make_provider(predictor, fake_torch, materializer)
+
+    artifact = provider.analyze(request, tmp_path / "staging")
+
+    prompts = [
+        item["text"] for item in predictor.requests if item["type"] == "add_prompt"
+    ]
+    assert prompts == ["right hand", "red cup", "cup"]
+    tracked = {track.entity_id for track in artifact.tracks}
+    assert "red_cup" in tracked
+
+
+def test_alias_fallback_keeps_empty_run_when_every_label_misses(
+    tmp_path: Path, fake_torch: SimpleNamespace
+) -> None:
+    """Exhausting canonical plus aliases must degrade to an absent entity, not fail."""
+
+    def stream(session_number, prompt, request):
+        del session_number
+        if prompt in ("red cup", "cup"):
+            start = request["start_frame_index"]
+            stop = start + request["max_frame_num_to_track"]
+            return [
+                frame_output(
+                    index, object_ids=[], probabilities=[], boxes=[], masks=[]
+                )
+                for index in range(start, stop)
+            ]
+        return PredictorDouble._default_stream(None, 0, prompt, request)
+
+    request = make_request(tmp_path)
+    predictor = PredictorDouble(stream=stream)
+    materializer = MaterializerDouble()
+    provider = make_provider(predictor, fake_torch, materializer)
+
+    artifact = provider.analyze(request, tmp_path / "staging")
+
+    prompts = [
+        item["text"] for item in predictor.requests if item["type"] == "add_prompt"
+    ]
+    assert prompts == ["right hand", "red cup", "cup"]
+    tracked = {track.entity_id for track in artifact.tracks}
+    assert "red_cup" not in tracked
