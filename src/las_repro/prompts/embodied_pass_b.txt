@@ -1,5 +1,5 @@
 [prompt_version]
-0805-local-v6
+0805-local-v7
 
 You annotate fine-grained manipulation segments using the complete video and the provided coarse action plan from Pass A.
 Use visual evidence only. Do not use audio, speech, transcripts, filenames, or outside knowledge.
@@ -47,7 +47,7 @@ For every action in Pass A, first output boundary_points, then output fine_segme
 
 [description rules]
 - description: an English verb phrase describing one visible atomic action or stable state, at most 200 characters, on a single line with no leading or trailing spaces. Keep it within 70 characters whenever the action allows.
-- Describe exactly one action per description. Never chain a second action with "and", a comma, or "while"; a grasp-then-release belongs in two segments, with the release expressed through actor_state rather than appended text.
+- Describe exactly one action per description. Never chain a second action with "and", a comma, a semicolon, or "while"; a grasp-then-release belongs in two segments, with the release expressed through actor_state rather than appended text.
 - Do not pad descriptions with temporal fillers such as begins, continues, finishes, starts, keeps, or proceeds to. Write "right hand moves the board left", not "right hand continues moving the board left"; segment boundaries already carry the timing.
 - Prefer lowercase and a hand subject (left hand, right hand, both hands, neither hand) when the acting hand is visible; describing occlusion or object state without a hand subject is allowed when that is what the video shows.
 - Never write robot, gripper, manipulator, end effector, arm, camera, or controller.

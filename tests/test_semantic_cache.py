@@ -767,7 +767,7 @@ def test_boundary_initial_repair_formats_and_closed_failure_replay(store, tmp_pa
     repair_context = {**context, 'allow_topology_fallback': True}
     repair_data = dict(schema_name='BoundaryPlan', issue_codes=[CODES[index]])
     repair_prompt = renderer.pass_b(context['coarse_plan'], max_fine_segment_seconds=1.0, repair=repair_data)
-    assert repair_prompt.startswith('[prompt_version]\n0805-local-v6\n')
+    assert repair_prompt.startswith('[prompt_version]\n0805-local-v7\n')
     assert CODES[index] in repair_prompt
     assert 'actions[i].event_type' in repair_prompt
     assert 'boundary_points[j].event_type' in repair_prompt

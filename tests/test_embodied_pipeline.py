@@ -274,7 +274,7 @@ def test_enrichment_prompt_lists_the_official_vocabulary_exactly_once_each(
     assert len(words) == len(set(words)) == 19
     assert "contact" in words and "autonomous_motion" in words
     assert "touch" not in words and "static" not in words and "roll" not in words
-    assert EMBODIED_PROMPT_VERSION == "0805-local-v6"
+    assert EMBODIED_PROMPT_VERSION == "0805-local-v7"
 
 
 @pytest.mark.parametrize(
@@ -731,7 +731,7 @@ def test_prompt_assets_state_exact_schemas_enums_and_visual_only_rules(
     assert EMBODIED_PROMPT_VERSION in prompts["enrichment"]
     assert "0805-local-v1" in prompts["active"]
     assert EMBODIED_PROMPT_VERSION in prompts["pass_a"]
-    assert "0805-local-v6" in prompts["pass_b"]
+    assert "0805-local-v7" in prompts["pass_b"]
     assert all("visual evidence only" in prompt.casefold() for prompt in prompts.values())
     assert all("do not use audio" in prompt.casefold() for prompt in prompts.values())
     assert all("{{" not in prompt for prompt in prompts.values())
