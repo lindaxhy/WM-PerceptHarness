@@ -801,3 +801,120 @@ def test_boundary_completion_leaves_absent_offers_and_aligned_events_alone():
     sanitized = DEFAULT_OUTPUT_SCHEMAS.sanitize("OcclusionDecisionSet", raw, context)
     assert sanitized == raw
     assert "normalized" not in json.dumps(sanitized)
+
+
+def test_unordered_events_are_locally_sorted_without_a_model_retry():
+    """Emitting occluded before its enter transition is presentation, not error."""
+    from las_repro.pipelines.output_validation import (
+        DEFAULT_OUTPUT_SCHEMAS, NormalizedSchemaOutput,
+    )
+    from las_repro.cv.summary import AllowedEventInterval, _candidate_identity
+
+    values = dict(
+        target_entity_id="apple",
+        target_track_id="apple_1",
+        possible_occluders=(
+            OccluderProvenance(
+                entity_id="board", track_id="board_1", supporting_frames=(3, 4)
+            ),
+        ),
+        possible_occluder_entity_ids=("board",),
+        allowed_event_intervals=(
+            AllowedEventInterval(event_type="occlusion_enter", start=0.97, end=1.0),
+            AllowedEventInterval(event_type="occluded", start=1.0, end=2.0),
+            AllowedEventInterval(event_type="occlusion_exit", start=2.0, end=2.03),
+        ),
+        last_visible_frame=2,
+        first_revisible_frame=5,
+        edge_departure=False,
+        low_confidence=False,
+        overlay_refs=("overlays/apple_1_000002.png",),
+        observation_support_complete=True,
+        relation_support_complete=True,
+        overlay_support_complete=True,
+        support_complete=True,
+        source_search_complete=True,
+    )
+    provisional = OcclusionCandidate.model_construct(
+        candidate_id="occ_000000000000_0001", **values
+    )
+    candidate = OcclusionCandidate(
+        candidate_id=_candidate_identity(provisional, 1), **values
+    )
+    raw = _positive_raw(candidate)
+    raw["decisions"][0]["events"] = [
+        {"event_type": "occluded", "start": 1.0, "end": 2.0},
+        {"event_type": "occlusion_enter", "start": 0.97, "end": 1.0},
+        {"event_type": "occlusion_exit", "start": 2.0, "end": 2.03},
+    ]
+    context = {
+        "duration": 3.0,
+        "candidates": [candidate.model_dump(mode="json")],
+        "allow_occluder_unknown_fallback": True,
+    }
+
+    sanitized = DEFAULT_OUTPUT_SCHEMAS.sanitize("OcclusionDecisionSet", raw, context)
+    assert sanitized["_schema_validation"] == {
+        "schema_name": "OcclusionDecisionSet",
+        "status": "normalized",
+        "issue_codes": ["OCCLUSION_EVENTS_NOT_ORDERED"],
+        "normalized_field_count": 1,
+    }
+    kinds = [e["event_type"] for e in sanitized["data"]["decisions"][0]["events"]]
+    assert kinds == ["occlusion_enter", "occluded", "occlusion_exit"]
+    normalized = DEFAULT_OUTPUT_SCHEMAS.normalized_result(
+        "OcclusionDecisionSet", sanitized, context
+    )
+    assert isinstance(normalized, NormalizedSchemaOutput)
+    assert normalized.issue_codes == ("OCCLUSION_EVENTS_NOT_ORDERED",)
+
+
+def test_unordered_events_with_content_faults_still_fail_for_repair():
+    """Sorting must not mask an interval the candidate never offered."""
+    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+    from las_repro.cv.summary import AllowedEventInterval, _candidate_identity
+
+    values = dict(
+        target_entity_id="apple",
+        target_track_id="apple_1",
+        possible_occluders=(
+            OccluderProvenance(
+                entity_id="board", track_id="board_1", supporting_frames=(3, 4)
+            ),
+        ),
+        possible_occluder_entity_ids=("board",),
+        allowed_event_intervals=(
+            AllowedEventInterval(event_type="occluded", start=1.0, end=2.0),
+        ),
+        last_visible_frame=2,
+        first_revisible_frame=5,
+        edge_departure=False,
+        low_confidence=False,
+        overlay_refs=("overlays/apple_1_000002.png",),
+        observation_support_complete=True,
+        relation_support_complete=True,
+        overlay_support_complete=True,
+        support_complete=True,
+        source_search_complete=True,
+    )
+    provisional = OcclusionCandidate.model_construct(
+        candidate_id="occ_000000000000_0001", **values
+    )
+    candidate = OcclusionCandidate(
+        candidate_id=_candidate_identity(provisional, 1), **values
+    )
+    raw = _positive_raw(candidate)
+    raw["decisions"][0]["events"] = [
+        {"event_type": "occluded", "start": 1.0, "end": 2.0},
+        {"event_type": "occlusion_enter", "start": 0.5, "end": 1.0},
+    ]
+    context = {
+        "duration": 3.0,
+        "candidates": [candidate.model_dump(mode="json")],
+        "allow_occluder_unknown_fallback": True,
+    }
+
+    sanitized = DEFAULT_OUTPUT_SCHEMAS.sanitize("OcclusionDecisionSet", raw, context)
+    envelope = sanitized["_schema_validation"]
+    assert envelope["status"] == "invalid"
+    assert "OCCLUSION_INTERVAL_NOT_ALLOWED" in envelope["issue_codes"]

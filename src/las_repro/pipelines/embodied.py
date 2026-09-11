@@ -1363,11 +1363,12 @@ def _scene_normalization_warning(
 def _occlusion_normalization_warning(
     normalization: NormalizedSchemaOutput,
 ) -> dict[str, Any]:
-    code = (
-        "OCCLUSION_BOUNDARIES_COMPLETED"
-        if "OCCLUSION_BOUNDARIES_COMPLETED" in normalization.issue_codes
-        else "OCCLUSION_OCCLUDER_NORMALIZED"
-    )
+    if "OCCLUSION_BOUNDARIES_COMPLETED" in normalization.issue_codes:
+        code = "OCCLUSION_BOUNDARIES_COMPLETED"
+    elif "OCCLUSION_EVENTS_NOT_ORDERED" in normalization.issue_codes:
+        code = "OCCLUSION_EVENTS_REORDERED"
+    else:
+        code = "OCCLUSION_OCCLUDER_NORMALIZED"
     return {
         "code": code,
         "count": normalization.normalized_field_count,

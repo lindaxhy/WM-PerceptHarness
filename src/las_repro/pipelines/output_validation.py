@@ -573,6 +573,7 @@ def _normalized_occlusion_envelope(
             or codes not in (
                 ["OCCLUSION_OCCLUDER_NOT_PROPOSED"],
                 ["OCCLUSION_BOUNDARIES_COMPLETED"],
+                ["OCCLUSION_EVENTS_NOT_ORDERED"],
             )
             or isinstance(count, bool)
             or not isinstance(count, int)
@@ -1297,6 +1298,11 @@ def _validate_occlusion_decision_output(
         validate_occlusion_decisions(decisions, candidates, duration=duration)
     except TemporalValidationError as error:
         if allow_occluder_fallback:
+            ordered = _normalize_occlusion_event_order(
+                decisions, candidates, duration, error
+            )
+            if ordered is not None:
+                return ordered
             normalized = _normalize_unproposed_occluders(
                 decisions, candidates, duration, error
             )
@@ -1310,6 +1316,44 @@ def _validate_occlusion_decision_output(
         if completed is not None:
             return completed
     return decisions.model_dump(mode="json")
+
+
+def _normalize_occlusion_event_order(
+    decisions, candidates, duration, error
+) -> NormalizedSchemaOutput | None:
+    """Locally sort per-decision events by (start, end, type).
+
+    Ordering is presentation, not semantics: the model already committed to
+    exact offered intervals, so sorting loses nothing. Only pure ordering
+    failures qualify; any other issue kind disables this path so genuine
+    content faults still surface for repair.
+    """
+    try:
+        if not error.issues or any(
+            issue.code != "OCCLUSION_EVENTS_NOT_ORDERED" for issue in error.issues
+        ):
+            return None
+        snapshot = decisions.model_dump(mode="json")
+        reordered = 0
+        for row in snapshot.get("decisions", ()):
+            events = row.get("events") or []
+            ordered = sorted(
+                events, key=lambda e: (e["start"], e["end"], e["event_type"])
+            )
+            if ordered != events:
+                reordered += 1
+                row["events"] = ordered
+        if not reordered:
+            return None
+        reparsed = _model_from_json(OcclusionDecisionSet, snapshot)
+        validate_occlusion_decisions(reparsed, candidates, duration=duration)
+        return NormalizedSchemaOutput(
+            data=reparsed.model_dump(mode="json"),
+            issue_codes=("OCCLUSION_EVENTS_NOT_ORDERED",),
+            normalized_field_count=reordered,
+        )
+    except Exception:
+        return None
 
 
 def _complete_occlusion_boundaries(
