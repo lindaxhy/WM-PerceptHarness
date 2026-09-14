@@ -177,16 +177,20 @@ SCENE_NORMALIZATION_CODES = (
     'SCENE_EVENT_INDEX_NOT_CONTIGUOUS',
     'SCENE_EVENT_UNKNOWN_OBJECT',
     'SCENE_SEMANTICS_CHOICES_RELATION_PREDICATE_ENUM_VALUE',
+    'SCENE_SEMANTICS_CHOICES_OPTION_UNKNOWN',
 )
 
 
-def normalize_scene_choice_mechanics(result: Any) -> tuple[Any, tuple[str, ...], int]:
+def normalize_scene_choice_mechanics(
+    result: Any, offered_option_ids: frozenset[str] | None = None,
+) -> tuple[Any, tuple[str, ...], int]:
     """Fix purely mechanical scene faults locally before strict validation.
 
     Sorting and renumbering events, downgrading dangling event targets to
-    unknown, and dropping relation rows with an out-of-vocabulary predicate
-    never require another model call. Anything structurally unexpected is
-    left untouched for the strict validator to reject.
+    unknown, dropping relation rows with an out-of-vocabulary predicate, and
+    dropping selection rows that reference an option_id absent from the
+    offered list never require another model call. Anything structurally
+    unexpected is left untouched for the strict validator to reject.
     """
     if type(result) is not dict:
         return result, (), 0
@@ -243,9 +247,42 @@ def normalize_scene_choice_mechanics(result: Any) -> tuple[Any, tuple[str, ...],
             codes.append('SCENE_SEMANTICS_CHOICES_RELATION_PREDICATE_ENUM_VALUE')
             count += dropped
             fixed['relations'] = kept
+    if offered_option_ids is not None:
+        invented = 0
+        for collection in ('locations', 'relations'):
+            rows = fixed.get(collection)
+            if not isinstance(rows, list):
+                continue
+            kept_rows = [
+                row
+                for row in rows
+                if not isinstance(row, dict)
+                or not isinstance(row.get('option_id'), str)
+                or row['option_id'] in offered_option_ids
+            ]
+            invented += len(rows) - len(kept_rows)
+            fixed[collection] = kept_rows
+        if invented:
+            codes.append('SCENE_SEMANTICS_CHOICES_OPTION_UNKNOWN')
+            count += invented
     if not codes:
         return result, (), 0
     return fixed, tuple(codes), count
+
+
+def _offered_option_ids(context: Any) -> frozenset[str] | None:
+    if type(context) is not dict:
+        return None
+    offered = context.get('spatial_options')
+    if offered is None:
+        return frozenset()
+    if not isinstance(offered, dict) or not isinstance(offered.get('options'), list):
+        return None
+    return frozenset(
+        o['option_id']
+        for o in offered['options']
+        if isinstance(o, dict) and isinstance(o.get('option_id'), str)
+    )
 
 
 def validate_scene_choices(result: Any, context: Any) -> dict[str, Any]:
@@ -254,7 +291,9 @@ def validate_scene_choices(result: Any, context: Any) -> dict[str, Any]:
     allow = type(context) is dict and context.get('allow_scene_normalization') is True
     if allow:
         context = {k: v for k, v in context.items() if k != 'allow_scene_normalization'}
-        fixed, codes, count = normalize_scene_choice_mechanics(result)
+        fixed, codes, count = normalize_scene_choice_mechanics(
+            result, _offered_option_ids(context)
+        )
         if codes:
             projected = project_scene_choices(fixed, context)
             SceneSemanticsChoices.model_validate(fixed)

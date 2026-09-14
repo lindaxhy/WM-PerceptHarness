@@ -706,7 +706,7 @@ def test_scene_operator_repairs_event_enum_from_immutable_context(tmp_path, repa
     assert initial.span == repair.span
     assert initial.prompt.replace('null\n\nClosed choice repair',
         json.dumps({'issue_codes': [code]}, separators=(',', ':')) + '\n\nClosed choice repair') == repair.prompt
-    assert '0907-scene-choice-refs-v8' in repair.prompt
+    assert '0907-scene-choice-refs-v9' in repair.prompt
     meanings = dict(line[2:].split(': ', 1) for line in repair.prompt.splitlines()
                     if line.startswith('- SCENE_SEMANTICS_CHOICES_') and ': ' in line)
     assert 'use unknown if no allowed type fits' in meanings[code]

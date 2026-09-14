@@ -339,3 +339,49 @@ def test_scene_normalization_never_hides_a_non_mechanical_fault():
     flagged['allow_scene_normalization'] = True
     sanitized = DEFAULT_OUTPUT_SCHEMAS.sanitize('SceneSemanticsChoices', draft, flagged)
     assert sanitized['_schema_validation']['status'] == 'invalid'
+
+
+def test_invented_option_ids_are_dropped_locally_without_a_model_call():
+    """A selection referencing an unoffered option is removed, not retried."""
+    from las_repro.pipelines.output_validation import (
+        DEFAULT_OUTPUT_SCHEMAS, NormalizedSchemaOutput,
+    )
+
+    draft, ctx = fixture()
+    assert draft['locations'] or draft['relations']
+    victim = 'locations' if draft['locations'] else 'relations'
+    forged = json.loads(json.dumps(draft[victim][0]))
+    forged['option_id'] = 'opt_invented_9999'
+    draft[victim] = draft[victim] + [forged]
+
+    flagged = dict(ctx)
+    flagged['allow_scene_normalization'] = True
+    sanitized = DEFAULT_OUTPUT_SCHEMAS.sanitize('SceneSemanticsChoices', draft, flagged)
+    envelope = sanitized['_schema_validation']
+    assert envelope['status'] == 'normalized'
+    assert 'SCENE_SEMANTICS_CHOICES_OPTION_UNKNOWN' in envelope['issue_codes']
+    assert all(
+        row['option_id'] != 'opt_invented_9999'
+        for row in sanitized['data'][victim]
+    )
+    normalized = DEFAULT_OUTPUT_SCHEMAS.normalized_result(
+        'SceneSemanticsChoices', sanitized, flagged
+    )
+    assert isinstance(normalized, NormalizedSchemaOutput)
+
+
+def test_option_kind_mismatch_still_fails_closed():
+    """Only wholly unknown option ids are mechanical; kind confusion is not."""
+    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+
+    draft, ctx = fixture()
+    offered = ctx['spatial_options']['options']
+    location_options = [o for o in offered if o['kind'] == 'location']
+    relation_options = [o for o in offered if o['kind'] == 'relation']
+    if not (draft['relations'] and location_options):
+        return
+    draft['relations'][0]['option_id'] = location_options[0]['option_id']
+    flagged = dict(ctx)
+    flagged['allow_scene_normalization'] = True
+    sanitized = DEFAULT_OUTPUT_SCHEMAS.sanitize('SceneSemanticsChoices', draft, flagged)
+    assert sanitized['_schema_validation']['status'] == 'invalid'

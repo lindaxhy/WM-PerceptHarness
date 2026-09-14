@@ -52,7 +52,7 @@ from .validators import (
 )
 
 
-EMBODIED_PROMPT_VERSION = "0805-local-v9"
+EMBODIED_PROMPT_VERSION = "0805-local-v10"
 
 Probe = Callable[[Path], VideoMetadata]
 WaitJobs = Callable[

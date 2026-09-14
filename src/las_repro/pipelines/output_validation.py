@@ -534,7 +534,10 @@ def _normalized_scene_envelope(
             for k, v in validation_context.items()
             if k != "allow_scene_normalization"
         }
-        fixed, refix_codes, _ = normalize_scene_choice_mechanics(data)
+        from .scene_choices import _offered_option_ids
+        fixed, refix_codes, _ = normalize_scene_choice_mechanics(
+            data, _offered_option_ids(dict(strict_context))
+        )
         if refix_codes:
             return None
         project_scene_choices(data, strict_context)
