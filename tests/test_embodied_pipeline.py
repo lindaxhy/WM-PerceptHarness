@@ -120,7 +120,7 @@ def test_scene_prompt_declares_cv_availability_and_flat_spatial_fields(
     )
 
     for prompt in (initial, repair):
-        assert prompt.startswith("[prompt_version]\n0907-scene-choice-refs-v9\n")
+        assert prompt.startswith("[prompt_version]\n0907-scene-choice-refs-v8\n")
         assert '[CV_EVIDENCE_AVAILABILITY_JSON]\n{"available":false}' in prompt
         assert (
             "[SCENE_SPATIAL_FIELDS_JSON]\n"
@@ -274,7 +274,7 @@ def test_enrichment_prompt_lists_the_official_vocabulary_exactly_once_each(
     assert len(words) == len(set(words)) == 19
     assert "contact" in words and "autonomous_motion" in words
     assert "touch" not in words and "static" not in words and "roll" not in words
-    assert EMBODIED_PROMPT_VERSION == "0805-local-v10"
+    assert EMBODIED_PROMPT_VERSION == "0805-local-v9"
 
 
 @pytest.mark.parametrize(
@@ -731,7 +731,7 @@ def test_prompt_assets_state_exact_schemas_enums_and_visual_only_rules(
     assert EMBODIED_PROMPT_VERSION in prompts["enrichment"]
     assert "0805-local-v1" in prompts["active"]
     assert EMBODIED_PROMPT_VERSION in prompts["pass_a"]
-    assert "0805-local-v10" in prompts["pass_b"]
+    assert "0805-local-v9" in prompts["pass_b"]
     assert all("visual evidence only" in prompt.casefold() for prompt in prompts.values())
     assert all("do not use audio" in prompt.casefold() for prompt in prompts.values())
     assert all("{{" not in prompt for prompt in prompts.values())

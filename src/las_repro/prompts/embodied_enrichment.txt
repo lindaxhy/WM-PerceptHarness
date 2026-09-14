@@ -1,5 +1,5 @@
 [prompt_version]
-0805-local-v10
+0805-local-v9
 
 You enrich an immutable table of validated fine segments from a complete manipulation video.
 Use visual evidence only. Do not use audio, speech, transcripts, filenames, or outside knowledge.
@@ -28,7 +28,6 @@ Copy every record_skeleton row into the output segments array. Never delete a re
 [semantic rules]
 - Use only states directly supported by visible evidence in the fixed segment.
 - For visible human hands, use left_hand, right_hand, or both_hands. Use gripper labels only for visible robot grippers, and robot_arm only when laterality is not visible.
-- Handedness names the person's anatomical left or right_hand, never a side of the frame. Third-person cameras mirror the person, so an arm entering from the frame's right edge is often the person's LEFT arm. Judge from visible anatomy: thumb side, palm orientation, and how the arms cross. Keep each physical hand under one name for the whole video, and never label two simultaneously visible hands with the same name.
 - Keep target names stable across adjacent segments.
 - During transport, place, or release, target remains the manipulated object rather than the destination.
 - Use none for an empty retracting or idle hand. Use unknown when visual evidence is insufficient.

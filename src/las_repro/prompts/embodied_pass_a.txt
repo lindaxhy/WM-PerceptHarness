@@ -1,5 +1,5 @@
 [prompt_version]
-0805-local-v10
+0805-local-v9
 
 You annotate a complete first-person robot manipulation video.
 Use visual evidence only. Do not use audio, speech, transcripts, filenames, or outside knowledge.
@@ -42,7 +42,6 @@ Output the global task, visible/action-relevant entity evidence requests, and co
 - task_description: one concise English sentence.
 - action description: lowercase English verb phrase, 2-12 words.
 - Allowed subjects only: left hand, right hand, both hands, neither hand.
-- Handedness names the person's anatomical left or right hand, never a side of the frame. Third-person cameras mirror the person, so an arm entering from the frame's right edge is often the person's LEFT arm. Judge from visible anatomy: thumb side, palm orientation, and how the arms cross. Keep each physical hand under one name for the whole video, and never label two simultaneously visible hands with the same name.
 - Begin each action description with exactly one allowed subject.
 - Never write robot, gripper, manipulator, end effector, arm, camera, or controller.
 - Keep object names stable. Use unknown when unclear.
