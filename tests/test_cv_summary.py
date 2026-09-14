@@ -2344,14 +2344,14 @@ def test_candidate_generation_has_hard_cap_and_bundle_reports_source_truncation(
                         0.25,
                     ),
                 )
-                for frame in range(0, 200, 2)
+                for frame in range(0, 800, 8)
             ),
         )
         for track_ordinal in range(3)
     )
     summary = summarize_cv_evidence(
-        _artifact(tracks),
-        timeline=_timeline(*range(200)),
+        _artifact(tracks, processed_timeline=_timeline(*range(0, 800, 4))),
+        timeline=_timeline(*range(0, 800, 4)),
         max_observations_per_track=256,
         max_relations=1,
     )
@@ -3052,14 +3052,14 @@ def test_aggregate_budget_streams_before_materializing_oversized_projection(
                         0.25,
                     ),
                 )
-                for frame in range(0, 200, 2)
+                for frame in range(0, 800, 8)
             ),
         )
         for track_ordinal in range(3)
     )
     summary = summarize_cv_evidence(
-        _artifact(tracks),
-        timeline=_timeline(*range(200)),
+        _artifact(tracks, processed_timeline=_timeline(*range(0, 800, 4))),
+        timeline=_timeline(*range(0, 800, 4)),
         max_observations_per_track=256,
         max_relations=1,
     )
@@ -3097,8 +3097,8 @@ def test_aggregate_budget_streams_before_materializing_oversized_projection(
     )
 
     assert len(bundle.candidates) == 2  # Exact v2 record width fits two whole candidates.
-    assert len(encoded) == 199_919
-    assert materialized_sizes == [199_919]
+    assert len(encoded) == 199_989
+    assert materialized_sizes == [199_989]
     assert "CANDIDATE_PROMPT_TRUNCATED" in bundle.truncation_codes
 
 
@@ -3615,3 +3615,58 @@ def test_co_visible_same_class_instances_are_never_fused() -> None:
     assert candidate.first_revisible_frame is None
     kinds = {option.event_type for option in candidate.allowed_event_intervals}
     assert "occlusion_exit" not in kinds
+
+
+def test_detector_blink_between_two_gaps_yields_one_continuous_candidate() -> None:
+    """A sub-threshold revisible run is noise, not a reappearance."""
+    target = _track(
+        "cup_1",
+        "cup",
+        (
+            *(_observation(frame) for frame in range(0, 10)),
+            _observation(13),
+            *(_observation(frame) for frame in range(21, 24)),
+        ),
+    )
+    summary = summarize_cv_evidence(
+        _artifact((target,)), timeline=_timeline(*range(24))
+    )
+
+    candidates = [
+        item
+        for item in build_occlusion_candidates(summary, _thresholds())
+        if item.target_entity_id == "cup"
+    ]
+    assert len(candidates) == 1
+    [candidate] = candidates
+    assert candidate.last_visible_frame == 9
+    assert candidate.first_revisible_frame == 21
+    kinds = {
+        option.event_type: (option.start, option.end)
+        for option in candidate.allowed_event_intervals
+    }
+    assert kinds["occluded"] == (1.0, 2.0)
+    assert kinds["occlusion_exit"] == (2.0, 2.1)
+
+
+def test_a_real_reappearance_longer_than_the_blink_cap_keeps_two_gaps() -> None:
+    """Half a second of visibility is a reappearance, not detector noise."""
+    target = _track(
+        "cup_1",
+        "cup",
+        (
+            *(_observation(frame) for frame in range(0, 10)),
+            *(_observation(frame) for frame in range(13, 18)),
+            *(_observation(frame) for frame in range(21, 24)),
+        ),
+    )
+    summary = summarize_cv_evidence(
+        _artifact((target,)), timeline=_timeline(*range(24))
+    )
+
+    candidates = [
+        item
+        for item in build_occlusion_candidates(summary, _thresholds())
+        if item.target_entity_id == "cup"
+    ]
+    assert [c.last_visible_frame for c in candidates] == [9, 17]

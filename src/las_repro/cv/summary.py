@@ -1642,6 +1642,52 @@ def _fuse_gap_with_entity_visibility(
     )
 
 
+# A revisible run shorter than this is detector blink noise, not a real
+# reappearance: the two gaps around it describe one continuous invisibility.
+_MAX_BLINK_SECONDS = 0.3
+
+
+def _merge_blink_gaps(
+    gaps: tuple[VisibilityGap, ...],
+) -> tuple[VisibilityGap, ...]:
+    ordered = sorted(
+        gaps, key=lambda item: (item.first_missing_frame, item.last_missing_frame)
+    )
+    merged: list[VisibilityGap] = []
+    for gap in ordered:
+        previous = merged[-1] if merged else None
+        if (
+            previous is not None
+            and previous.first_revisible_time is not None
+            and 0.0
+            <= gap.first_missing_time - previous.first_revisible_time
+            < _MAX_BLINK_SECONDS - 1e-9
+        ):
+            confidences = tuple(
+                value
+                for value in (
+                    previous.minimum_confidence,
+                    gap.minimum_confidence,
+                )
+                if value is not None
+            )
+            merged[-1] = VisibilityGap(
+                last_visible_frame=previous.last_visible_frame,
+                last_visible_time=previous.last_visible_time,
+                first_missing_frame=previous.first_missing_frame,
+                first_missing_time=previous.first_missing_time,
+                last_missing_frame=gap.last_missing_frame,
+                last_missing_time=gap.last_missing_time,
+                first_revisible_frame=gap.first_revisible_frame,
+                first_revisible_time=gap.first_revisible_time,
+                minimum_confidence=min(confidences) if confidences else None,
+                edge_departure=previous.edge_departure,
+            )
+            continue
+        merged.append(gap)
+    return tuple(merged)
+
+
 def _candidate_drafts(
     tracks: tuple[SummaryTrack, ...],
     thresholds: EvidenceThresholds,
@@ -1652,10 +1698,7 @@ def _candidate_drafts(
         item.frame_index: item.timestamp_seconds for item in observed_clock
     }
     for track in tracks:
-        for raw_gap in sorted(
-            track.missing_intervals,
-            key=lambda item: (item.first_missing_frame, item.last_missing_frame),
-        ):
+        for raw_gap in _merge_blink_gaps(track.missing_intervals):
             gap = _fuse_gap_with_entity_visibility(
                 track, raw_gap, tracks, clock_frames, clock_times
             )

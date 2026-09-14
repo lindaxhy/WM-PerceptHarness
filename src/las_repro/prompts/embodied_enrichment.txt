@@ -1,5 +1,5 @@
 [prompt_version]
-0805-local-v8
+0805-local-v9
 
 You enrich an immutable table of validated fine segments from a complete manipulation video.
 Use visual evidence only. Do not use audio, speech, transcripts, filenames, or outside knowledge.
@@ -31,9 +31,11 @@ Copy every record_skeleton row into the output segments array. Never delete a re
 - Keep target names stable across adjacent segments.
 - During transport, place, or release, target remains the manipulated object rather than the destination.
 - Use none for an empty retracting or idle hand. Use unknown when visual evidence is insufficient.
-- Skill meanings: move is repositioning along a supporting surface, including sliding or pushing a held object across a table; transport is lifting an object off its support and carrying it through the air; approach is closing distance before contact; contact is touching without securing a grip; stop is visible motion coming to rest; state_change is a visible object state transition such as opening, closing, or deformation.
+- Skill meanings: move is repositioning along a supporting surface, including sliding or pushing a held object across a table; transport is lifting an object off its support and carrying it through the air; approach is closing distance before contact; contact is touching without securing a grip; stop is visible motion coming to rest, and also a hand holding an object steady without repositioning it.
+- state_change is a transformation of the object's own state or configuration: opening, closing, deformation, tipping over, a stack or assembly collapsing, breaking. Gravity-driven and motion-filled transformations still count: a block tower toppling is state_change, not autonomous_motion, because the salient outcome is that the assembly is now in a different state.
+- Use autonomous_motion when an object translates through space on its own with no visible hand or gripper contact and remains intact as one unchanged piece, such as a ball rolling, an object sliding, or falling; pair it with actor unknown.
+- When both could apply, decide by the salient visible outcome: the object ends up somewhere else but unchanged is autonomous_motion; the object or assembly ends up in a different state or configuration is state_change.
 - IMPORTANT: Choose skill based on the target object's physical relationship to its support surface, NOT by inferring from actor_state. A hand in actor_state=transporting may perform skill=move if the target object slides along the table without losing contact with the surface. Conversely, skill=transport requires the target to lift off and be carried through the air, regardless of actor_state. Example: "hand pushes board left across table" is skill=move even when actor_state=transporting; "hand lifts apple upward off table" is skill=transport.
-- Use autonomous_motion when an object moves on its own with no visible hand or gripper contact, such as rolling, sliding, or falling; pair it with actor unknown.
 - The occlusion_enter, occluded, and occlusion_exit values belong to the scene branch; do not use them for a manipulation segment.
 - Do not infer intent, hidden controller state, contact, material, function, or motion that is not visible.
 
