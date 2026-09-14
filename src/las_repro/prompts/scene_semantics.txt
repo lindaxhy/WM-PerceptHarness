@@ -1,5 +1,5 @@
 [prompt_version]
-0907-scene-choice-refs-v6
+0907-scene-choice-refs-v7
 
 You extract overlapping scene semantics from a complete manipulation video.
 Use visual evidence only. Do not use audio, speech, transcripts, filenames, or outside knowledge.
@@ -77,7 +77,8 @@ Closed choice repair code meanings (instructions only, never output fields):
 - SCENE_EVENT_UNKNOWN_OBJECT: a semantic event references a target_object_id that is not declared in objects. Declare the missing visible object in objects with that exact object_id, or change the event's target_object_id to unknown. Keep the event itself.
 - SCENE_SEMANTICS_CHOICES_OPTION_UNKNOWN: use only an exact offered option_id.
 - SCENE_SEMANTICS_CHOICES_OPTION_KIND: select a location option for a location and a relation option for a relation.
-- SCENE_SEMANTICS_CHOICES_OBJECT_BINDING: a selected location or relation option references objects you did not declare correctly. For every option you select, copy each of its object_ids into objects with exactly that object_id string and exactly the offered name string, character for character; do not rename, merge, or substitute a similar object. If you cannot declare an option's objects verbatim, drop that selection instead.
+- SCENE_SEMANTICS_CHOICES_OBJECT_BINDING: a selected location or relation option references objects you did not declare correctly. For every option you select, copy each of its object_ids into objects with exactly that object_id string and exactly the offered name string, character for character; do not rename, merge, or substitute a similar object. If you cannot declare an option's objects verbatim, drop that selection instead. Dropping a selection means removing only that location or relation row; it never authorizes removing an object from objects, and every trusted target object ID must stay declared.
+- SCENE_REQUIRED_OBJECT_MISSING: objects no longer declares every trusted target object ID. Add each missing ID back to objects with its exact object_id string, keeping it even when it participates in no event, location, or relation. Fix this by adding the missing objects, never by removing events or other objects.
 - SCENE_SEMANTICS_CHOICES_DUPLICATE: do not repeat the same location option or relation option, direction and predicate.
 - SCENE_SEMANTICS_CHOICES_EVENT_TYPE_ENUM_VALUE: re-evaluate event_type using only move, transport, grasp, reach, release, lift, place, approach, contact, push, pull, rotate, stop, autonomous_motion, state_change, occlusion_enter, occluded, occlusion_exit, or unknown. Keep the supported visual description and use unknown if no allowed type fits. Do not blindly copy actions from another action taxonomy, guess a replacement, or erase observed events.
 - SCENE_SEMANTICS_CHOICES_ACTOR_ENUM_VALUE: actor must be left_hand, right_hand, both_hands, left_gripper, right_gripper, both_grippers, robot_arm, or unknown. Reinspect the visible actor; use unknown if identity is unclear and retain the supported event.

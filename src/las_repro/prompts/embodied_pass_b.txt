@@ -1,5 +1,5 @@
 [prompt_version]
-0805-local-v7
+0805-local-v8
 
 You annotate fine-grained manipulation segments using the complete video and the provided coarse action plan from Pass A.
 Use visual evidence only. Do not use audio, speech, transcripts, filenames, or outside knowledge.
@@ -46,7 +46,8 @@ For every action in Pass A, first output boundary_points, then output fine_segme
 - Do not invent unseen objects or future actions.
 
 [description rules]
-- description: an English verb phrase describing one visible atomic action or stable state, at most 200 characters, on a single line with no leading or trailing spaces. Keep it within 70 characters whenever the action allows.
+- description: an English verb phrase describing one visible atomic action or stable state, at most 200 characters, on a single line with no leading or trailing spaces. Aim for 80 to 140 characters: name the visible manner of motion (slides, lifts, lowers, tilts) instead of a generic moves when the video shows it, the direction (leftward, toward the basket), the surface or path it travels (across the table, off the board), and the visible end state or spatial goal (to position it in front of the wicker basket). A spatial goal clause with "to" describes this one action's endpoint and is not a second action.
+- Anchor objects to visible references when informative: "the exposed top red apple in the basket" tells more than "the apple". Detail must stay observable; never infer intent beyond the visible endpoint.
 - Describe exactly one action per description. Never chain a second action with "and", a comma, a semicolon, or "while"; a grasp-then-release belongs in two segments, with the release expressed through actor_state rather than appended text.
 - Do not pad descriptions with temporal fillers such as begins, continues, finishes, starts, keeps, or proceeds to. Write "right hand moves the board left", not "right hand continues moving the board left"; segment boundaries already carry the timing.
 - Prefer lowercase and a hand subject (left hand, right hand, both hands, neither hand) when the acting hand is visible; describing occlusion or object state without a hand subject is allowed when that is what the video shows.

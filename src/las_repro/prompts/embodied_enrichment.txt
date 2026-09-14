@@ -1,5 +1,5 @@
 [prompt_version]
-0805-local-v7
+0805-local-v8
 
 You enrich an immutable table of validated fine segments from a complete manipulation video.
 Use visual evidence only. Do not use audio, speech, transcripts, filenames, or outside knowledge.
