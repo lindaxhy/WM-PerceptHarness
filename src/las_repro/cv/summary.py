@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 import hashlib
+from bisect import bisect_left
 import heapq
 from io import StringIO
 import json
@@ -1427,7 +1428,7 @@ def _canonical_candidates(
     )
     bounded_drafts = heapq.nsmallest(
         _MAX_BUNDLE_CANDIDATES + 1,
-        _candidate_drafts(tracks, thresholds),
+        _candidate_drafts(tracks, thresholds, summary.observed_clock),
         key=_draft_sort_key,
     )
     set_truncated = len(bounded_drafts) > _MAX_BUNDLE_CANDIDATES
@@ -1558,15 +1559,108 @@ def _gap_options(gap):
                         key=_option_key))
 
 
+def _tracks_ever_co_visible(a: SummaryTrack, b: SummaryTrack) -> bool:
+    for run_a in a.visibility_runs:
+        if run_a.state != "visible":
+            continue
+        for run_b in b.visibility_runs:
+            if run_b.state != "visible":
+                continue
+            if (
+                run_a.start_frame <= run_b.end_frame
+                and run_b.start_frame <= run_a.end_frame
+            ):
+                return True
+    return False
+
+
+def _sibling_revisibility_frame(
+    track: SummaryTrack,
+    gap: VisibilityGap,
+    tracks: tuple[SummaryTrack, ...],
+) -> int | None:
+    """Earliest in-gap clock frame where a handoff track shows the same entity.
+
+    Same-entity tracks that were ever visible simultaneously are distinct
+    physical instances of one class and never fuse; only temporally disjoint
+    siblings can be the same object under a new tracker identity.
+    """
+    earliest: int | None = None
+    for sibling in tracks:
+        if (
+            sibling.track_id == track.track_id
+            or sibling.entity_id != track.entity_id
+            or _tracks_ever_co_visible(track, sibling)
+        ):
+            continue
+        for run in sibling.visibility_runs:
+            if run.state != "visible":
+                continue
+            if (
+                run.end_frame < gap.first_missing_frame
+                or run.start_frame > gap.last_missing_frame
+            ):
+                continue
+            frame = max(run.start_frame, gap.first_missing_frame)
+            if earliest is None or frame < earliest:
+                earliest = frame
+    return earliest
+
+
+def _fuse_gap_with_entity_visibility(
+    track: SummaryTrack,
+    gap: VisibilityGap,
+    tracks: tuple[SummaryTrack, ...],
+    clock_frames: tuple[int, ...],
+    clock_times: Mapping[int, float],
+) -> VisibilityGap | None:
+    # A tracker identity handoff is not an invisibility event: when a
+    # temporally disjoint track shows the same entity during this track's
+    # gap, the entity's real gap ends where that sibling becomes visible.
+    # The gap is only ever trimmed, never suppressed: an immediate handoff
+    # keeps its full candidate so identity cues reach the adjudicator.
+    frame = _sibling_revisibility_frame(track, gap, tracks)
+    if frame is None or frame <= gap.first_missing_frame:
+        return gap
+    index = bisect_left(clock_frames, frame)
+    if index == 0 or clock_frames[index] != frame:
+        return None
+    previous_frame = clock_frames[index - 1]
+    if previous_frame < gap.first_missing_frame:
+        return None
+    return VisibilityGap(
+        last_visible_frame=gap.last_visible_frame,
+        last_visible_time=gap.last_visible_time,
+        first_missing_frame=gap.first_missing_frame,
+        first_missing_time=gap.first_missing_time,
+        last_missing_frame=previous_frame,
+        last_missing_time=clock_times[previous_frame],
+        first_revisible_frame=frame,
+        first_revisible_time=clock_times[frame],
+        minimum_confidence=gap.minimum_confidence,
+        edge_departure=gap.edge_departure,
+    )
+
+
 def _candidate_drafts(
     tracks: tuple[SummaryTrack, ...],
     thresholds: EvidenceThresholds,
+    observed_clock: tuple[FrameTimestamp, ...],
 ) -> Iterator[_CandidateDraft]:
+    clock_frames = tuple(item.frame_index for item in observed_clock)
+    clock_times = {
+        item.frame_index: item.timestamp_seconds for item in observed_clock
+    }
     for track in tracks:
-        for gap in sorted(
+        for raw_gap in sorted(
             track.missing_intervals,
             key=lambda item: (item.first_missing_frame, item.last_missing_frame),
         ):
+            gap = _fuse_gap_with_entity_visibility(
+                track, raw_gap, tracks, clock_frames, clock_times
+            )
+            if gap is None:
+                continue
             yield _CandidateDraft(
                 target_track_id=track.track_id,
                 target_entity_id=track.entity_id,

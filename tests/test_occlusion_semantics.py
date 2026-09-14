@@ -377,7 +377,7 @@ def test_occlusion_prompt_isolates_trusted_data_and_repair_codes():
         repair={"issue_codes": ["OCCLUSION_INTERVAL_NOT_ALLOWED"]},
     )
 
-    assert prompt.startswith("[prompt_version]\n0906-occlusion-contract-v8\n")
+    assert prompt.startswith("[prompt_version]\n0906-occlusion-contract-v9\n")
     assert "[trusted occlusion candidate JSON data]" in prompt
     assert candidate.candidate_id in prompt
     assert "OCCLUSION_INTERVAL_NOT_ALLOWED" in prompt

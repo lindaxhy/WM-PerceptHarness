@@ -3486,3 +3486,132 @@ def test_summary_budget_reserves_count_truncation_for_small_candidate_limit() ->
     )
 
     assert len(encoded) <= 2_736
+
+
+def test_track_handoff_gap_is_trimmed_to_entity_level_invisibility() -> None:
+    """A tracker identity handoff must not fabricate a gap to end of video."""
+    hand_early = _track(
+        "hand_0", "hand", (_observation(0), _observation(1))
+    )
+    hand_late = _track(
+        "hand_1",
+        "hand",
+        tuple(_observation(frame) for frame in range(4, 7)),
+    )
+    clock = _track(
+        "clock_1",
+        "clock",
+        tuple(
+            _observation(frame, bbox_xyxy=(0.7, 0.7, 0.9, 0.9))
+            for frame in range(7)
+        ),
+    )
+    summary = summarize_cv_evidence(
+        _artifact((hand_early, hand_late, clock)),
+        timeline=_timeline(*range(7)),
+    )
+
+    by_track = {
+        candidate.target_track_id: candidate
+        for candidate in build_occlusion_candidates(summary, _thresholds())
+        if candidate.target_entity_id == "hand"
+    }
+    trimmed = by_track["hand_0"]
+    assert trimmed.last_visible_frame == 1
+    assert trimmed.first_revisible_frame == 4
+    kinds = {
+        option.event_type: (option.start, option.end)
+        for option in trimmed.allowed_event_intervals
+    }
+    assert kinds["occluded"] == (0.2, 0.3)
+    assert kinds["occlusion_exit"] == (0.3, 0.4)
+
+
+def test_immediate_handoff_keeps_its_candidate_for_model_adjudication() -> None:
+    """A sibling visible from the first missing frame never trims mechanically."""
+    hand_early = _track(
+        "hand_0", "hand", (_observation(0), _observation(1))
+    )
+    hand_late = _track(
+        "hand_1",
+        "hand",
+        tuple(_observation(frame) for frame in range(2, 5)),
+    )
+    clock = _track(
+        "clock_1",
+        "clock",
+        tuple(
+            _observation(frame, bbox_xyxy=(0.7, 0.7, 0.9, 0.9))
+            for frame in range(5)
+        ),
+    )
+    summary = summarize_cv_evidence(
+        _artifact((hand_early, hand_late, clock)),
+        timeline=_timeline(*range(5)),
+    )
+
+    by_track = {
+        candidate.target_track_id: candidate
+        for candidate in build_occlusion_candidates(summary, _thresholds())
+        if candidate.target_entity_id == "hand"
+    }
+    assert by_track["hand_0"].first_revisible_frame is None
+
+
+def test_gaps_of_distinct_entities_are_never_fused() -> None:
+    """Visibility of a different entity must not trim another entity's gap."""
+    target = _track(
+        "target_1", "target", (_observation(0), _observation(1))
+    )
+    other = _track(
+        "other_1",
+        "other",
+        tuple(_observation(frame) for frame in range(3, 6)),
+    )
+    clock = _track(
+        "clock_1",
+        "clock",
+        tuple(
+            _observation(frame, bbox_xyxy=(0.7, 0.7, 0.9, 0.9))
+            for frame in range(6)
+        ),
+    )
+    summary = summarize_cv_evidence(
+        _artifact((target, other, clock)), timeline=_timeline(*range(6))
+    )
+
+    [candidate] = [
+        item
+        for item in build_occlusion_candidates(summary, _thresholds())
+        if item.target_entity_id == "target"
+    ]
+    assert candidate.first_revisible_frame is None
+    kinds = {option.event_type for option in candidate.allowed_event_intervals}
+    assert "occlusion_exit" not in kinds
+
+
+def test_co_visible_same_class_instances_are_never_fused() -> None:
+    """Two simultaneously visible instances of one class are distinct objects."""
+    apple_a = _track(
+        "apple_1", "apple", (_observation(0), _observation(1))
+    )
+    apple_b = _track(
+        "apple_2",
+        "apple",
+        tuple(
+            _observation(frame, bbox_xyxy=(0.5, 0.5, 0.7, 0.7))
+            for frame in range(6)
+        ),
+    )
+    summary = summarize_cv_evidence(
+        _artifact((apple_a, apple_b)), timeline=_timeline(*range(6))
+    )
+
+    [candidate] = [
+        item
+        for item in build_occlusion_candidates(summary, _thresholds())
+        if item.target_track_id == "apple_1"
+    ]
+    assert candidate.first_revisible_frame is None
+    kinds = {option.event_type for option in candidate.allowed_event_intervals}
+    assert "occlusion_exit" not in kinds

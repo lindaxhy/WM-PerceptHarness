@@ -368,9 +368,13 @@ def test_optional_identity_sections_yield_before_basic_candidates():
 def test_sparse_continuation_uses_observed_pts_and_distinct_regions_remain_hypotheses():
     other=_track('item_2','item',(_observation(20,bbox_xyxy=(.7,.7,.9,.9)),))
     bundle=gap_bundle(visible=(0,40),frames=(0,10,20,30,40),extras=(other,))
-    cues=bundle.candidates[0].identity_evidence.continuation_cues
+    candidate=bundle.candidates[0]
+    # The mid-gap disjoint sibling trims the entity-level gap mechanically;
+    # the surviving near-side cue still reaches the adjudicator.
+    assert candidate.first_revisible_frame==20
+    cues=candidate.identity_evidence.continuation_cues
     assert [(c.target_frame_index,c.other_frame_index,c.target_timestamp_seconds,c.other_timestamp_seconds)
-            for c in cues]==[(0,20,0.,2.),(40,20,4.,2.)]
+            for c in cues]==[(0,20,0.,2.)]
     assert all(c.bbox_iou==0. for c in cues)
 
 
