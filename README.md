@@ -41,6 +41,11 @@ Pick one backend:
 | `qwen` | `LAS_MODEL_REGISTRY` pointing at a local Qwen3-VL snapshot, plus `LAS_GPU_DEVICES`. |
 | `fake` | Nothing. Deterministic CPU stub for development and CI. |
 
+Optionally add SAM3.1 visual evidence (`--cv sam31`) for occlusion events and
+CV-grounded scene facts: set the `LAS_CV_*` paths to a local sam3 checkout and
+checkpoint. SAM3.1 frame extraction requires FFmpeg 5.1+ (`-fps_mode`); the
+plain eval path works with any FFmpeg.
+
 That is the whole setup. Keys live only in the backend environment; nothing
 else has to be provisioned.
 
