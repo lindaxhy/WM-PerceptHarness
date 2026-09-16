@@ -6,6 +6,7 @@ import argparse
 import os
 import sys
 from collections.abc import Sequence
+from contextlib import contextmanager
 from pathlib import Path
 
 from .config import Settings
@@ -80,6 +81,17 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         help="CUDA device ordinal for the qwen backend (default: first of LAS_GPU_DEVICES)",
     )
+    evaluate.add_argument(
+        "--cv",
+        default=None,
+        choices=("disabled", "fake", "sam31"),
+        help="CV evidence provider (default: LAS_CV_PROVIDER from the environment)",
+    )
+    evaluate.add_argument(
+        "--cv-device",
+        default=None,
+        help="CUDA device ordinal for the sam31 provider (default: LAS_CV_DEVICE)",
+    )
     return parser
 
 
@@ -105,22 +117,36 @@ def _eval(arguments: argparse.Namespace) -> int:
         print(f"error: {error}", file=sys.stderr)
         return 2
 
-    print(f"backend={arguments.backend} model={alias} videos={len(videos)}")
+    cv_provider = arguments.cv if arguments.cv is not None else settings.cv_provider
+    if cv_provider != settings.cv_provider:
+        # Settings validates sam31 paths only when LAS_CV_PROVIDER=sam31, so
+        # re-validate with the CLI override applied.
+        try:
+            settings = settings.model_copy(update={"cv_provider": cv_provider})
+            settings = type(settings).model_validate(settings.model_dump())
+        except Exception as error:
+            closer()
+            print(f"error: invalid CV configuration: {error}", file=sys.stderr)
+            return 2
+
+    print(f"backend={arguments.backend} model={alias} cv={cv_provider} videos={len(videos)}")
     try:
-        runner = SyncRunner(
-            model,
-            settings,
-            model_alias=alias,
-            registry=default_pipeline_registry(),
-        )
-        outcomes = run_batch(
-            runner,
-            videos,
-            arguments.template,
-            arguments.output,
-            prompt_context=arguments.prompt_context,
-            query=arguments.query,
-        )
+        with _cv_executor(cv_provider, arguments, settings) as cv_executor:
+            runner = SyncRunner(
+                model,
+                settings,
+                model_alias=alias,
+                registry=default_pipeline_registry(),
+                cv_executor=cv_executor,
+            )
+            outcomes = run_batch(
+                runner,
+                videos,
+                arguments.template,
+                arguments.output,
+                prompt_context=arguments.prompt_context,
+                query=arguments.query,
+            )
     finally:
         closer()
 
@@ -199,6 +225,74 @@ def _single_alias(registry: dict, name: str) -> str:
             f"{name} has {len(registry)} entries; pass --model to choose one"
         )
     return next(iter(registry))
+
+
+@contextmanager
+def _cv_executor(provider_name: str, arguments: argparse.Namespace, settings: Settings):
+    """Yield a SyncCvExecutor for the chosen provider, or None when disabled."""
+    if provider_name == "disabled":
+        yield None
+        return
+
+    from .cv.artifacts import CvArtifactStore
+    from .cv.executor import SyncCvExecutor
+
+    artifact_store = CvArtifactStore(
+        settings.cv_cache_root,
+        max_files=settings.cv_cache_max_files,
+        max_bytes=settings.cv_cache_max_bytes,
+    )
+    provider = None
+    try:
+        if provider_name == "fake":
+            from .cv.base import FakeCvEvidenceProvider
+
+            provider = FakeCvEvidenceProvider(
+                execution_chunk_frames=settings.cv_execution_chunk_frames
+            )
+        else:  # sam31 — argparse enforces the closed set.
+            cv_device = (
+                int(arguments.cv_device)
+                if arguments.cv_device is not None
+                else settings.cv_device
+            )
+            os.environ.setdefault("CUDA_VISIBLE_DEVICES", str(cv_device))
+            from .cv.sam31 import Sam31EvidenceProvider
+
+            provider = Sam31EvidenceProvider.load(
+                settings.cv_repository_path,
+                settings.cv_checkpoint_path,
+                settings.cv_checkpoint_sha256,
+                bpe_path=settings.cv_bpe_path,
+                compile_model=settings.cv_compile_model,
+                max_artifact_bytes=settings.cv_cache_max_bytes,
+                max_artifact_files=settings.cv_cache_max_files,
+            )
+            _configure_execution_chunk_frames(
+                provider, settings.cv_execution_chunk_frames
+            )
+        yield SyncCvExecutor(provider, artifact_store)
+    finally:
+        try:
+            if provider is not None:
+                close = getattr(provider, "close", None)
+                if callable(close):
+                    close()
+        finally:
+            artifact_store.close()
+
+
+def _configure_execution_chunk_frames(provider, value: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError("requested CV execution chunk must be a positive integer")
+    setter = getattr(provider, "set_execution_chunk_frames", None)
+    if callable(setter):
+        setter(value)
+    else:
+        provider.execution_chunk_frames = value
+    configured = getattr(provider, "execution_chunk_frames", None)
+    if configured != value:
+        raise ValueError("CV provider execution chunk must equal the exact requested value")
 
 
 if __name__ == "__main__":
