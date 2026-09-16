@@ -216,7 +216,7 @@ def extract_frames(
 
     start = Decimal(str(span.start))
     end = Decimal(str(span.end))
-    interval = Decimal(1) / Decimal(str(fps))
+    fps_decimal = Decimal(str(fps))
     frames: list[FrameRef] = []
     timestamp = start
     index = 0
@@ -257,7 +257,10 @@ def extract_frames(
             raise FrameExtractionError("unable to extract video frame") from None
         frames.append(FrameRef(destination, absolute))
         index += 1
-        timestamp = start + interval * index
+        # Exact per-index division: accumulating a pre-rounded interval can
+        # land a timestamp fractionally below ``end`` at what is really the
+        # video's end, producing one out-of-range ffmpeg seek.
+        timestamp = start + Decimal(index) / fps_decimal
     return frames
 
 

@@ -292,3 +292,21 @@ def test_plan_segments_rejects_a_step_lost_when_timestamps_are_rounded():
         plan_segments(2.0, 1.0000004, 1.0000003)
 
 
+
+
+def test_extract_frames_stops_exactly_at_end_when_duration_divides_by_fps(
+    tmp_path: Path, short_video: Path
+) -> None:
+    """8s at 3fps: the 25th accumulated timestamp used to round to 7.999...9,
+    which is still < 8.0, seeking one frame past the end of the video."""
+    from las_repro.media import probe_video
+
+    metadata = probe_video(short_video)
+    frames = extract_frames(
+        short_video,
+        TimeSpan(0.0, metadata.duration),
+        3.0,
+        tmp_path / "frames",
+    )
+    expected = [index / 3.0 for index in range(int(metadata.duration * 3))]
+    assert [frame.timestamp for frame in frames] == pytest.approx(expected)
