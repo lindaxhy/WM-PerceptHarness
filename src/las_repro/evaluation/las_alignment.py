@@ -347,8 +347,15 @@ def _field_counts(counts, comparable):
     }
 
 
-def _errors(values):
-    return {
+# Occlusion boundary tolerances are deliberately asymmetric. The detector
+# keeps a track alive while any sliver of the target stays visible, so a
+# predicted enter is systematically later than the human-judged enter; the
+# exit (full reappearance) is sharp on both sides and stays tight.
+BOUNDARY_TOLERANCE_SECONDS = {"enter": 2.5, "exit": 0.5}
+
+
+def _errors(values, tolerance_seconds=None):
+    stats = {
         "mean": ratio(sum(values), len(values), "no matched occlusion intervals"),
         "median": {
             "value": statistics.median(values) if values else None,
@@ -358,6 +365,14 @@ def _errors(values):
         },
         "absolute_errors_seconds": values,
     }
+    if tolerance_seconds is not None:
+        stats["tolerance_seconds"] = tolerance_seconds
+        stats["within_tolerance"] = ratio(
+            sum(1 for value in values if value <= tolerance_seconds),
+            len(values),
+            "no matched occlusion intervals",
+        )
+    return stats
 
 
 def evaluate_sample(
@@ -436,7 +451,8 @@ def evaluate_sample(
                     - getattr(pi[m.prediction_index], attr)
                 )
                 for m in interval_matches
-            ]
+            ],
+            tolerance_seconds=BOUNDARY_TOLERANCE_SECONDS[name],
         )
         for name, attr in (("enter", "start"), ("exit", "end"))
     }
@@ -626,7 +642,8 @@ def aggregate_metrics(samples: list[SampleMetrics]) -> AggregateMetrics:
                     x
                     for s in samples
                     for x in s.boundary_errors[name]["absolute_errors_seconds"]
-                ]
+                ],
+                tolerance_seconds=BOUNDARY_TOLERANCE_SECONDS[name],
             )
             for name in ("enter", "exit")
         },

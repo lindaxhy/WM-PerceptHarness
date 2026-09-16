@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
+import tempfile
 import math
 import re
 import time
@@ -16,11 +18,11 @@ from numbers import Real
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from ..cv.entities import NormalizedEntities, normalize_entities
 from ..cv.artifacts import CvArtifactStore, CvArtifactHandle, CvArtifactError, cv_cache_key
-from ..cv.contracts import CvEvidenceRequest, SamplingPolicy, EvidenceThresholds
+from ..cv.contracts import CvEvidenceRequest, EntityPrompt, SamplingPolicy, EvidenceThresholds
 from ..cv.timeline import probe_frame_timeline, TimelineError
 from ..cv.summary import CvEvidenceSummary, OcclusionCandidate, summarize_cv_evidence, build_cv_prompt_bundle, validate_candidate_identity_evidence
 from ..domain import InferenceJob, InferenceJobSpec, TaskRecord
@@ -375,6 +377,13 @@ class EmbodiedActionPipeline:
             with media_path.open("rb") as source:
                 digest = hashlib.file_digest(source, "sha256").hexdigest()
             decode_seconds = time.monotonic() - decode_started
+            if settings.cv_entity_pinning:
+                entities = _pin_entities(
+                    settings.cv_cache_root,
+                    digest,
+                    entities,
+                    entity_limit=settings.cv_entity_limit,
+                )
             request = CvEvidenceRequest(schema_version="cv_request_v1",
                 provider=settings.cv_provider, model_identity=settings.cv_model_alias,
                 video_path=media_path, video_sha256=digest, duration_seconds=duration,
@@ -1241,6 +1250,75 @@ def _positive_finite(value: Any, name: str) -> float:
     if not math.isfinite(result) or result <= 0:
         raise ValueError(f"{name} must be finite and positive")
     return result
+
+
+
+_ENTITY_PIN_SCHEMA = "cv_entity_pin_v1"
+
+
+def _entity_pin_path(cache_root: Path, video_sha256: str) -> Path:
+    return Path(cache_root) / "entity-pins" / (video_sha256 + ".json")
+
+
+def _pin_entities(
+    cache_root: Path,
+    video_sha256: str,
+    normalized: NormalizedEntities,
+    *,
+    entity_limit: int,
+) -> NormalizedEntities:
+    """Reuse the first recorded entity nomination for this exact video.
+
+    Pass A renames entities freely between runs, and the entity list is part
+    of the CV cache identity, so every rename rerolls SAM tracking, the
+    candidate set, and the whole occlusion branch. The first nomination is
+    therefore pinned per video content hash; delete the pin file to renominate
+    deliberately. A corrupt or over-limit pin is replaced by the fresh
+    nomination rather than trusted.
+    """
+    path = _entity_pin_path(cache_root, video_sha256)
+    try:
+        payload = json.loads(path.read_text())
+        if (
+            type(payload) is dict
+            and payload.get("schema_version") == _ENTITY_PIN_SCHEMA
+            and payload.get("video_sha256") == video_sha256
+            and type(payload.get("entities")) is list
+            and 0 < len(payload["entities"]) <= entity_limit
+        ):
+            pinned = tuple(
+                EntityPrompt.model_validate(row) for row in payload["entities"]
+            )
+            return NormalizedEntities(entities=pinned, omitted_count=0)
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, TypeError, ValidationError):
+        pass
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        payload = json.dumps(
+            {
+                "schema_version": _ENTITY_PIN_SCHEMA,
+                "video_sha256": video_sha256,
+                "entities": [
+                    entity.model_dump(mode="json")
+                    for entity in normalized.entities
+                ],
+            },
+            sort_keys=True,
+        )
+        descriptor, temporary = tempfile.mkstemp(prefix=".pin-", dir=path.parent)
+        try:
+            with os.fdopen(descriptor, "w") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+    except OSError:
+        pass
+    return normalized
 
 
 def _action_media_path(context: PipelineContext) -> Path:

@@ -128,6 +128,7 @@ class Settings(BaseSettings):
     cv_cache_max_bytes: PositiveInteger = 8 * 1024 * 1024 * 1024
     cv_cache_max_files: PositiveInteger = 10_000
     cv_entity_limit: PositiveInteger = Field(default=16, le=16)
+    cv_entity_pinning: StrictEnvironmentBool = True
     cv_short_video_seconds: PositiveFinite = 30.0
     cv_scan_fps: PositiveFinite = 8.0
     cv_max_fps: PositiveFinite = 30.0

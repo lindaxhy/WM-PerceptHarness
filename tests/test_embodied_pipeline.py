@@ -3557,3 +3557,89 @@ def test_boundary_enum_repair_preserves_parent_context_and_one_attempt_policy(tm
         assert jobs[1].result == model.valid_boundary
     assert 'private enum synonym' not in json.dumps([j.result for j in jobs])
     assert 'private enum synonym' not in calls[1].prompt
+
+
+def test_entity_pin_reuses_first_nomination_across_renames(tmp_path: Path) -> None:
+    """A rename in a later Pass A must not reroll the CV branch."""
+    from las_repro.cv.contracts import EntityPrompt, EntityRole
+    from las_repro.cv.entities import NormalizedEntities
+    from las_repro.pipelines.embodied import _entity_pin_path, _pin_entities
+
+    first = NormalizedEntities(
+        entities=(
+            EntityPrompt(
+                entity_id="white_track_lid",
+                canonical_label="white track lid",
+                aliases=("container lid",),
+                role=EntityRole.OTHER,
+            ),
+        ),
+        omitted_count=0,
+    )
+    sha = "a" * 64
+    pinned = _pin_entities(tmp_path, sha, first, entity_limit=16)
+    assert pinned == first
+    assert _entity_pin_path(tmp_path, sha).exists()
+
+    renamed = NormalizedEntities(
+        entities=(
+            EntityPrompt(
+                entity_id="light_blue_tray",
+                canonical_label="light blue tray",
+                aliases=(),
+                role=EntityRole.OTHER,
+            ),
+        ),
+        omitted_count=0,
+    )
+    reused = _pin_entities(tmp_path, sha, renamed, entity_limit=16)
+    assert [e.entity_id for e in reused.entities] == ["white_track_lid"]
+
+    other_sha = "b" * 64
+    fresh = _pin_entities(tmp_path, other_sha, renamed, entity_limit=16)
+    assert [e.entity_id for e in fresh.entities] == ["light_blue_tray"]
+
+
+def test_corrupt_or_over_limit_entity_pin_is_replaced_not_trusted(
+    tmp_path: Path,
+) -> None:
+    from las_repro.cv.contracts import EntityPrompt, EntityRole
+    from las_repro.cv.entities import NormalizedEntities
+    from las_repro.pipelines.embodied import _entity_pin_path, _pin_entities
+
+    sha = "c" * 64
+    path = _entity_pin_path(tmp_path, sha)
+    path.parent.mkdir(parents=True)
+    path.write_text("{not json")
+    fresh = NormalizedEntities(
+        entities=(
+            EntityPrompt(
+                entity_id="apple",
+                canonical_label="apple",
+                aliases=(),
+                role=EntityRole.MANIPULATED_OBJECT,
+            ),
+        ),
+        omitted_count=0,
+    )
+    result = _pin_entities(tmp_path, sha, fresh, entity_limit=16)
+    assert [e.entity_id for e in result.entities] == ["apple"]
+    reloaded = _pin_entities(tmp_path, sha, fresh, entity_limit=16)
+    assert [e.entity_id for e in reloaded.entities] == ["apple"]
+
+    sha2 = "d" * 64
+    _pin_entities(tmp_path, sha2, fresh, entity_limit=16)
+    over = _pin_entities(tmp_path, sha2, fresh, entity_limit=0)
+    assert over == fresh
+
+
+def test_boundary_tolerance_is_asymmetric_between_enter_and_exit() -> None:
+    from las_repro.evaluation.las_alignment import (
+        BOUNDARY_TOLERANCE_SECONDS, _errors,
+    )
+
+    assert BOUNDARY_TOLERANCE_SECONDS["enter"] > BOUNDARY_TOLERANCE_SECONDS["exit"]
+    stats = _errors([0.4, 2.0, 3.0], tolerance_seconds=2.5)
+    assert stats["tolerance_seconds"] == 2.5
+    assert stats["within_tolerance"]["numerator"] == 2
+    assert stats["within_tolerance"]["denominator"] == 3
