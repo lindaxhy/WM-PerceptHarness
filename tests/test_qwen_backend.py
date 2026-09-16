@@ -818,21 +818,28 @@ def test_generate_uses_strict_json_parser_and_output_size_limit(tmp_path: Path) 
         backend.generate(_request(video))
 
 
-def test_worker_schema_gate_replaces_invalid_qwen_object_before_persistence(
+def test_sync_schema_gate_replaces_invalid_qwen_object_before_persistence(
     tmp_path: Path,
 ) -> None:
     from las_repro.domain import InferenceJobSpec, InferenceStatus
+    from las_repro.execution import SyncJobStore
     from las_repro.models.qwen3_vl import Qwen3VLModel
-    from las_repro.store import SQLiteTaskStore
-    from las_repro.workers import GPUWorker
 
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"video")
-    store = SQLiteTaskStore(tmp_path / "tasks.sqlite3")
-    store.initialize()
-    task = store.create_task({"task_template": "embodied_active_object_detection"})
+    backend = Qwen3VLModel(
+        processor=_Processor('{"objects":"unvalidated model value"}'),
+        model=_GeneratingModel(),
+        torch_module=_FakeTorch(),
+        process_vision_info=_VisionProcessor(),
+        device="cuda:1",
+        frame_extractor=_fake_frame_extractor,
+        video_probe=_fake_video_probe,
+    )
+    store = SyncJobStore(backend, default_model_alias="qwen3-vl-8b-instruct")
+
     [job] = store.create_inference_jobs(
-        task.task_id,
+        "task-object-inventory",
         [
             InferenceJobSpec(
                 stage="active_objects",
@@ -844,50 +851,30 @@ def test_worker_schema_gate_replaces_invalid_qwen_object_before_persistence(
                     "fps": 1.0,
                     "prompt": "return object inventory JSON",
                     "schema_name": "ObjectInventory",
-                    "video_session_id": task.task_id,
+                    "video_session_id": "task-object-inventory",
                 },
             )
         ],
     )
-    backend = Qwen3VLModel(
-        processor=_Processor('{"objects":"unvalidated model value"}'),
-        model=_GeneratingModel(),
-        torch_module=_FakeTorch(),
-        process_vision_info=_VisionProcessor(),
-        device="cuda:1",
-        frame_extractor=_fake_frame_extractor,
-        video_probe=_fake_video_probe,
-    )
 
-    assert GPUWorker(
-        store,
-        backend,
-        worker_id="gpu-1",
-        device="cuda:1",
-        lease_seconds=10.0,
-    ).run_once()
-
-    persisted = store.get_inference_job(job.job_id)
-    assert persisted is not None
-    assert persisted.status is InferenceStatus.COMPLETED
-    assert persisted.result == {
+    assert job.status is InferenceStatus.COMPLETED
+    assert job.result == {
         "_schema_validation": {
             "schema_name": "ObjectInventory",
             "status": "invalid",
             "issue_codes": ["OBJECT_INVENTORY_LIST_TYPE"],
         }
     }
-    assert "unvalidated model value" not in json.dumps(persisted.result)
+    assert "unvalidated model value" not in json.dumps(job.result)
 
 
-def test_worker_schema_gate_aggregates_invalid_qwen_entity_before_persistence(
+def test_sync_schema_gate_aggregates_invalid_qwen_entity_before_persistence(
     tmp_path: Path,
 ) -> None:
     """Pass-A entity errors must persist only their closed repair family."""
     from las_repro.domain import InferenceJobSpec, InferenceStatus
+    from las_repro.execution import SyncJobStore
     from las_repro.models.qwen3_vl import Qwen3VLModel
-    from las_repro.store import SQLiteTaskStore
-    from las_repro.workers import GPUWorker
 
     private_alias = "private alias token"
     private_role = "private role token"
@@ -915,11 +902,19 @@ def test_worker_schema_gate_aggregates_invalid_qwen_entity_before_persistence(
     }
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"video")
-    store = SQLiteTaskStore(tmp_path / "tasks.sqlite3")
-    store.initialize()
-    task = store.create_task({"task_template": "embodied_action_captioning"})
+    backend = Qwen3VLModel(
+        processor=_Processor(json.dumps(raw)),
+        model=_GeneratingModel(),
+        torch_module=_FakeTorch(),
+        process_vision_info=_VisionProcessor(),
+        device="cuda:1",
+        frame_extractor=_fake_frame_extractor,
+        video_probe=_fake_video_probe,
+    )
+    store = SyncJobStore(backend, default_model_alias="qwen3-vl-8b-instruct")
+
     [job] = store.create_inference_jobs(
-        task.task_id,
+        "task-pass-a",
         [
             InferenceJobSpec(
                 stage="embodied_pass_a",
@@ -932,33 +927,14 @@ def test_worker_schema_gate_aggregates_invalid_qwen_entity_before_persistence(
                     "prompt": "return coarse plan JSON",
                     "schema_name": "CoarsePlan",
                     "schema_context": {"duration": 1.0},
-                    "video_session_id": task.task_id,
+                    "video_session_id": "task-pass-a",
                 },
             )
         ],
     )
-    backend = Qwen3VLModel(
-        processor=_Processor(json.dumps(raw)),
-        model=_GeneratingModel(),
-        torch_module=_FakeTorch(),
-        process_vision_info=_VisionProcessor(),
-        device="cuda:1",
-        frame_extractor=_fake_frame_extractor,
-        video_probe=_fake_video_probe,
-    )
 
-    assert GPUWorker(
-        store,
-        backend,
-        worker_id="gpu-1",
-        device="cuda:1",
-        lease_seconds=10.0,
-    ).run_once()
-
-    persisted = store.get_inference_job(job.job_id)
-    assert persisted is not None
-    assert persisted.status is InferenceStatus.COMPLETED
-    assert persisted.result == {
+    assert job.status is InferenceStatus.COMPLETED
+    assert job.result == {
         "_schema_validation": {
             "schema_name": "CoarsePlan",
             "status": "invalid",
@@ -971,7 +947,7 @@ def test_worker_schema_gate_aggregates_invalid_qwen_entity_before_persistence(
             ],
         }
     }
-    persisted_text = json.dumps(persisted.result)
+    persisted_text = json.dumps(job.result)
     for private in (private_alias, private_role, private_key, private_value):
         assert private not in persisted_text
 

@@ -9,8 +9,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from ..config import Settings
 from ..domain import TaskRecord
-from ..media import MediaResolver
-from ..store import SQLiteTaskStore
+from ..execution import JobStore
 
 
 class SafePipelineError(RuntimeError):
@@ -21,11 +20,11 @@ class SafePipelineError(RuntimeError):
 class PipelineContext:
     """Task-local dependencies supplied to one pipeline invocation."""
 
-    store: SQLiteTaskStore
-    media_resolver: MediaResolver
+    store: JobStore
     settings: Settings
     task_dir: Path
     media_path: Path | None = None
+    media_resolver: Any | None = None
 
 
 @runtime_checkable

@@ -36,7 +36,7 @@ from las_repro.pipelines.scene_choices import (
     authenticate_scene_context, compact_scene_options, project_scene_choices,
     SceneLocationChoice, SceneRelationChoice, SceneInputPackage, canonical,
 )
-from las_repro.workers import _model_request
+from las_repro.execution import _model_request
 
 
 BUNDLE_SCHEMA = "semantic_reverification_input_v1"

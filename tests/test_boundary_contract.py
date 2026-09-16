@@ -24,7 +24,7 @@ CODES = ['BOUNDARY_PLAN_ACTION_EVENT_TYPE_ENUM_VALUE',
 
 
 def boundary_fixture():
-    from test_embodied_pipeline import _valid_boundary_output, _entity_candidates
+    from embodied_fixtures import _valid_boundary_output, _entity_candidates
     draft = _valid_boundary_output()
     coarse = dict(task_description=draft['task_description'], entity_candidates=_entity_candidates(),
                   actions=[{k: v for k, v in a.items() if k not in ('boundary_points', 'fine_segments')}

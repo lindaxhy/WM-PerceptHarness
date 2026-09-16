@@ -1,238 +1,159 @@
-"""Process entry points for the local LAS-compatible service."""
+"""The `percept` command-line interface: evaluate videos in one process."""
 
 from __future__ import annotations
 
 import argparse
 import os
-import signal
 import sys
-import threading
-from collections.abc import Callable, Iterator, Sequence
-from contextlib import ExitStack, contextmanager
-from typing import Any
+from collections.abc import Sequence
+from pathlib import Path
 
-from pydantic import ValidationError
-
-from .api import create_app
 from .config import Settings
-from .store import SQLiteTaskStore
+from .runner import (
+    SUPPORTED_TEMPLATES,
+    SyncRunner,
+    collect_videos,
+    default_pipeline_registry,
+    run_batch,
+)
 
-
-Command = Callable[[argparse.Namespace, Settings, threading.Event], int]
-
-
-class _SignalShutdown(KeyboardInterrupt):
-    """Cooperative process signal that must unwind the active lease boundary."""
+_BACKENDS = ("doubao", "qwen", "fake")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Parse one explicit process role and run it to a clean lifecycle boundary."""
-    stop = threading.Event()
-    try:
-        with _stop_on_signals(stop):
-            parser = _parser()
-            arguments = parser.parse_args(argv)
-            _notify_signal_ready()
-            try:
-                settings = Settings.from_env()
-            except ValidationError:
-                print("las-repro: invalid LAS_ configuration", file=sys.stderr)
-                return 2
-            command: Command = arguments.command
-            return command(arguments, settings, stop)
-    except _SignalShutdown:
-        return 0
-    except KeyboardInterrupt:
-        return 130
-    except Exception as error:
-        print(f"las-repro: {type(error).__name__}", file=sys.stderr)
-        return 1
+    arguments = _parser().parse_args(argv)
+    if arguments.command == "eval":
+        return _eval(arguments)
+    raise AssertionError("unreachable: argparse enforces the command set")
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="las-repro",
-        description="Run one local LAS-compatible service process role.",
+        prog="percept",
+        description="Evaluate videos with a configured VLM backend.",
     )
-    commands = parser.add_subparsers(dest="role", required=True)
+    commands = parser.add_subparsers(dest="command", required=True)
 
-    init_db = commands.add_parser("init-db", help="initialize the SQLite task store")
-    init_db.set_defaults(command=_init_db)
-
-    api = commands.add_parser("api", help="serve only the Submit/Poll control plane")
-    _listen_options(api)
-    api.set_defaults(command=_api)
-
-    coordinator = commands.add_parser(
-        "coordinator",
-        help="resolve media and coordinate pipelines without loading a GPU model",
+    evaluate = commands.add_parser("eval", help="evaluate videos to structured JSON")
+    evaluate.add_argument(
+        "--videos",
+        nargs="+",
+        required=True,
+        type=Path,
+        help="video files and/or directories (searched recursively)",
     )
-    coordinator.add_argument("--worker-id", default="coordinator")
-    coordinator.add_argument("--once", action="store_true", help="claim at most one task")
-    coordinator.set_defaults(command=_coordinator)
-
-    gpu_worker = commands.add_parser(
-        "gpu-worker",
-        help="load one local model on one explicit CUDA device",
+    evaluate.add_argument(
+        "--template",
+        required=True,
+        choices=SUPPORTED_TEMPLATES,
+        help="annotation template to run",
     )
-    gpu_worker.add_argument("--device", type=int, required=True, choices=range(0, 1024))
-    gpu_worker.add_argument("--worker-id")
-    gpu_worker.add_argument("--model-name", default="qwen3-vl-8b-instruct")
-    gpu_worker.add_argument(
-        "--dtype",
-        choices=("auto", "bfloat16", "float16", "float32"),
-        default="auto",
+    evaluate.add_argument(
+        "--backend",
+        required=True,
+        choices=_BACKENDS,
+        help="VLM backend configured in the environment",
     )
-    gpu_worker.add_argument("--once", action="store_true", help="claim at most one job")
-    gpu_worker.set_defaults(command=_gpu_worker)
-
-    ark_worker = commands.add_parser("ark-worker", help="run one remote ARK semantic worker")
-    ark_worker.add_argument("--model-name", required=True)
-    ark_worker.add_argument("--worker-id")
-    ark_worker.add_argument("--once", action="store_true", help="claim at most one job")
-    ark_worker.set_defaults(command=_ark_worker)
-
-    cv_worker = commands.add_parser(
-        "cv-worker",
-        help="run one isolated local computer-vision evidence provider",
+    evaluate.add_argument(
+        "--output",
+        required=True,
+        type=Path,
+        help="output directory for per-video JSON and results.jsonl",
     )
-    cv_worker.add_argument("--device", type=int, required=True, choices=range(0, 1024))
-    cv_worker.add_argument("--provider", required=True, choices=("fake", "sam31"))
-    cv_worker.add_argument("--worker-id")
-    cv_worker.add_argument("--once", action="store_true", help="claim at most one job")
-    cv_worker.set_defaults(command=_cv_worker)
-
-    run_fake = commands.add_parser(
-        "run-fake",
-        help="run an API-compatible local stack with no model weights or GPU",
+    evaluate.add_argument(
+        "--model",
+        default=None,
+        help="model alias from the backend registry (default: the registry's only entry)",
     )
-    _listen_options(run_fake)
-    run_fake.add_argument(
-        "--once",
-        action="store_true",
-        help="drain currently claimable local tasks and exit without serving HTTP",
+    evaluate.add_argument(
+        "--prompt-context",
+        default=None,
+        help="naming context for embodied_action_captioning (object hints, not an SOP)",
     )
-    run_fake.set_defaults(command=_run_fake)
+    evaluate.add_argument(
+        "--query",
+        default=None,
+        help="free-form query for general_video_captioning",
+    )
+    evaluate.add_argument(
+        "--device",
+        default=None,
+        help="CUDA device ordinal for the qwen backend (default: first of LAS_GPU_DEVICES)",
+    )
     return parser
 
 
-def _listen_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--host", help="override LAS_API_HOST")
-    parser.add_argument("--port", type=int, choices=range(1, 65536), help="override LAS_API_PORT")
-
-
-@contextmanager
-def _store(settings: Settings) -> Iterator[SQLiteTaskStore]:
-    store = SQLiteTaskStore(settings.database_path)
+def _eval(arguments: argparse.Namespace) -> int:
     try:
-        store.initialize()
-        yield store
-    finally:
-        store.close()
+        settings = Settings.from_env()
+    except Exception as error:
+        print(f"error: invalid configuration: {error}", file=sys.stderr)
+        return 2
 
+    try:
+        videos = collect_videos(list(arguments.videos))
+    except FileNotFoundError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    if not videos:
+        print("error: no videos found under the given sources", file=sys.stderr)
+        return 2
 
-def _init_db(
-    _: argparse.Namespace,
-    settings: Settings,
-    __: threading.Event,
-) -> int:
-    with _store(settings):
-        return 0
+    try:
+        model, alias, closer = _load_backend(arguments, settings)
+    except (ValueError, KeyError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
 
-
-def _api(
-    arguments: argparse.Namespace,
-    settings: Settings,
-    stop: threading.Event,
-) -> int:
-    with _store(settings) as store:
-        app = create_app(settings, store)
-        _serve(app, _host(arguments, settings), _port(arguments, settings), stop=stop)
-    return 0
-
-
-def _coordinator(
-    arguments: argparse.Namespace,
-    settings: Settings,
-    stop: threading.Event,
-) -> int:
-    # Keep worker and pipeline imports inside this role.  In particular, this
-    # path never imports the optional Qwen/PyTorch/Transformers backend.
-    from .media import MediaResolver, TosAdapter
-    from .workers import Coordinator
-
-    with _store(settings) as store:
-        coordinator = Coordinator(
-            store,
-            MediaResolver(settings, tos_adapter=TosAdapter(settings)),
-            settings,
-            _pipeline_registry(),
-            worker_id=arguments.worker_id,
-        )
-        if arguments.once:
-            coordinator.run_once()
-        else:
-            coordinator.run_forever(stop)
-    return 0
-
-
-def _gpu_worker(
-    arguments: argparse.Namespace,
-    settings: Settings,
-    stop: threading.Event,
-) -> int:
-    if settings.backend != "qwen3_vl":
-        raise ValueError("gpu-worker requires LAS_BACKEND=qwen3_vl")
-    if arguments.device not in settings.qwen_gpu_devices:
-        raise ValueError("gpu-worker device is absent from LAS_GPU_DEVICES")
-    # Preserve physical ordinal identity even if the worker inherits a CUDA
-    # visibility remap from its launcher.  The backend still receives the
-    # selected physical ordinal as cuda:N.
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2"
-    # This is the only production CLI role that imports or loads the optional
-    # GPU backend.  One invocation constructs exactly one model for one device.
-    from .models.qwen3_vl import Qwen3VLModel
-    from .workers import GPUWorker
-
-    device = f"cuda:{arguments.device}"
-    worker_id = arguments.worker_id or f"gpu-{arguments.device}"
-    with _store(settings) as store:
-        model = Qwen3VLModel.load_alias(
-            arguments.model_name,
-            settings.model_registry,
-            device,
-            arguments.dtype,
-            max_output_chars=settings.max_model_output_chars,
-        )
-        worker = GPUWorker(
-            store,
+    print(f"backend={arguments.backend} model={alias} videos={len(videos)}")
+    try:
+        runner = SyncRunner(
             model,
-            worker_id,
-            device,
-            model_name=arguments.model_name,
-            lease_seconds=settings.lease_seconds,
+            settings,
+            model_alias=alias,
+            registry=default_pipeline_registry(),
         )
-        try:
-            if arguments.once:
-                worker.run_once()
-            else:
-                worker.run_forever(stop)
-        finally:
-            worker.close()
-    return 0
+        outcomes = run_batch(
+            runner,
+            videos,
+            arguments.template,
+            arguments.output,
+            prompt_context=arguments.prompt_context,
+            query=arguments.query,
+        )
+    finally:
+        closer()
+
+    completed = sum(outcome.status == "completed" for outcome in outcomes)
+    skipped = sum(outcome.status == "skipped" for outcome in outcomes)
+    failed = sum(outcome.status == "failed" for outcome in outcomes)
+    print(f"done: {completed} completed, {skipped} skipped, {failed} failed")
+    return 0 if failed == 0 else 1
 
 
-def _ark_worker(arguments: argparse.Namespace, settings: Settings, stop: threading.Event) -> int:
-    if settings.backend != "ark":
-        raise ValueError("ark-worker requires LAS_BACKEND=ark")
-    if arguments.model_name not in settings.ark_model_registry:
-        raise ValueError("ark-worker model is absent from LAS_ARK_MODEL_REGISTRY")
-    if settings.ark_api_key is None or not settings.ark_api_key.get_secret_value().strip():
-        raise ValueError("ark-worker credentials are not configured")
-    from .models.ark import ArkVideoModel
-    from .workers import GPUWorker
-    worker_id = arguments.worker_id or f"ark-{arguments.model_name}"
-    with _store(settings) as store:
+def _load_backend(arguments: argparse.Namespace, settings: Settings):
+    """Return (model, model_alias, closer) for the selected backend."""
+    backend = arguments.backend
+    if backend == "fake":
+        from .models.fake import FakeVideoModel
+
+        alias = arguments.model or _single_alias(
+            settings.model_registry, "LAS_MODEL_REGISTRY"
+        )
+        return FakeVideoModel(), alias, lambda: None
+
+    if backend == "doubao":
+        if settings.ark_api_key is None or not settings.ark_api_key.get_secret_value().strip():
+            raise ValueError("LAS_ARK_API_KEY is not configured")
+        if not settings.ark_model_registry:
+            raise ValueError("LAS_ARK_MODEL_REGISTRY is empty")
+        from .models.ark import ArkVideoModel
+
+        alias = arguments.model or _single_alias(
+            settings.ark_model_registry, "LAS_ARK_MODEL_REGISTRY"
+        )
+        if alias not in settings.ark_model_registry:
+            raise KeyError(f"model alias {alias!r} is absent from LAS_ARK_MODEL_REGISTRY")
         model = ArkVideoModel(
             api_key=settings.ark_api_key.get_secret_value(),
             model_registry=settings.ark_model_registry,
@@ -242,376 +163,42 @@ def _ark_worker(arguments: argparse.Namespace, settings: Settings, stop: threadi
             max_output_chars=settings.ark_max_output_chars,
             proxy=settings.ark_proxy.get_secret_value() if settings.ark_proxy else None,
         )
-        worker = None
-        try:
-            worker = GPUWorker(store, model, worker_id, "remote:ark",
-                               model_name=arguments.model_name,
-                               lease_seconds=settings.lease_seconds,
-                               semantic_cache_enabled=settings.ark_semantic_cache_enabled)
-            if arguments.once: worker.run_once()
-            else: worker.run_forever(stop)
-        finally:
-            try:
-                if worker is not None:
-                    worker.close()
-            finally:
-                model.close()
-    return 0
+        return model, alias, model.close
 
-
-def _cv_worker(
-    arguments: argparse.Namespace,
-    settings: Settings,
-    stop: threading.Event,
-) -> int:
-    if arguments.provider != settings.cv_provider:
-        raise ValueError("cv-worker provider does not match LAS_CV_PROVIDER")
-    if arguments.device != settings.cv_device:
-        raise ValueError("cv-worker device does not match LAS_CV_DEVICE")
-    worker_id = arguments.worker_id or f"cv-{arguments.provider}-{arguments.device}"
-    with _store(settings) as store:
-        with _cv_worker_runtime(
-            store,
-            settings,
-            provider_name=arguments.provider,
-            physical_device=arguments.device,
-            worker_id=worker_id,
-        ) as worker:
-            if arguments.once:
-                worker.run_once()
-            else:
-                _run_cv_forever(worker, stop)
-    return 0
-
-
-@contextmanager
-def _cv_worker_runtime(
-    store: SQLiteTaskStore,
-    settings: Settings,
-    *,
-    provider_name: str,
-    physical_device: int,
-    worker_id: str,
-) -> Iterator[Any]:
-    # Provider-independent CV modules are safe in the core environment.  The
-    # SAM adapter itself remains behind the physical-device visibility gate.
-    from .cv.artifacts import CvArtifactStore
-    from .cv.worker import CVEvidenceWorker
-
-    artifact_store = CvArtifactStore(
-        settings.cv_cache_root,
-        max_files=settings.cv_cache_max_files,
-        max_bytes=settings.cv_cache_max_bytes,
-    )
-    provider: Any | None = None
-    primary_error: BaseException | None = None
-    try:
-        if provider_name == "fake":
-            from .cv.base import FakeCvEvidenceProvider
-
-            provider = FakeCvEvidenceProvider(
-                execution_chunk_frames=settings.cv_execution_chunk_frames
-            )
-        elif provider_name == "sam31":
-            os.environ["CUDA_VISIBLE_DEVICES"] = str(physical_device)
-            from .cv.sam31 import Sam31EvidenceProvider
-
-            # The isolated process sees physical GPU N only as logical cuda:0;
-            # no physical ordinal is passed into the provider runtime.
-            provider = Sam31EvidenceProvider.load(
-                settings.cv_repository_path,
-                settings.cv_checkpoint_path,
-                settings.cv_checkpoint_sha256,
-                bpe_path=settings.cv_bpe_path,
-                compile_model=settings.cv_compile_model,
-                max_artifact_bytes=settings.cv_cache_max_bytes,
-                max_artifact_files=settings.cv_cache_max_files,
-            )
-            _configure_execution_chunk_frames(
-                provider, settings.cv_execution_chunk_frames
-            )
-        else:  # argparse and Settings both enforce this closed set.
-            raise ValueError("cv-worker provider is unsupported")
-        yield CVEvidenceWorker(
-            store,
-            provider,
-            artifact_store,
-            worker_id,
-            lease_seconds=settings.lease_seconds,
+    if backend == "qwen":
+        if not settings.model_registry:
+            raise ValueError("LAS_MODEL_REGISTRY is empty")
+        alias = arguments.model or _single_alias(
+            settings.model_registry, "LAS_MODEL_REGISTRY"
         )
-    except BaseException as error:
-        primary_error = error
-        raise
-    finally:
-        cleanup_error: BaseException | None = None
-        try:
-            if provider is not None:
-                _close_provider_state(provider)
-        except BaseException as error:
-            cleanup_error = error
-        try:
-            artifact_store.close()
-        except BaseException as error:
-            if cleanup_error is None:
-                cleanup_error = error
-        if cleanup_error is not None and primary_error is None:
-            raise cleanup_error
+        if alias not in settings.model_registry:
+            raise KeyError(f"model alias {alias!r} is absent from LAS_MODEL_REGISTRY")
+        device_ordinal = (
+            int(arguments.device)
+            if arguments.device is not None
+            else settings.gpu_devices[0]
+        )
+        os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0,1,2")
+        from .models.qwen3_vl import Qwen3VLModel
+
+        model = Qwen3VLModel.load_alias(
+            alias,
+            settings.model_registry,
+            f"cuda:{device_ordinal}",
+            "auto",
+            max_output_chars=settings.max_model_output_chars,
+        )
+        return model, alias, lambda: None
+
+    raise ValueError(f"unsupported backend {backend!r}")
 
 
-def _configure_execution_chunk_frames(provider: Any, value: int) -> None:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValueError("requested CV execution chunk must be a positive integer")
-    current = getattr(provider, "execution_chunk_frames", None)
-    if isinstance(current, bool) or not isinstance(current, int) or current <= 0:
-        raise ValueError("CV provider must expose positive execution_chunk_frames")
-    setter = getattr(provider, "set_execution_chunk_frames", None)
-    if callable(setter):
-        setter(value)
-    else:
-        try:
-            provider.execution_chunk_frames = value
-        except (AttributeError, TypeError):
-            raise ValueError("CV provider execution chunk cannot be configured") from None
-    configured = getattr(provider, "execution_chunk_frames", None)
-    if (
-        isinstance(configured, bool)
-        or not isinstance(configured, int)
-        or configured <= 0
-        or configured != value
-    ):
-        raise ValueError("CV provider execution chunk must equal the exact requested value")
-
-
-def _close_provider_state(provider: Any) -> None:
-    close = getattr(provider, "close", None)
-    if callable(close):
-        close()
-
-
-def _run_cv_forever(worker: Any, stop: threading.Event) -> None:
-    from .workers import _run_forever
-
-    _run_forever(
-        worker.run_once,
-        stop,
-        no_work_backoff=0.05,
-        max_no_work_backoff=1.0,
-        error_backoff=1.0,
-    )
-
-
-def _run_fake(
-    arguments: argparse.Namespace,
-    settings: Settings,
-    stop: threading.Event,
-) -> int:
-    if settings.cv_provider not in {"disabled", "fake"}:
-        raise ValueError("run-fake supports LAS_CV_PROVIDER=disabled or fake")
-    from .media import MediaResolver, TosAdapter
-    from .models.fake import FakeVideoModel
-    from .workers import Coordinator, GPUWorker
-
-    with _store(settings) as store:
-        with ExitStack() as cv_resources:
-            resolver = MediaResolver(settings, tos_adapter=TosAdapter(settings))
-            coordinator = Coordinator(
-                store,
-                resolver,
-                settings,
-                _pipeline_registry(),
-                worker_id="fake-coordinator",
-            )
-            workers = []
-            with ExitStack() as worker_construction:
-                for index, model_name in enumerate(sorted(settings.model_registry)):
-                    worker = GPUWorker(
-                        store,
-                        FakeVideoModel(),
-                        worker_id=f"fake-gpu-{model_name}",
-                        device=f"fake:{index}",
-                        model_name=model_name,
-                        lease_seconds=settings.lease_seconds,
-                    )
-                    workers.append(worker)
-                    worker_construction.callback(worker.close)
-                worker_stops = [threading.Event() for _ in workers]
-                worker_threads = [
-                    _worker_thread(
-                        f"las-fake-gpu-{index}",
-                        worker.run_forever,
-                        worker_stop,
-                    )
-                    for index, (worker, worker_stop) in enumerate(
-                        zip(workers, worker_stops, strict=True)
-                    )
-                ]
-                if settings.cv_provider == "fake":
-                    cv_worker = cv_resources.enter_context(
-                        _cv_worker_runtime(
-                            store,
-                            settings,
-                            provider_name="fake",
-                            physical_device=settings.cv_device,
-                            worker_id="fake-cv",
-                        )
-                    )
-                    cv_stop = threading.Event()
-                    worker_stops.append(cv_stop)
-                    worker_threads.append(
-                        _worker_thread(
-                            "las-fake-cv",
-                            lambda role_stop: _run_cv_forever(cv_worker, role_stop),
-                            cv_stop,
-                        )
-                    )
-                worker_construction.pop_all()
-            try:
-                for worker_thread in worker_threads:
-                    worker_thread.start()
-                if arguments.once:
-                    while coordinator.run_once():
-                        pass
-                else:
-                    coordinator_thread = _worker_thread(
-                        "las-fake-coordinator",
-                        coordinator.run_forever,
-                        stop,
-                    )
-                    try:
-                        coordinator_thread.start()
-                        app = create_app(settings, store)
-                        _serve(
-                            app,
-                            _host(arguments, settings),
-                            _port(arguments, settings),
-                            stop=stop,
-                        )
-                    finally:
-                        stop.set()
-                        if coordinator_thread.ident is not None:
-                            coordinator_thread.join()
-            finally:
-                # Keep both inference runtimes available until the active
-                # coordinator claim finishes, then close their claim gates and
-                # join any current lease before releasing provider state.
-                try:
-                    for worker_stop in worker_stops:
-                        worker_stop.set()
-                    for worker_thread in worker_threads:
-                        if worker_thread.ident is not None:
-                            worker_thread.join()
-                finally:
-                    for worker in workers:
-                        worker.close()
-    return 0
-
-
-def _pipeline_registry() -> Any:
-    from .pipelines.base import PipelineRegistry
-    from .pipelines.embodied import EmbodiedActionPipeline, EmbodiedActiveObjectsPipeline
-    from .pipelines.general import GeneralCaptionPipeline
-
-    registry = PipelineRegistry()
-    registry.register("general_video_captioning", GeneralCaptionPipeline)
-    registry.register("embodied_active_object_detection", EmbodiedActiveObjectsPipeline)
-    registry.register("embodied_action_captioning", EmbodiedActionPipeline)
-    return registry
-
-
-def _worker_thread(
-    name: str,
-    target: Callable[[threading.Event], None],
-    stop: threading.Event,
-) -> threading.Thread:
-    return threading.Thread(target=target, args=(stop,), name=name, daemon=False)
-
-
-def _serve(
-    app: Any,
-    host: str,
-    port: int,
-    *,
-    stop: threading.Event | None = None,
-) -> None:
-    import uvicorn
-
-    class CoordinatedServer(uvicorn.Server):
-        def handle_exit(self, sig: int, frame: Any) -> None:
-            del sig, frame
-            if stop is not None:
-                stop.set()
-            # Uvicorn records handled signals and re-raises them after its
-            # graceful shutdown.  This CLI owns the process lifecycle, so
-            # setting the exit flag directly avoids turning a completed
-            # shutdown into a negative signal exit status.
-            self.should_exit = True
-
-    server = CoordinatedServer(uvicorn.Config(app, host=host, port=port))
-    server.run()
-
-
-@contextmanager
-def _stop_on_signals(stop: threading.Event) -> Iterator[None]:
-    """Turn TERM/INT into a cooperative stop before the next lease claim."""
-    if threading.current_thread() is not threading.main_thread():
-        yield
-        return
-    handled = tuple(
-        item
-        for item in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGINT", None))
-        if item is not None
-    )
-    mask_signals = getattr(signal, "pthread_sigmask", None)
-    entry_mask: set[signal.Signals] | None = None
-    if callable(mask_signals):
-        entry_mask = mask_signals(signal.SIG_BLOCK, handled)
-    previous = {item: signal.getsignal(item) for item in handled}
-
-    def request_stop(_: int, __: Any) -> None:
-        if stop.is_set():
-            return
-        stop.set()
-        # Unwind synchronous worker code so its BaseException boundary expires
-        # the exact owner/generation before this process exits.
-        raise _SignalShutdown
-
-    try:
-        for item in handled:
-            signal.signal(item, request_stop)
-        if entry_mask is not None:
-            mask_signals(signal.SIG_SETMASK, entry_mask)
-        yield
-    finally:
-        try:
-            if callable(mask_signals):
-                mask_signals(signal.SIG_BLOCK, handled)
-        finally:
-            try:
-                for item, handler in previous.items():
-                    signal.signal(item, handler)
-            finally:
-                if callable(mask_signals) and entry_mask is not None:
-                    mask_signals(signal.SIG_SETMASK, entry_mask)
-
-
-def _notify_signal_ready() -> None:
-    """Notify a supervisor that cooperative TERM/INT handling is installed."""
-    raw_descriptor = os.environ.get("_LAS_REPRO_SIGNAL_READY_FD")
-    if raw_descriptor is None:
-        return
-    descriptor = int(raw_descriptor)
-    try:
-        os.write(descriptor, b"R")
-    finally:
-        os.close(descriptor)
-
-
-def _host(arguments: argparse.Namespace, settings: Settings) -> str:
-    return arguments.host or settings.api_host
-
-
-def _port(arguments: argparse.Namespace, settings: Settings) -> int:
-    return arguments.port or settings.api_port
+def _single_alias(registry: dict, name: str) -> str:
+    if len(registry) != 1:
+        raise ValueError(
+            f"{name} has {len(registry)} entries; pass --model to choose one"
+        )
+    return next(iter(registry))
 
 
 if __name__ == "__main__":

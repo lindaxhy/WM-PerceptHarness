@@ -11,12 +11,6 @@ from pydantic import BeforeValidator, Field, SecretStr, field_validator, model_v
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
-def _comma_separated_paths(value: Any) -> tuple[Path, ...]:
-    if isinstance(value, str):
-        return tuple(Path(item.strip()) for item in value.split(",") if item.strip())
-    return tuple(Path(item) for item in value)
-
-
 def _comma_separated_ints(value: Any) -> tuple[int, ...]:
     if isinstance(value, str):
         return tuple(
@@ -78,7 +72,6 @@ def _strict_boolean(value: Any) -> bool:
     raise ValueError("value must be a boolean")
 
 
-CsvPaths = Annotated[tuple[Path, ...], NoDecode, BeforeValidator(_comma_separated_paths)]
 CsvInts = Annotated[tuple[int, ...], NoDecode, BeforeValidator(_comma_separated_ints)]
 NonnegativeInteger = Annotated[int, BeforeValidator(_nonnegative_integer)]
 PositiveInteger = Annotated[int, BeforeValidator(_positive_integer)]
@@ -88,13 +81,11 @@ StrictEnvironmentBool = Annotated[bool, BeforeValidator(_strict_boolean)]
 
 
 class Settings(BaseSettings):
-    """Configuration for one local LAS-compatible service instance."""
+    """Configuration for the local evaluation harness."""
 
-    model_config = SettingsConfigDict(env_prefix="LAS_", extra="forbid")
+    model_config = SettingsConfigDict(env_prefix="LAS_", extra="ignore")
 
-    database_path: Path = Path("data/las-repro.sqlite3")
     work_root: Path = Path("work")
-    allowed_media_roots: CsvPaths = (Path("data/media"),)
     model_registry: dict[str, Path] = Field(
         default_factory=lambda: {"qwen3-vl-8b-instruct": Path("models/qwen3-vl-8b-instruct")}
     )
@@ -105,16 +96,11 @@ class Settings(BaseSettings):
     ark_max_request_bytes: PositiveInteger = 32 * 1024 * 1024
     ark_max_output_chars: PositiveInteger = 1_000_000
     ark_proxy: SecretStr | None = None
-    ark_semantic_cache_enabled: StrictEnvironmentBool = True
-    backend: str = "qwen3_vl"
-    api_key_sha256: str = ""
-    api_host: str = "127.0.0.1"
-    api_port: int = Field(default=8000, ge=1, le=65535)
-    max_download_bytes: int = 10 * 1024 * 1024 * 1024
     max_model_output_chars: int = Field(default=1_000_000, gt=0)
     segment_seconds: float = 30.0
     segment_overlap_seconds: float = 2.0
     max_fine_segment_seconds: float = 30.0
+    # Retained for pipeline affinity-grace computation; not a service lease.
     lease_seconds: int = 300
     gpu_devices: CsvInts = (0, 1, 2)
     cv_device: NonnegativeInteger = 3
@@ -139,15 +125,6 @@ class Settings(BaseSettings):
     cv_execution_chunk_frames: PositiveInteger = 8
     cv_timeout_seconds: PositiveFinite = 300.0
     cv_compile_model: StrictEnvironmentBool = False
-    tos_endpoint: SecretStr | None = None
-    tos_region: SecretStr | None = None
-    tos_access_key: SecretStr | None = None
-    tos_secret_key: SecretStr | None = None
-
-    @property
-    def qwen_gpu_devices(self) -> tuple[int, ...]:
-        """Expose the legacy GPU setting under its explicit 3+1 role name."""
-        return self.gpu_devices
 
     @property
     def allowed_model_aliases(self) -> frozenset[str]:
@@ -157,20 +134,11 @@ class Settings(BaseSettings):
     @classmethod
     def validate_qwen_devices(cls, value: tuple[int, ...]) -> tuple[int, ...]:
         if not value:
-            raise ValueError("gpu_devices must contain at least one Qwen device")
+            raise ValueError("gpu_devices must contain at least one device")
         if any(device < 0 for device in value):
             raise ValueError("gpu_devices must be non-negative")
         if len(set(value)) != len(value):
             raise ValueError("gpu_devices must be distinct")
-        if not set(value) <= {0, 1, 2}:
-            raise ValueError("gpu_devices must use only physical GPUs 0-2")
-        return value
-
-    @field_validator("cv_device")
-    @classmethod
-    def validate_cv_device(cls, value: int) -> int:
-        if value not in (0, 1, 2, 3):
-            raise ValueError("cv_device must use one physical GPU 0-3")
         return value
 
     @field_validator("cv_checkpoint_sha256")
@@ -184,8 +152,6 @@ class Settings(BaseSettings):
     def validate_cv_configuration(self) -> Self:
         if set(self.model_registry) & set(self.ark_model_registry):
             raise ValueError("local and ARK model aliases must not overlap")
-        if self.cv_device in self.gpu_devices:
-            raise ValueError("Qwen and CV devices must be distinct")
         if self.cv_scan_fps > self.cv_max_fps:
             raise ValueError("cv_scan_fps must not exceed cv_max_fps")
         if self.cv_provider == "sam31":

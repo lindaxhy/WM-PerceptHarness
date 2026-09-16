@@ -17,7 +17,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from ..cv.summary import CvEvidenceSummary
-from ..store import validate_inference_job_metrics
+from ..metrics import validate_inference_job_metrics
 from .occlusion import (
     OcclusionDecisionSet,
     _has_prohibited_evidence_content,

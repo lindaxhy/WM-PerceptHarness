@@ -294,29 +294,34 @@ def test_env_example_documents_disabled_local_cv_defaults() -> None:
         for key, value in [raw_line.split("=", 1)]
     }
 
-    assert values["LAS_GPU_DEVICES"] == "0,1,2"
-    assert values["LAS_CV_DEVICE"] == "3"
-    assert values["LAS_CV_PROVIDER"] == "disabled"
-    assert values["LAS_CV_MODEL_ALIAS"] == "sam3.1"
-    assert values["LAS_CV_ENTITY_LIMIT"] == "16"
-    assert values["LAS_CV_SHORT_VIDEO_SECONDS"] == "30.0"
-    assert values["LAS_CV_SCAN_FPS"] == "8.0"
-    assert values["LAS_CV_MAX_FPS"] == "30.0"
-    assert values["LAS_CV_REFINEMENT_RADIUS_SECONDS"] == "1.0"
-    assert values["LAS_CV_MIN_CONFIDENCE"] == "0.5"
-    assert values["LAS_CV_MIN_AREA_FRACTION"] == "0.01"
-    assert values["LAS_CV_OCCLUSION_VISIBILITY_DROP"] == "0.5"
-    assert values["LAS_CV_EXECUTION_CHUNK_FRAMES"] == "8"
-    assert values["LAS_CV_TIMEOUT_SECONDS"] == "300.0"
-    assert values["LAS_CV_COMPILE_MODEL"] == "false"
-    assert values["LAS_CV_CACHE_MAX_BYTES"] == str(8 * 1024 * 1024 * 1024)
-    assert values["LAS_CV_CACHE_MAX_FILES"] == "10000"
-    assert re.fullmatch(r"[0-9a-f]{64}", values["LAS_CV_CHECKPOINT_SHA256"])
+    # CV evidence must stay disabled unless explicitly configured: the
+    # example environment must not switch the provider on, and the coded
+    # defaults must keep every CV field at its conservative value.
+    assert "LAS_CV_PROVIDER" not in values
+
+    from las_repro.config import Settings
+
+    defaults = Settings()
+    assert defaults.cv_provider == "disabled"
+    assert defaults.cv_model_alias == "sam3.1"
+    assert defaults.cv_entity_limit == 16
+    assert defaults.cv_short_video_seconds == 30.0
+    assert defaults.cv_scan_fps == 8.0
+    assert defaults.cv_max_fps == 30.0
+    assert defaults.cv_refinement_radius_seconds == 1.0
+    assert defaults.cv_min_confidence == 0.5
+    assert defaults.cv_min_area_fraction == 0.01
+    assert defaults.cv_occlusion_visibility_drop == 0.5
+    assert defaults.cv_execution_chunk_frames == 8
+    assert defaults.cv_timeout_seconds == 300.0
+    assert defaults.cv_compile_model is False
+    assert defaults.cv_cache_max_bytes == 8 * 1024 * 1024 * 1024
+    assert defaults.cv_cache_max_files == 10000
+    assert re.fullmatch(r"[0-9a-f]{64}", defaults.cv_checkpoint_sha256)
     for field in (
-        "LAS_CV_REPOSITORY_PATH",
-        "LAS_CV_CHECKPOINT_PATH",
-        "LAS_CV_BPE_PATH",
-        "LAS_CV_CACHE_ROOT",
+        defaults.cv_repository_path,
+        defaults.cv_checkpoint_path,
+        defaults.cv_bpe_path,
+        defaults.cv_cache_root,
     ):
-        assert values[field]
-        assert not Path(values[field]).is_absolute()
+        assert not Path(field).is_absolute()

@@ -29,8 +29,8 @@ from ..domain import InferenceJob, InferenceJobSpec, TaskRecord
 from ..media import TimeSpan, VideoMetadata, probe_video
 from ..models.base import VideoSession
 from ..pipelines.base import PipelineContext, SafePipelineError
-from ..store import SQLiteTaskStore
-from ..workers import InferenceJobFailed, JobWaitTimeout, wait_for_jobs
+from ..execution import JobStore
+from ..execution import InferenceJobFailed, JobWaitTimeout, wait_for_jobs
 from .output_validation import DEFAULT_OUTPUT_SCHEMAS, NormalizedSchemaOutput
 from .occlusion import OcclusionDecisionSet, project_occlusion_events
 from .hybrid_result import build_hybrid_result, validate_hybrid_result, build_performance
@@ -58,7 +58,7 @@ EMBODIED_PROMPT_VERSION = "0805-local-v9"
 
 Probe = Callable[[Path], VideoMetadata]
 WaitJobs = Callable[
-    [SQLiteTaskStore, str, Sequence[str], float],
+    [JobStore, str, Sequence[str], float],
     list[dict[str, Any]],
 ]
 

@@ -22,13 +22,13 @@ from pydantic import (
 from ..domain import InferenceJob, InferenceJobSpec, TaskRecord
 from ..media import TimeSpan, VideoMetadata, plan_segments, probe_video
 from ..pipelines.base import PipelineContext, SafePipelineError
-from ..store import SQLiteTaskStore
-from ..workers import InferenceJobFailed, JobWaitTimeout, wait_for_jobs
+from ..execution import JobStore
+from ..execution import InferenceJobFailed, JobWaitTimeout, wait_for_jobs
 from .output_validation import DEFAULT_OUTPUT_SCHEMAS
 
 
 Probe = Callable[[Path], VideoMetadata]
-WaitJobs = Callable[[SQLiteTaskStore, str, Sequence[str], float], list[dict[str, Any]]]
+WaitJobs = Callable[[JobStore, str, Sequence[str], float], list[dict[str, Any]]]
 SegmentPlanner = Callable[[float, float, float], list[TimeSpan]]
 _UNION_FIELDS = (
     "scene",

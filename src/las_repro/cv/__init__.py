@@ -30,7 +30,6 @@ __all__ = [
     "CvEvidenceArtifact",
     "CvEvidenceProvider",
     "CvEvidenceRequest",
-    "CVEvidenceWorker",
     "CvOutOfMemoryError",
     "CvProviderError",
     "CvTrack",
@@ -46,23 +45,20 @@ __all__ = [
     "OverlayRecord",
     "SamplingPolicy",
     "Sam31EvidenceProvider",
+    "SyncCvExecutor",
     "TrackObservation",
-    "cv_request_from_job",
     "normalize_entities",
 ]
 
 
 def __getattr__(name: str) -> Any:
-    """Load worker exports lazily so schema-only imports stay cycle-free."""
+    """Load heavy exports lazily so schema-only imports stay cycle-free."""
     if name == "Sam31EvidenceProvider":
         from .sam31 import Sam31EvidenceProvider
 
         return Sam31EvidenceProvider
-    if name in {"CVEvidenceWorker", "cv_request_from_job"}:
-        from .worker import CVEvidenceWorker, cv_request_from_job
+    if name == "SyncCvExecutor":
+        from .executor import SyncCvExecutor
 
-        return {
-            "CVEvidenceWorker": CVEvidenceWorker,
-            "cv_request_from_job": cv_request_from_job,
-        }[name]
+        return SyncCvExecutor
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

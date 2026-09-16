@@ -1,505 +1,113 @@
 # WM-PerceptHarness
 
-**A Perception Evaluation Harness for World Models and Multimodal Agents.**
+**A perception evaluation harness for world models and embodied agents.**
 
-WM-PerceptHarness is a self-hosted evaluation foundation for visual agents.
-The first shipped adapter is `las_repro`, a visual-only video-understanding
-service with local Qwen3-VL inference, durable Submit/Poll execution, strict
-temporal schemas, conservative repair, and deterministic JSONL export.
+Point it at a folder of videos and get structured, temporally-grounded
+annotations: general captions, active-object inventories, and embodied action
+timelines. Inference runs on a VLM backend you configure once — remote Doubao
+(ARK) with a single API key, or a local Qwen3-VL checkpoint on your own GPUs.
+Processing is visual-only: no audio is extracted and no ASR is invoked.
 
-## What is shipped
+```bash
+percept eval --videos ./my_videos --template embodied_action_captioning \
+  --backend doubao --output results/
+```
 
-- Local, offline-capable Qwen3-VL inference, with an explicit opt-in ARK semantic worker.
-- General video captioning, active-object detection, and embodied action timelines.
-- Persistent SQLite task/job coordination with leases and per-GPU workers.
-- Strict structured-output validation and auditable repair-only normalization.
-- Visual-only processing: no audio extraction, ASR, or transcript evidence.
-- Reproducible comparison methodology and sanitized GPU acceptance evidence.
-
-## Installation
+## Install
 
 Python 3.12 and FFmpeg/FFprobe are required.
 
 ```bash
 python3.12 -m venv .venv
 . .venv/bin/activate
-python -m pip install -e '.[dev]'
+python -m pip install -e .
 ```
 
-Use `python -m pip install -e '.[gpu]'` only on a compatible CUDA host.
+Add `-e '.[gpu]'` instead only on a CUDA host if you plan to run the local
+Qwen backend.
 
-## Documentation
+## Configure a backend (once)
 
-- [Architecture](docs/architecture/las-video-understanding-design.md)
-- [GPU acceptance](docs/reports/2026-09-02-gpu-acceptance.md)
-- [LAS/local implementation and annotation comparison](docs/reports/2026-09-03-las-vs-local-implementation-report.md)
-- [Five-demo synchronized comparison viewer](evaluation/viewer/README.md)
-- [SAM3.1 runtime and one-video acceptance](docs/deployment/sam31-runtime.md)
+```bash
+cp .env.example .env   # then edit
+set -a; . ./.env; set +a
+```
+
+Pick one backend:
+
+| Backend | What you need |
+|---|---|
+| `doubao` | `LAS_ARK_API_KEY` — a Volcengine ARK API key. No GPU needed. |
+| `qwen` | `LAS_MODEL_REGISTRY` pointing at a local Qwen3-VL snapshot, plus `LAS_GPU_DEVICES`. |
+| `fake` | Nothing. Deterministic CPU stub for development and CI. |
+
+That is the whole setup. Keys live only in the backend environment; nothing
+else has to be provisioned.
+
+## Evaluate
+
+```bash
+percept eval \
+  --videos ./my_videos \                 # a directory, or one or more files
+  --template embodied_action_captioning \
+  --backend doubao \
+  --output results/
+```
+
+Templates:
+
+| Template | Output |
+|---|---|
+| `general_video_captioning` | Whole-video summary plus a timestamped event timeline. |
+| `embodied_active_object_detection` | Inventory of visibly-interacted object instances. |
+| `embodied_action_captioning` | Task summary plus time-bounded action segments with enrichment fields. |
+
+Results land in `--output` as one `<video_stem>.json` per video plus an
+aggregate `results.jsonl`. Re-running the same command skips videos that
+already completed, so an interrupted batch resumes where it left off.
+
+### Recommended two-stage embodied flow
+
+For UMI / wrist-camera data, first run object detection on the wrist view,
+then pass the confirmed object names as naming context for the main view:
+
+```bash
+percept eval --videos wrist.mp4 --template embodied_active_object_detection \
+  --backend doubao --output stage1/
+
+percept eval --videos main.mp4 --template embodied_action_captioning \
+  --backend doubao --output stage2/ \
+  --prompt-context "visible interacted object: red container"
+```
+
+The context is naming guidance only, never an action script.
+
+## Output schema
+
+Every result is schema-validated before it is written; malformed model output
+is conservatively repaired or the video is marked failed — never silently
+dropped or relabeled. Action segments carry `start`/`end` in seconds on the
+original video timeline.
 
 ## Development
 
 ```bash
-python -m pytest -q --cov=las_repro --cov-report=term-missing
-uv build --offline --wheel
+python -m pip install -e '.[dev]'
+python -m pytest -q
+percept eval --videos tests/fixtures --template general_video_captioning \
+  --backend fake --output /tmp/percept-smoke
 ```
 
-The branch-coverage gate is 85%.
+## History
 
-## Direction
-
-Future releases may add composable CV tools, additional local VLM adapters,
-video evaluators, agent-trajectory evaluation, and benchmark plugins. These
-items describe direction, not capabilities in the current release.
+Earlier versions of this repository shipped a self-hosted, LAS-compatible
+Submit/Poll service with multi-process GPU workers. That architecture is
+archived intact at the tag `legacy-las-service` (branch `legacy/las-service`)
+together with its deployment documentation. Videos can still be annotated by
+the official Volcengine LAS operator directly; this repository no longer
+reimplements its API surface.
 
 ## License status
 
 This private repository does not yet grant an open-source license. Choose and
 add a license before changing the repository to Public.
-
-## LAS-compatible video adapter
-
-This repository runs a self-hosted, asynchronous video-understanding service.
-Its public surface is exactly `POST /api/v1/submit` and `POST /api/v1/poll`.
-Inference is visual-only: the service neither extracts audio nor invokes ASR or
-remote LAS. Remote ARK semantics are explicit opt-in. `run-fake` is a
-deterministic local development stack; only dedicated semantic/CV workers load
-their optional model runtimes.
-
-The local implementation supports operator IDs `las_long_video_understand` and
-`las_video_understanding`, both at version `v1`, and these templates:
-
-- `general_video_captioning`
-- `embodied_active_object_detection`
-- `embodied_action_captioning`
-
-## Install and configure
-
-Python 3.12 and FFmpeg/FFprobe are required. For local development:
-
-```bash
-python3.12 -m venv .venv
-. .venv/bin/activate
-python -m pip install -e '.[dev]'
-```
-
-Install the offline GPU runtime only on a compatible machine:
-
-```bash
-python -m pip install -e '.[gpu]'
-```
-
-Copy `.env.example` to an ignored `.env`, edit its local paths, and explicitly
-load it before every process:
-
-```bash
-cp .env.example .env
-set -a
-. ./.env
-set +a
-```
-
-Create a bearer key at runtime and store only its SHA-256 digest in `.env`:
-
-```bash
-read -rsp 'Local LAS API key: ' LOCAL_LAS_API_KEY; echo
-export LOCAL_LAS_API_KEY
-python - <<'PY'
-import hashlib, os
-print(hashlib.sha256(os.environ["LOCAL_LAS_API_KEY"].encode()).hexdigest())
-PY
-```
-
-Paste only that digest into `LAS_API_KEY_SHA256`. The `.env.example` fields are:
-
-| Field | Purpose |
-|---|---|
-| `LAS_API_HOST`, `LAS_API_PORT` | Control-plane listen address. Loopback is the safe default. |
-| `LAS_DATABASE_PATH` | Persistent SQLite/WAL task database inside a pre-created trusted directory. |
-| `LAS_WORK_ROOT` | Per-task temporary media/frames; terminal tasks are cleaned. |
-| `LAS_ALLOWED_MEDIA_ROOTS` | Comma-separated trusted local source directories. |
-| `LAS_MAX_DOWNLOAD_BYTES` | Hard limit for HTTP(S) and TOS downloads. |
-| `LAS_MODEL_REGISTRY` | JSON alias-to-local-directory allowlist; never a remote model ID. |
-| `LAS_BACKEND` | `qwen3_vl` for production GPU workers. `run-fake` ignores it safely. |
-| `LAS_GPU_DEVICES` | Comma-separated device IDs a `gpu-worker` may claim. |
-| `LAS_ARK_API_KEY` | Server-owned ARK credential; never accepted from Submit payloads. |
-| `LAS_ARK_MODEL_REGISTRY` | JSON alias-to-remote-model allowlist, separate from local checkpoint paths. |
-| `LAS_ARK_PROXY` | Optional explicit HTTPS proxy; ambient proxy variables are ignored. |
-| `LAS_MAX_MODEL_OUTPUT_CHARS` | Strict structured-output size limit. |
-| `LAS_SEGMENT_SECONDS`, `LAS_SEGMENT_OVERLAP_SECONDS` | General-video split and overlap. |
-| `LAS_MAX_FINE_SEGMENT_SECONDS` | Maximum embodied fine-segment duration. |
-| `LAS_LEASE_SECONDS` | Recoverable coordinator/inference claim lease. |
-| `LAS_TOS_ENDPOINT`, `LAS_TOS_REGION`, `LAS_TOS_ACCESS_KEY`, `LAS_TOS_SECRET_KEY` | Optional TOS access, supplied only at runtime. |
-
-### Opt-in Doubao semantic worker
-
-To replace semantic-stage execution with Doubao, configure `LAS_BACKEND=ark`,
-`LAS_ARK_API_KEY`, and `LAS_ARK_MODEL_REGISTRY='{"doubao-pro":"doubao-seed-2-1-pro-260628"}'`
-in the dedicated worker environment, then submit with `model_name: "doubao-pro"` and launch:
-
-```console
-las-repro ark-worker --model-name doubao-pro --worker-id ark-0
-```
-
-The worker sends sampled JPEG frames and original-video timestamps to the ARK
-Responses endpoint. It sends no audio, local filenames, or caller credentials.
-Set `LAS_ARK_PROXY` when an explicit proxy is required. To roll back locally,
-submit the Qwen alias and run the existing `gpu-worker` processes with
-`LAS_BACKEND=qwen3_vl`; there is no silent fallback or model relabeling.
-
-Create the database directory as the dedicated service account, then initialize
-the database once:
-
-```bash
-install -d -m 0700 data
-install -d -m 0700 work
-install -d -m 0750 media
-las-repro init-db
-```
-
-### SQLite runtime-directory trust boundary
-
-The hardened multi-process storage runtime requires POSIX semantics (Linux or
-macOS); Windows is not a supported service deployment target.
-
-On POSIX, the immediate parent of `LAS_DATABASE_PATH` must already be a real
-directory (not a symlink), owned by the process effective UID, with no group or
-world write bits. The database and any existing `-wal`/`-shm` sidecars must be
-regular, non-symlink files owned by that UID with mode `0600`. Every CLI role
-enforces this before connecting to or mutating SQLite. A missing or unsafe
-directory is rejected; the service does not silently create or chmod it.
-Every component of the absolute directory ancestry must also be a real
-directory owned by either root or the service UID. A group/world-writable
-ancestor is accepted only when its POSIX sticky bit protects each root/service-
-owned child, as in the conventional Linux `/tmp` hierarchy. Non-sticky writable
-ancestors and all intermediate symlinks are rejected so an unrelated UID cannot
-rename the protected parent.
-
-Run all LAS roles under one dedicated service user and prefer `0700` database
-and work directories. Processes with that same UID and write access to the
-database path ancestry are part of the trusted runtime: Python's stdlib
-`sqlite3.connect()` does not expose the `SQLITE_OPEN_NOFOLLOW` flag defined by
-[SQLite's primary C API](https://www.sqlite.org/c3ref/c_open_autoproxy.html), so
-stdlib code cannot exclude a malicious same-UID pathname ABA between Python's
-checks and SQLite's internal open. The store retains directory/database guard
-descriptors and pre/post inode checks to reject ordinary replacements, but does
-not claim isolation from another trusted process deliberately replacing and
-restoring names in that interval. Root is likewise inside the trusted runtime
-boundary.
-
-Keep `LAS_ALLOWED_MEDIA_ROOTS` and requester-controlled media outside the
-database directory; a separate untrusted media tree must never grant write
-access to the database parent. Private-copy replacement is used for a new
-database, but is intentionally not used for existing-database migrations:
-copying a live WAL database can omit committed WAL frames, while replacing it
-would split already-running workers across different inodes. Existing
-migrations therefore remain transactional in place and all normal workers may
-share the one trusted directory.
-
-## Fake-mode development
-
-`run-fake` starts the real API, coordinator, SQLite store, all three pipelines,
-and one deterministic fake inference worker in a single local process. It does
-not load model weights, require a GPU, or need TOS credentials:
-
-```bash
-las-repro run-fake
-```
-
-CV evidence has three explicit modes: `disabled` (the default, with no CV
-artifact), `fake` (deterministic CPU evidence for development), and `sam31`
-(pinned local SAM3.1 on the isolated CV worker). Installing core, running
-disabled mode, or running Fake mode does not install or import SAM packages.
-The service owns published evidence artifacts and exposes authenticated handles,
-not raw cache paths. Video/checkpoint/model/configuration identity invalidates
-cache reuse; quarantine old cache state when any pin or evidence setting changes.
-Provider failure follows the validated degradation contract; there is no silent
-SAM-to-Fake or ARK-to-Qwen fallback and no model relabeling.
-
-`las-repro run-fake --once` does not open an HTTP listener. It drains all tasks
-currently claimable in the configured database, waits for their fake inference
-jobs, checkpoints the store, and exits. This is useful for deterministic tests
-and resuming queued local work. `coordinator --once` and `gpu-worker --once`
-each claim at most one record.
-
-The examples below assume the default loopback listener. They never send Ark
-credentials. Set the client key separately from the stored hash:
-
-```bash
-export LAS_BASE_URL=http://127.0.0.1:8000
-export AUTH_HEADER="Authorization: Bearer ${LOCAL_LAS_API_KEY}"
-export VIDEO_PATH=/absolute/path/inside/one/allowed/media/root/silent.mp4
-```
-
-Query-only general captioning uses and persists the effective local template
-`general_video_captioning`:
-
-```bash
-curl --fail-with-body -sS "$LAS_BASE_URL/api/v1/submit" \
-  -H "$AUTH_HEADER" -H 'Content-Type: application/json' \
-  --data "{\"operator_id\":\"las_video_understanding\",\"operator_version\":\"v1\",\"data\":{\"video_url\":\"$VIDEO_PATH\",\"query\":\"describe visible actions in time order\"}}"
-```
-
-The second operator identity is independent and is preserved for Poll:
-
-```bash
-curl --fail-with-body -sS "$LAS_BASE_URL/api/v1/submit" \
-  -H "$AUTH_HEADER" -H 'Content-Type: application/json' \
-  --data "{\"operator_id\":\"las_long_video_understand\",\"operator_version\":\"v1\",\"data\":{\"video_url\":\"$VIDEO_PATH\",\"task_template\":\"general_video_captioning\"}}"
-```
-
-Submit each explicit template by changing only `TEMPLATE`:
-
-```bash
-for TEMPLATE in general_video_captioning embodied_active_object_detection embodied_action_captioning; do
-  curl --fail-with-body -sS "$LAS_BASE_URL/api/v1/submit" \
-    -H "$AUTH_HEADER" -H 'Content-Type: application/json' \
-    --data "{\"operator_id\":\"las_video_understanding\",\"operator_version\":\"v1\",\"data\":{\"video_url\":\"$VIDEO_PATH\",\"task_template\":\"$TEMPLATE\"}}"
-done
-```
-
-Poll with the exact operator identity used at Submit:
-
-```bash
-export TASK_ID=the-returned-task-id
-curl --fail-with-body -sS "$LAS_BASE_URL/api/v1/poll" \
-  -H "$AUTH_HEADER" -H 'Content-Type: application/json' \
-  --data "{\"operator_id\":\"las_video_understanding\",\"operator_version\":\"v1\",\"task_id\":\"$TASK_ID\"}"
-```
-
-`query` is persisted for every template and is included in general-captioning
-prompts; embodied templates retain it only for request compatibility. Finite
-positive `fps` and optional `media_resolution`/`reasoning_effort`/`clip_context`
-(`low`, `medium`, or `high`) are persisted and passed to local inference.
-`start` and `end` must be provided together, must be finite, and must satisfy
-`0 <= start < end`. General captioning applies those bounds and requires the
-requested end to fit the probed video. Embodied templates persist paired bounds
-for request compatibility but always process the complete probed video. An
-explicit supported template or a non-blank query is required. The five
-compatibility fields `ark_api_key`, `ark_endpoint_id`, `use_responses_api`,
-`previous_response_ids`, and `expire_in` are accepted only to be discarded
-before logging or persistence, with warnings.
-
-### Interruption-safe local submission
-
-Use `las_repro.local_client.stateful_submit` around the Submit call. Its identity
-hash covers the normalized localhost service URL, operator, version, and
-sanitized local data, but never the bearer key or an Ark field. It atomically
-writes `SUBMITTING` before HTTP. If the call is interrupted, the response is
-malformed, or no task ID arrives, it writes `SUBMIT_UNKNOWN`; the same invocation
-then refuses to resubmit. Once a task ID is durable, repeating the same
-invocation returns that ID for Poll instead of creating another task. A different
-service deployment or request cannot reuse the same state file.
-
-```python
-import os
-from pathlib import Path
-import httpx
-from las_repro.local_client import stateful_submit
-
-base_url = os.environ["LAS_BASE_URL"].rstrip("/")
-api_key = os.environ["LOCAL_LAS_API_KEY"]
-submission = {
-    "operator_id": "las_video_understanding",
-    "operator_version": "v1",
-    "data": {
-        "video_url": os.environ["VIDEO_PATH"],
-        "query": "describe visible actions in time order",
-    },
-}
-
-def post(payload):
-    response = httpx.post(
-        base_url + "/api/v1/submit",
-        headers={"Authorization": f"Bearer {api_key}"},
-        json=payload,
-        timeout=60,
-    )
-    response.raise_for_status()
-    return response.json()
-
-task_id = stateful_submit(
-    Path("las_runs/local-demo/state.json"),
-    submission,
-    post,
-    service_identity=base_url,
-)
-print(task_id)  # Poll this ID; never delete an unknown state and blindly retry.
-```
-
-## Media policy and optional TOS
-
-Local sources are resolved through symlinks and must be regular files contained
-by a resolved `LAS_ALLOWED_MEDIA_ROOTS` directory. Keep requesters from writing
-to those trusted roots. HTTP(S) downloads reject loopback, link-local, private,
-multicast, and unspecified addresses before every redirect; redirects are capped
-at three, connect/read timeouts are bounded, and both Content-Length and streamed
-bytes are checked against `LAS_MAX_DOWNLOAD_BYTES`. Downloads use task-local
-partial files and atomic publication.
-
-For `tos://bucket/non-empty/key`, install `.[tos]` and set all four `LAS_TOS_*`
-fields at runtime. The SDK is lazy-loaded. Leaving them empty is the recommended
-Fake-mode path: local allowed files still work, while a TOS request fails clearly
-without logging credentials.
-
-Generated databases, models, `data/`, `work/`, `outputs/`, videos, audio files,
-caches, weights, `.env`, and `.superpowers/` evidence are excluded by Git. Keep
-source media, model snapshots, the database, and work directories on separately
-managed storage.
-
-## Two-video embodied workflow
-
-First submit `embodied_active_object_detection` with the silent wrist-view video.
-Poll it to `COMPLETED`, review `data.objects`, and turn only the confirmed stable
-instance names into a short naming hint such as `visible interacted object: red
-container`. Then submit the silent main-view video with
-`embodied_action_captioning` and:
-
-```json
-"task_context": {"prompt_context": "visible interacted object: red container"}
-```
-
-The hint is naming context, not an action SOP: an object absent from visible
-interaction must not be forced into output. The main-view flow runs 0805 Pass A,
-Pass B boundary fine segments, six-field enrichment, and a complete-video scene
-semantics pass while local validators own the final timestamps. The response
-keeps the contiguous training track in `segments`, exposes its deterministic
-longer projection as `grouped_semantic_events`, and separately exposes
-video-evidence scene fields (`objects`, `initial_state`, `final_state`, `outcome`,
-and overlap-capable `semantic_events`). If the scene pass remains schema-invalid
-after one repair, the fine track still completes with conservative empty scene
-fields and a `SCENE_SEMANTICS_UNAVAILABLE` warning.
-
-## Production process roles and offline GPU setup
-
-Run each role as a separate supervised process. The API never preprocesses or
-loads a model; the coordinator never imports GPU optional dependencies; each GPU
-worker loads one model on exactly one configured device:
-
-```bash
-las-repro api
-las-repro coordinator --worker-id coordinator-0
-las-repro ark-worker --model-name doubao-pro --worker-id ark-0
-las-repro cv-worker --provider sam31 --device 3 --worker-id cv-sam31-3
-```
-
-This is the primary ARK+SAM route: ARK is remote and consumes no local GPU;
-SAM owns physical GPU 3. The explicit alternate/rollback route replaces ARK
-with three local Qwen workers on physical GPUs 0, 1, and 2. Never run Qwen on
-GPU 3. See the [SAM3.1 runtime guide](docs/deployment/sam31-runtime.md) for the
-pinned install, smoke, lifecycle, cache quarantine, and rollback commands.
-
-On SIGTERM/SIGINT, a worker stops making new claims, finishes its current
-synchronous claim when possible, or fences an interrupted owner/generation by
-making its finite SQLite lease immediately recoverable. It then checkpoints its
-short-lived store connections and exits. Supervise the six processes and restart
-failed processes; do not run multiple workers with the same worker ID.
-
-On a connected staging machine, export the allowlisted snapshot and manifest:
-
-```bash
-export MODEL_EXPORT=/path/with/enough/space/qwen3-vl-8b-instruct
-python scripts/download_model.py --destination "$MODEL_EXPORT"
-```
-
-Transfer the repository, an offline wheelhouse, the model directory, and test
-media using operator-supplied environment variables. No address or credential is
-stored in this repository:
-
-```bash
-python -m pip download --dest "$WHEELHOUSE" '.[gpu]'
-scp -r "$MODEL_EXPORT" "$GPU_DESTINATION"
-scp -r "$WHEELHOUSE" "$GPU_DESTINATION"
-```
-
-After transfer, verify every file against `sha256-manifest.json` before loading:
-
-```bash
-python - "$MODEL_DIRECTORY" <<'PY'
-import hashlib, json, pathlib, sys
-root = pathlib.Path(sys.argv[1])
-manifest = json.loads((root / "sha256-manifest.json").read_text())
-for item in manifest["files"]:
-    path = root / item["path"]
-    assert path.is_file() and path.stat().st_size == item["size"]
-    with path.open("rb") as stream:
-        assert hashlib.file_digest(stream, "sha256").hexdigest() == item["sha256"]
-print(f"verified {len(manifest['files'])} files")
-PY
-```
-
-Point `LAS_MODEL_REGISTRY` at that verified local directory, install with
-`--no-index --find-links "$WHEELHOUSE"`, then run
-`scripts/gpu_smoke.py --model-dir "$MODEL_DIRECTORY" --video "$SILENT_VIDEO"
---devices 0,1,2`. The model loader enforces `local_files_only=True`, disables
-remote code, and assigns the full model to the worker's one `cuda:N` device.
-
-Hybrid results expose total, model, and CV evidence seconds; cache-hit state;
-processed-frame, entity, and track counts; peak allocated bytes; and repair and
-degradation counts. Evaluate frozen Qwen inputs and the hybrid output with:
-
-```bash
-python scripts/evaluate_las_alignment.py \
-  --reference-manifest "$REFERENCE_MANIFEST" \
-  --qwen-results "$QWEN_RESULTS" --qwen-metadata "$QWEN_METADATA" \
-  --doubao-results "$DOUBAO_RESULTS" --doubao-metadata "$DOUBAO_METADATA" \
-  --hybrid-results "$HYBRID_RESULTS" --hybrid-metadata "$HYBRID_METADATA" \
-  --artifact-root "$LAS_CV_CACHE_ROOT" --review "$REVIEW" \
-  --mapping evaluation/config/las_alignment_mapping_v1.json \
-  --output "$ALIGNMENT_REPORT"
-```
-
-Project the validated artifacts into a viewer variant. `HYBRID_VARIANT` is one
-of `doubao_only`, `doubao_sam31`, or `qwen_sam31`; fine evidence is optional:
-
-```bash
-python scripts/build_comparison_viewer_data.py \
-  --input-dir "$QWEN_RESULTS" --output-dir evaluation/viewer/data/local \
-  --manifest evaluation/viewer/data/manifest.json \
-  --hybrid-input-dir "$HYBRID_RESULTS" \
-  --hybrid-output-dir "evaluation/viewer/data/$HYBRID_VARIANT" \
-  --hybrid-metadata "$HYBRID_METADATA" --hybrid-variant "$HYBRID_VARIANT" \
-  --artifact-root "$LAS_CV_CACHE_ROOT" --review "$REVIEW" \
-  --media-dir evaluation/viewer/media --include-fine-segments
-```
-
-## Failures, logs, cleanup, and backup
-
-Authentication failures are HTTP 401. Invalid Submit/Poll contracts are a
-sanitized HTTP 422. Poll returns HTTP 404/`TASK_NOT_FOUND` for an unknown ID and
-HTTP 409 with `OPERATOR_MISMATCH` or `OPERATOR_VERSION_MISMATCH` for identity
-errors. Execution failures remain HTTP 200 with task status `FAILED`, business
-code `TASK_FAILED`, and a stable sanitized message. Worker diagnostics are
-reduced to stable summaries; never add request bodies, bearer headers, model
-prompts, or environment dumps to service logs.
-
-Task-local temporary files under `LAS_WORK_ROOT` are removed after terminal work;
-the database and completed result remain. For an online SQLite backup, use the
-SQLite backup API or CLI rather than copying only the main file while WAL writers
-are active:
-
-```bash
-sqlite3 "$LAS_DATABASE_PATH" ".backup '$BACKUP_PATH'"
-sqlite3 "$BACKUP_PATH" 'PRAGMA integrity_check;'
-```
-
-Restore only while all roles are stopped. Keep backup paths out of the repository.
-After restoring on POSIX, set the database to mode `0600` and ensure its parent
-still satisfies the trusted-directory policy before starting any role.
-
-## Verify visual-only, local operation
-
-The deterministic suite uses a generated video with no audio stream:
-
-```bash
-python -m pytest -q --cov=las_repro --cov-report=term-missing
-python -m pytest tests/test_repository_policy.py -q
-ffprobe -v error -select_streams a -show_entries stream=codec_type \
-  -of default=noprint_wrappers=1 "$SILENT_VIDEO"
-```
-
-The last command must print nothing. During Fake and GPU acceptance, run with
-non-loopback egress denied or observe `connect(2)`/firewall logs: Fake mode should
-show only the explicit localhost client connection, and Qwen mode must show no
-outbound Ark, Hugging Face, LAS, or other model-API connection. Inspect persisted
-payloads with SQLite and verify none of the five cloud-only field names or values
-exists.
