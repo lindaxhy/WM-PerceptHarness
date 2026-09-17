@@ -163,27 +163,38 @@ class _MaskArchiveWriter:
         object_offset: int,
         height: int,
         width: int,
-    ) -> tuple[int, float, tuple[float, float]]:
+    ) -> tuple[int, float, tuple[float, float]] | None:
+        """Archive one mask, or return None for an all-empty (invisible) mask.
+
+        A stale duplicate track can keep a live box after its object left the
+        scene while its mask is already empty; that object is invisible in
+        this frame and must not become an archive entry or reject the run.
+        Rows are buffered so emptiness is known before the entry is created:
+        a zip member cannot be deleted once opened.
+        """
         if self._closed:
             raise RuntimeError
         self.budget.reserve(height * width + _ZIP_ENTRY_ALLOWANCE)
-        mask_index = self.mask_count
-        member_name = f"masks/{mask_index:08d}.npy"
-        info = _zip_info(member_name)
+        rows: list[bytes] = []
         true_count = 0
         weighted_columns = 0
         weighted_rows = 0
+        for row_index in range(height):
+            row = _mask_row_bytes(masks, object_offset, row_index, width)
+            rows.append(row)
+            row_count = row.count(1)
+            true_count += row_count
+            weighted_rows += row_index * row_count
+            weighted_columns += sum(itertools.compress(range(width), row))
+        if true_count <= 0:
+            return None
+        mask_index = self.mask_count
+        member_name = f"masks/{mask_index:08d}.npy"
+        info = _zip_info(member_name)
         with self._archive.open(info, mode="w", force_zip64=True) as member:
             member.write(_npy_header("|b1", (height, width)))
-            for row_index in range(height):
-                row = _mask_row_bytes(masks, object_offset, row_index, width)
+            for row in rows:
                 member.write(row)
-                row_count = row.count(1)
-                true_count += row_count
-                weighted_rows += row_index * row_count
-                weighted_columns += sum(itertools.compress(range(width), row))
-        if true_count <= 0:
-            raise ValueError
         self.mask_count += 1
         pixels = height * width
         return (
@@ -1722,20 +1733,26 @@ def _parse_frame_response(
             )
             continue
         if mask_writer is None:
-            area_fraction, center_xy = _consume_mask_rows(
+            consumed = _consume_mask_rows(
                 masks,
                 object_offset,
                 masks_shape[1],
                 masks_shape[2],
             )
+            if consumed is None:
+                continue
+            area_fraction, center_xy = consumed
             mask_index = -1
         else:
-            mask_index, area_fraction, center_xy = mask_writer.write_mask(
+            written = mask_writer.write_mask(
                 masks,
                 object_offset,
                 masks_shape[1],
                 masks_shape[2],
             )
+            if written is None:
+                continue
+            mask_index, area_fraction, center_xy = written
         detections.append(
             _Detection(
                 local_frame_index=local_index,
@@ -1833,7 +1850,8 @@ def _strict_mask_boolean(value: Any) -> bool:
 
 def _consume_mask_rows(
     masks: Any, object_offset: int, height: int, width: int
-) -> tuple[float, tuple[float, float]]:
+) -> tuple[float, tuple[float, float]] | None:
+    """Scan one mask; None means all-empty (the object is invisible)."""
     true_count = 0
     weighted_columns = 0
     weighted_rows = 0
@@ -1844,7 +1862,7 @@ def _consume_mask_rows(
         weighted_rows += row_index * row_count
         weighted_columns += sum(itertools.compress(range(width), row))
     if true_count <= 0:
-        raise ValueError
+        return None
     pixels = height * width
     return (
         true_count / pixels,

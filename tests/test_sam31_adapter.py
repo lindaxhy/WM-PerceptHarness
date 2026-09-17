@@ -777,13 +777,12 @@ def test_mask_row_conversion_fallback_and_empty_mask_contract() -> None:
             return RowWithoutOrderArgument()
 
     assert SAM31_MODULE._mask_row_bytes(ConvertedMask(), 0, 0, 2) == b"\x01\x00"
-    with pytest.raises(ValueError):
-        SAM31_MODULE._consume_mask_rows(
-            array([[[False, False], [False, False]]], (1, 2, 2), "b"),
-            0,
-            2,
-            2,
-        )
+    assert SAM31_MODULE._consume_mask_rows(
+        array([[[False, False], [False, False]]], (1, 2, 2), "b"),
+        0,
+        2,
+        2,
+    ) is None
 
 
 def test_adapter_rejects_projected_mask_output_before_reading_rows(
@@ -886,6 +885,59 @@ def test_empty_detections_are_valid_and_still_close_the_session(
     assert artifact.processed_timeline == request.timeline
     assert [file.path for file in artifact.files] == ["masks/right_hand.npz"]
     assert predictor.requests[-1]["type"] == "close_session"
+
+
+def test_blank_mask_object_is_skipped_like_removed_not_fatal(
+    tmp_path: Path, fake_torch: SimpleNamespace
+) -> None:
+    """A live box whose mask is all-empty (stale duplicate track) must not
+    reject the artifact; it publishes no detection for that frame."""
+    request = make_request(
+        tmp_path, entities=(make_request(tmp_path).entities[0],)
+    )
+
+    def stream(
+        session_number: int, prompt: str, payload: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        del session_number, prompt
+        outputs = []
+        for index in range(
+            payload["start_frame_index"],
+            payload["start_frame_index"] + payload["max_frame_num_to_track"],
+        ):
+            if index == 1:
+                outputs.append(
+                    frame_output(
+                        index,
+                        object_ids=[1, 2],
+                        probabilities=[0.875, 0.8],
+                        boxes=[[0.1, 0.2, 0.4, 0.5], [0.5, 0.5, 0.2, 0.2]],
+                        masks=[
+                            [[True, False], [False, True]],
+                            [[False, False], [False, False]],
+                        ],
+                        mask_shape=(2, 2, 2),
+                    )
+                )
+            else:
+                outputs.append(frame_output(index))
+        return outputs
+
+    provider = make_provider(
+        PredictorDouble(stream), fake_torch, MaterializerDouble()
+    )
+
+    artifact = provider.analyze(request, tmp_path / "staging")
+
+    assert artifact.tracks
+    # Frame 1's blank-mask object (id 2) publishes no observation: every
+    # archived observation carries a real mask reference.
+    for track in artifact.tracks:
+        for observation in track.observations:
+            assert observation.mask_ref is not None
+    with zipfile.ZipFile(tmp_path / "staging" / "masks/right_hand.npz") as archive:
+        object_ids = read_int64_array(archive, "object_ids.npy")
+        assert 2 not in object_ids
 
 
 def test_removed_sentinel_does_not_publish_detection(
