@@ -3670,3 +3670,170 @@ def test_a_real_reappearance_longer_than_the_blink_cap_keeps_two_gaps() -> None:
         if item.target_entity_id == "cup"
     ]
     assert [c.last_visible_frame for c in candidates] == [9, 17]
+
+
+def _shifted_box(
+    base: tuple[float, float, float, float], dx: float
+) -> tuple[float, float, float, float]:
+    left, top, right, bottom = base
+    return (left + dx, top, right + dx, bottom)
+
+
+def test_duplicate_same_entity_tracks_fuse_to_one_and_lose_their_candidates() -> None:
+    """Persistently coinciding same-entity tracks are one physical instance."""
+    box = (0.30, 0.30, 0.50, 0.50)
+    primary = _track(
+        "apple_0",
+        "apple",
+        tuple(_observation(index, bbox_xyxy=box) for index in range(8)),
+    )
+    # The duplicate coincides on every common frame but has a visibility gap,
+    # which previously produced a spurious occlusion candidate.
+    duplicate = _track(
+        "apple_1",
+        "apple",
+        tuple(
+            _observation(
+                index,
+                bbox_xyxy=_shifted_box(box, 0.004),
+                visible=index not in (3, 4),
+            )
+            for index in range(8)
+        ),
+    )
+    witness = _track(
+        "board_0",
+        "board",
+        tuple(
+            _observation(index, bbox_xyxy=(0.28, 0.28, 0.52, 0.52))
+            for index in range(8)
+        ),
+    )
+    summary = summarize_cv_evidence(_artifact((primary, duplicate, witness)))
+
+    kept_ids = {track.track_id for track in summary.tracks}
+    assert kept_ids == {"apple_0", "board_0"}
+    thresholds = EvidenceThresholds(
+        min_confidence=0.5,
+        min_area_fraction=0.01,
+        occlusion_visibility_drop=0.5,
+    )
+    candidates = build_occlusion_candidates(summary, thresholds)
+    assert all(
+        candidate.target_track_id != "apple_1" for candidate in candidates
+    )
+
+
+def test_separated_same_entity_tracks_are_distinct_instances_and_kept() -> None:
+    """Side-by-side look-alike objects never fuse: their IoU stays low."""
+    left_apple = _track(
+        "apple_0",
+        "apple",
+        tuple(
+            _observation(index, bbox_xyxy=(0.20, 0.30, 0.32, 0.42))
+            for index in range(8)
+        ),
+    )
+    right_apple = _track(
+        "apple_1",
+        "apple",
+        tuple(
+            _observation(index, bbox_xyxy=(0.34, 0.30, 0.46, 0.42))
+            for index in range(8)
+        ),
+    )
+    summary = summarize_cv_evidence(_artifact((left_apple, right_apple)))
+    assert {track.track_id for track in summary.tracks} == {
+        "apple_0",
+        "apple_1",
+    }
+
+
+def test_coinciding_cross_entity_tracks_never_fuse() -> None:
+    """Identity fusion is entity-scoped: different entities stay distinct."""
+    box = (0.30, 0.30, 0.50, 0.50)
+    apple = _track(
+        "apple_0",
+        "apple",
+        tuple(_observation(index, bbox_xyxy=box) for index in range(8)),
+    )
+    sticker = _track(
+        "sticker_0",
+        "sticker",
+        tuple(_observation(index, bbox_xyxy=box) for index in range(8)),
+    )
+    summary = summarize_cv_evidence(_artifact((apple, sticker)))
+    assert {track.track_id for track in summary.tracks} == {
+        "apple_0",
+        "sticker_0",
+    }
+
+
+def test_duplicate_fusion_keeps_the_most_observed_track() -> None:
+    box = (0.30, 0.30, 0.50, 0.50)
+    shorter = _track(
+        "apple_0",
+        "apple",
+        tuple(_observation(index, bbox_xyxy=box) for index in range(6)),
+    )
+    longer = _track(
+        "apple_1",
+        "apple",
+        tuple(_observation(index, bbox_xyxy=box) for index in range(9)),
+    )
+    summary = summarize_cv_evidence(_artifact((shorter, longer)))
+    assert {track.track_id for track in summary.tracks} == {"apple_1"}
+
+
+def test_relation_floor_reaches_late_transition_under_exhausted_cap() -> None:
+    """A flood of early-frame transitions cannot starve a later target."""
+    # Six noisy entities all vanish after frame 0 (transition at frame 0)
+    # while overlapping each other, flooding early positive-transition pairs.
+    noisy_tracks = tuple(
+        _track(
+            f"noise_{index}",
+            f"noise_entity_{index}",
+            (
+                _observation(0, bbox_xyxy=(0.10, 0.10, 0.30, 0.30)),
+                _observation(
+                    1, bbox_xyxy=(0.10, 0.10, 0.30, 0.30), visible=False
+                ),
+                _observation(6, bbox_xyxy=(0.10, 0.10, 0.30, 0.30)),
+            ),
+        )
+        for index in range(6)
+    )
+    # The quiet target loses visibility late; its only occluder witness is
+    # the panel overlapping it at the late transition frame.
+    target = _track(
+        "target_0",
+        "target",
+        (
+            _observation(0, bbox_xyxy=(0.60, 0.60, 0.72, 0.72)),
+            _observation(5, bbox_xyxy=(0.60, 0.60, 0.72, 0.72)),
+            _observation(6, bbox_xyxy=(0.60, 0.60, 0.72, 0.72), visible=False),
+        ),
+    )
+    panel = _track(
+        "panel_0",
+        "panel",
+        tuple(
+            _observation(index, bbox_xyxy=(0.58, 0.58, 0.80, 0.80))
+            for index in range(7)
+        ),
+    )
+    artifact = _artifact(noisy_tracks + (target, panel))
+
+    # Fifteen positive transition pairs exist at frame 0 alone, so a
+    # frame-ascending scan exhausts this cap before ever reaching frame 5;
+    # the round-robin floor hands every (track, boundary) unit one witness
+    # first.
+    summary = summarize_cv_evidence(artifact, max_relations=15)
+
+    target_witnesses = [
+        relation
+        for relation in summary.relations
+        if "target_0" in (relation.subject_track_id, relation.object_track_id)
+        and relation.frame_index == 5
+    ]
+    assert target_witnesses, "late transition target lost its only witness"

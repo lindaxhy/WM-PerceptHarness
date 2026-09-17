@@ -8,6 +8,7 @@ mask IoU.
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
 import hashlib
@@ -91,6 +92,16 @@ _ABS_MAX_INPUT_STRING_CHARS = 512
 _ABS_MAX_SUMMARY_WARNINGS = 64
 _MAX_VISIBILITY_RUNS_PER_TRACK = 256
 _MAX_RELATION_PAIR_SCANS = 262_144
+# Same-entity tracks whose boxes coincide this strongly on their shared
+# visible frames are duplicate detections of one physical instance, not two
+# look-alike objects standing apart (those overlap rarely and weakly).
+_DUPLICATE_TRACK_IOU = 0.8
+_DUPLICATE_TRACK_OVERLAP_RATIO = 0.8
+_DUPLICATE_TRACK_MIN_COMMON_FRAMES = 4
+# Guaranteed transition-frame relation quota per track: a track with a
+# visibility gap keeps this many of its own boundary witnesses before any
+# other track may consume the remaining global relation capacity.
+_MIN_TRANSITION_RELATIONS_PER_TRACK = 32
 _EDGE_PROXIMITY_THRESHOLD = 0.05
 _MANDATORY_PRIORITY_TEXT = (
     "first,last,state_changes,min_area_context,max_area,lowest_confidence_context"
@@ -2617,6 +2628,101 @@ def _validated_frame_clock(
     return processed if artifact.status is EvidenceStatus.AVAILABLE else ()
 
 
+def _observation_iou(
+    left_box: tuple[float, float, float, float],
+    right_box: tuple[float, float, float, float],
+) -> float:
+    left, top, right, bottom = left_box
+    other_left, other_top, other_right, other_bottom = right_box
+    intersection_width = max(0.0, min(right, other_right) - max(left, other_left))
+    intersection_height = max(0.0, min(bottom, other_bottom) - max(top, other_top))
+    intersection = intersection_width * intersection_height
+    union = (
+        (right - left) * (bottom - top)
+        + (other_right - other_left) * (other_bottom - other_top)
+        - intersection
+    )
+    return intersection / union if union > 0.0 else 0.0
+
+
+def _duplicate_track_ids(tracks: tuple[CvTrack, ...]) -> frozenset[str]:
+    """Return same-entity tracks that duplicate another track's instance.
+
+    Two tracks of one entity that persistently share high-IoU boxes on their
+    common visible frames are the same physical instance reported twice by
+    the tracker (multi-instance prompts on look-alike objects).  Distinct
+    look-alike instances keep separate boxes, so their common-frame IoU stays
+    low and they never fuse.  Duplicates are dropped whole rather than merged:
+    interleaving observations from two tracker identities could produce
+    geometry no single identity ever reported, while the retained track
+    already covers the same span by construction.
+    """
+    visible_boxes: dict[str, dict[int, tuple[float, float, float, float]]] = {}
+    groups: dict[str, list[CvTrack]] = {}
+    for track in tracks:
+        if track.status is not EvidenceStatus.AVAILABLE:
+            continue
+        groups.setdefault(track.entity_id, []).append(track)
+        visible_boxes[track.track_id] = {
+            observation.frame_index: observation.bbox_xyxy
+            for observation in track.observations
+            if observation.visible
+        }
+
+    parent: dict[str, str] = {}
+
+    def find(track_id: str) -> str:
+        root = track_id
+        while parent.get(root, root) != root:
+            root = parent[root]
+        while parent.get(track_id, track_id) != root:
+            parent[track_id], track_id = root, parent[track_id]
+        return root
+
+    def union(left_id: str, right_id: str) -> None:
+        left_root, right_root = find(left_id), find(right_id)
+        if left_root != right_root:
+            parent[max(left_root, right_root)] = min(left_root, right_root)
+
+    for entity_id in sorted(groups):
+        group = sorted(groups[entity_id], key=lambda item: item.track_id)
+        for subject_index, subject in enumerate(group):
+            subject_boxes = visible_boxes[subject.track_id]
+            for other in group[subject_index + 1 :]:
+                other_boxes = visible_boxes[other.track_id]
+                common = subject_boxes.keys() & other_boxes.keys()
+                if len(common) < _DUPLICATE_TRACK_MIN_COMMON_FRAMES:
+                    continue
+                coinciding = sum(
+                    _observation_iou(subject_boxes[frame], other_boxes[frame])
+                    > _DUPLICATE_TRACK_IOU
+                    for frame in common
+                )
+                if coinciding / len(common) > _DUPLICATE_TRACK_OVERLAP_RATIO:
+                    union(subject.track_id, other.track_id)
+
+    if not parent:
+        return frozenset()
+    members: dict[str, list[str]] = {}
+    for track in tracks:
+        if track.track_id in visible_boxes:
+            members.setdefault(find(track.track_id), []).append(track.track_id)
+    counts = {
+        track.track_id: sum(
+            observation.visible for observation in track.observations
+        )
+        for track in tracks
+        if track.track_id in visible_boxes
+    }
+    dropped: set[str] = set()
+    for group_ids in members.values():
+        if len(group_ids) < 2:
+            continue
+        keep = max(sorted(group_ids), key=lambda track_id: counts[track_id])
+        dropped.update(track_id for track_id in group_ids if track_id != keep)
+    return frozenset(dropped)
+
+
 def _assemble_summary(
     artifact: CvEvidenceArtifact,
     frame_clock: tuple[FrameTimestamp, ...],
@@ -2639,6 +2745,11 @@ def _assemble_summary(
             ),
         )
     )
+    duplicate_ids = _duplicate_track_ids(all_tracks)
+    if duplicate_ids:
+        all_tracks = tuple(
+            track for track in all_tracks if track.track_id not in duplicate_ids
+        )
     selected_tracks = (
         all_tracks[:track_cap]
         if artifact.status is EvidenceStatus.AVAILABLE
@@ -3338,9 +3449,81 @@ def _relations(
         return (), total_relations, True
     pair_scans = 0
     scan_complete = True
+    selected_pairs: set[tuple[str, str, int]] = set()
+
+    def transition_pairs(
+        track_id: str, frame_index: int
+    ) -> Iterator[tuple[int, str, SummaryObservation, str, SummaryObservation]]:
+        for subject_index, (subject_track_id, subject) in enumerate(
+            aligned_by_frame.get(frame_index, ())
+        ):
+            for object_track_id, object_observation in aligned_by_frame[
+                frame_index
+            ][subject_index + 1 :]:
+                if track_id in (subject_track_id, object_track_id):
+                    yield (
+                        frame_index,
+                        subject_track_id,
+                        subject,
+                        object_track_id,
+                        object_observation,
+                    )
+
     # Positive overlap at a visibility boundary is the strongest geometric
-    # support for an occlusion candidate.  Consider those pairs before ordinary
-    # early-frame overlap so a finite cap cannot starve later transitions.
+    # support for an occlusion candidate.  The floor pass runs first and
+    # round-robins across every (gapped track, transition frame) unit — one
+    # boundary witness per unit per round — so a flood of early-frame
+    # transitions from noisy duplicate tracks cannot exhaust the global
+    # capacity before later or quieter targets receive witnesses for their
+    # own boundaries.
+    floor_remaining = {
+        track_id: _MIN_TRANSITION_RELATIONS_PER_TRACK
+        for track_id in transition_frames_by_track
+    }
+    pending = deque(
+        (track_id, transition_pairs(track_id, frame_index))
+        for track_id in sorted(transition_frames_by_track)
+        for frame_index in sorted(transition_frames_by_track[track_id])
+    )
+    while pending:
+        track_id, iterator = pending.popleft()
+        if floor_remaining[track_id] <= 0 or len(relations) == cap:
+            continue
+        for (
+            frame_index,
+            subject_track_id,
+            subject,
+            object_track_id,
+            object_observation,
+        ) in iterator:
+            pair_key = (subject_track_id, object_track_id, frame_index)
+            if pair_key in selected_pairs:
+                continue
+            pair_scans += 1
+            if pair_scans > _MAX_RELATION_PAIR_SCANS:
+                scan_complete = False
+                return tuple(relations), total_relations, scan_complete
+            if not _boxes_overlap(subject.bbox_xyxy, object_observation.bbox_xyxy):
+                continue
+            selected_pairs.add(pair_key)
+            for endpoint in (subject_track_id, object_track_id):
+                if frame_index in transition_frames_by_track.get(endpoint, ()):
+                    remaining = floor_remaining.get(endpoint, 0)
+                    if remaining > 0:
+                        floor_remaining[endpoint] = remaining - 1
+            relations.append(
+                _spatial_relation(
+                    subject_track_id,
+                    subject,
+                    object_track_id,
+                    object_observation,
+                )
+            )
+            if len(relations) == cap:
+                return tuple(relations), total_relations, scan_complete
+            pending.append((track_id, iterator))
+            break
+
     for require_transition, retain_positive in (
         (True, True),
         (False, True),
@@ -3352,6 +3535,9 @@ def _relations(
             for subject_index, (subject_track_id, subject) in enumerate(aligned):
                 for object_index in range(subject_index + 1, len(aligned)):
                     object_track_id, object_observation = aligned[object_index]
+                    pair_key = (subject_track_id, object_track_id, frame_index)
+                    if pair_key in selected_pairs:
+                        continue
                     supports_transition = (
                         frame_index
                         in transition_frames_by_track.get(subject_track_id, ())
@@ -3369,6 +3555,7 @@ def _relations(
                     )
                     if positive != retain_positive:
                         continue
+                    selected_pairs.add(pair_key)
                     relations.append(
                         _spatial_relation(
                             subject_track_id,
