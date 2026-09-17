@@ -92,6 +92,110 @@ _ROLE_PRIORITY = {
     EntityRole.OTHER: 5,
 }
 
+# Roles whose look-alike instances may be folded into one category prompt.
+# Actors (hands) and surfaces keep their per-instance identity.
+_CATEGORY_MERGE_ROLES = frozenset(
+    {
+        EntityRole.MANIPULATED_OBJECT,
+        EntityRole.CONTAINER,
+        EntityRole.OCCLUDER,
+        EntityRole.OTHER,
+    }
+)
+
+# Appearance-only modifiers: names that differ from their head noun by only
+# these words describe look-alike instances of one category, not distinct
+# kinds of object. Material words (wooden, metal, ...) are deliberately
+# absent — a material difference often marks a genuinely different object.
+_APPEARANCE_MODIFIERS = frozenset(
+    {
+        # colors
+        "red", "orange", "yellow", "green", "blue", "purple", "pink",
+        "brown", "black", "white", "gray", "grey", "golden", "silver",
+        "beige", "cream", "tan", "cyan", "magenta", "violet", "maroon",
+        "navy", "teal",
+        # tone
+        "dark", "light", "bright", "pale", "deep", "vivid", "dull",
+        # pattern and finish
+        "striped", "spotted", "dotted", "checkered", "plain", "glossy",
+        "matte", "shiny", "transparent", "clear", "translucent", "opaque",
+        # shape and size
+        "round", "oblong", "square", "rectangular", "oval", "long",
+        "short", "small", "large", "tiny", "big", "little", "mini",
+        # visibility
+        "partially", "hidden", "visible", "exposed", "whole", "half",
+    }
+)
+
+
+def _appearance_only_modifiers(canonical_key: str) -> str | None:
+    """Return the head noun when every other word is an appearance modifier.
+
+    SAM3.1 multiplex assigns one object id per matched instance of a single
+    prompt, so look-alike instances ("bright pink-red apple", "light red
+    apple", ...) belong in ONE category prompt ("apple") rather than one
+    prompt each — separate prompts each re-track every look-alike and the
+    track count multiplies. Conservative by construction: any modifier word
+    outside the appearance list keeps the name as its own entity.
+    """
+    words = canonical_key.split(" ")
+    head = words[-1]
+    if not head or head in _APPEARANCE_MODIFIERS:
+        return None
+    for word in words[:-1]:
+        for piece in word.split("-"):
+            if piece and piece not in _APPEARANCE_MODIFIERS:
+                return None
+    return head
+
+
+def _merge_lookalike_categories(
+    merged: dict[str, _MergedEntity]
+) -> dict[str, _MergedEntity]:
+    """Fold ≥2 look-alike same-category instances into one category entity."""
+    groups: dict[str, list[str]] = {}
+    for key, record in merged.items():
+        if record.role not in _CATEGORY_MERGE_ROLES:
+            continue
+        head = _appearance_only_modifiers(key)
+        if head is not None:
+            groups.setdefault(head, []).append(key)
+
+    result = dict(merged)
+    for head, keys in groups.items():
+        if len(keys) < 2:
+            continue
+        members = [merged[key] for key in sorted(keys)]
+        role = min(members, key=lambda r: _ROLE_PRIORITY[r.role]).role
+        category = result.get(head)
+        if category is None or head in keys:
+            category = _MergedEntity(
+                canonical_key=head,
+                canonical_label=_truncate_with_hash(head, _MAX_ENTITY_NAME_CHARS),
+                role=role,
+            )
+        elif category.role not in _CATEGORY_MERGE_ROLES:
+            # The bare head noun already names an unmergeable entity
+            # (e.g. an actor); leave the whole group untouched.
+            continue
+        if _ROLE_PRIORITY[role] < _ROLE_PRIORITY[category.role]:
+            category.role = role
+        for member in members:
+            if member.canonical_key != head:
+                category.aliases.setdefault(
+                    member.canonical_key,
+                    _truncate_with_hash(
+                        member.canonical_key, _MAX_ENTITY_ALIAS_CHARS
+                    ),
+                )
+            for alias_key, alias_label in member.aliases.items():
+                if alias_key != head:
+                    category.aliases.setdefault(alias_key, alias_label)
+        for key in keys:
+            result.pop(key, None)
+        result[head] = category
+    return result
+
 
 def _normalize_text(value: str) -> str:
     """Apply only deterministic whitespace and Unicode case normalization."""
@@ -194,7 +298,7 @@ def normalize_entities(
             )
 
     ordered = sorted(
-        merged.values(),
+        _merge_lookalike_categories(merged).values(),
         key=lambda record: (_ROLE_PRIORITY[record.role], record.canonical_key),
     )
     omitted_count = max(0, len(ordered) - limit)

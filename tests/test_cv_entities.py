@@ -428,3 +428,102 @@ def test_entity_candidate_enum_preflight_rejects_scalar_subclasses(role: object)
     assert EntityCandidate.model_validate(
         {"name": "item", "aliases": [], "role": "other"}
     ).role is EntityRole.OTHER
+
+
+def _lookalike(name: str, role: str = "manipulated_object", aliases: tuple[str, ...] = ()) -> EntityCandidate:
+    return EntityCandidate(name=name, aliases=aliases, role=role)
+
+
+def test_lookalike_instances_merge_into_one_category_prompt() -> None:
+    """Five look-alike apples become one 'apple' prompt keeping names as aliases."""
+    normalized = normalize_entities(
+        [
+            _lookalike("bright pink-red apple"),
+            _lookalike("light red apple"),
+            _lookalike("dark red apple"),
+            _lookalike("striped red apple"),
+            _lookalike("partially hidden red apple"),
+            _lookalike("yellow woven basket", role="container"),
+        ]
+    )
+    labels = [entity.canonical_label for entity in normalized.entities]
+    assert labels == ["apple", "yellow woven basket"]
+    [apple, _] = normalized.entities
+    assert apple.entity_id == "apple"
+    assert set(apple.aliases) == {
+        "bright pink-red apple",
+        "light red apple",
+        "dark red apple",
+        "striped red apple",
+        "partially hidden red apple",
+    }
+    assert apple.role is EntityRole.MANIPULATED_OBJECT
+
+
+def test_lookalike_merge_absorbs_a_bare_head_noun_member() -> None:
+    normalized = normalize_entities(
+        [_lookalike("apple", aliases=("fruit ball",)), _lookalike("red apple")]
+    )
+    assert [entity.canonical_label for entity in normalized.entities] == ["apple"]
+    assert set(normalized.entities[0].aliases) == {"fruit ball", "red apple"}
+
+
+def test_single_instances_and_distinct_heads_do_not_merge() -> None:
+    normalized = normalize_entities(
+        [
+            _lookalike("red apple"),
+            _lookalike("yellow cup", role="container"),
+            _lookalike("green cloth", role="occluder"),
+        ]
+    )
+    assert [entity.canonical_label for entity in normalized.entities] == [
+        "red apple",
+        "yellow cup",
+        "green cloth",
+    ]
+
+
+def test_material_modifiers_block_the_lookalike_merge() -> None:
+    """'light wooden board' vs 'light gray board': material word keeps them apart."""
+    normalized = normalize_entities(
+        [_lookalike("light wooden board"), _lookalike("light gray board")]
+    )
+    assert [entity.canonical_label for entity in normalized.entities] == [
+        "light gray board",
+        "light wooden board",
+    ]
+
+
+def test_actor_hands_never_merge() -> None:
+    normalized = normalize_entities(
+        [
+            _lookalike("left hand", role="actor"),
+            _lookalike("right hand", role="actor"),
+        ]
+    )
+    assert [entity.canonical_label for entity in normalized.entities] == [
+        "left hand",
+        "right hand",
+    ]
+
+
+def test_surfaces_never_merge() -> None:
+    normalized = normalize_entities(
+        [
+            _lookalike("dark table", role="surface"),
+            _lookalike("light table", role="surface"),
+        ]
+    )
+    assert len(normalized.entities) == 2
+
+
+def test_merge_takes_highest_priority_role_in_the_group() -> None:
+    normalized = normalize_entities(
+        [
+            _lookalike("red tray", role="occluder"),
+            _lookalike("blue tray", role="container"),
+        ]
+    )
+    [tray] = normalized.entities
+    assert tray.canonical_label == "tray"
+    assert tray.role is EntityRole.CONTAINER
