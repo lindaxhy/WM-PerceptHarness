@@ -61,6 +61,16 @@ _MAX_GIT_SOURCE_BYTES = 1024 * 1024 * 1024
 _BPE_REPOSITORY_PATH = "sam3/assets/bpe_simple_vocab_16e6.txt.gz"
 # Pinned sam3_multiplex_base.py uses this score for removed objects.
 _REMOVED_OBJECT_SCORE = -10000.0
+# Alias fallback tuning: a canonical-label run covering at least this fraction
+# of the sampled frames is trusted outright; below it, aliases are probed.
+_ALIAS_RETRY_MAX_COVERAGE = 0.5
+# An alias run replaces the canonical one only when it covers at least this
+# much more of the video, so near-ties never churn the track.
+_ALIAS_MIN_COVERAGE_GAIN = 0.15
+# Where both runs observe the entity, their per-frame union boxes must agree
+# at least this well; an alias that matched a different object is rejected.
+_ALIAS_CONSISTENCY_MIN_IOU = 0.4
+_ALIAS_CONSISTENCY_MIN_FRAMES = 1
 _NETWORK_PREFIX = re.compile(
     r"(?i)^(?:https?|ssh|git|ftp|s3|gs|hf)://|^[^/\\\s]+@[^/\\\s]+:"
 )
@@ -664,12 +674,17 @@ class Sam31EvidenceProvider:
         dimensions = _sampled_frame_dimensions(sampled)
 
         def run_with_alias_fallback(entity: Any) -> _PromptRun:
-            """Retry an entity with its aliases when the canonical label finds nothing.
+            """Prefer the canonical label; adopt an alias with clearly better coverage.
 
             The canonical label is a VLM-chosen name; a wrong attribute in it
             (for example a misjudged color) can push open-vocabulary matching
-            under threshold even though the entity is plainly visible. Aliases
-            from the same nomination frequently still match.
+            under threshold even though the entity is plainly visible —
+            sometimes only during part of the video. Aliases from the same
+            nomination frequently still match. An alias run replaces the
+            canonical one only when it covers clearly more sampled frames
+            AND, on frames where both runs see the entity, their detections
+            agree on where it is, so an alias that matched some other object
+            can never hijack the track.
             """
             mask_path = (
                 masks_directory / f"{entity.entity_id}.npz"
@@ -677,25 +692,55 @@ class Sam31EvidenceProvider:
                 else None
             )
             labels = (entity.canonical_label, *tuple(entity.aliases)[:2])
-            last: _PromptRun | None = None
-            for position, label in enumerate(labels):
-                run = self._run_prompt(
+
+            def execute(label: str, destination: Path | None) -> _PromptRun:
+                return self._run_prompt(
                     request,
                     sampled,
                     session_id,
                     entity,
                     dimensions,
-                    mask_path=mask_path,
+                    mask_path=destination,
                     budget=budget,
                     prompt_text=label,
                 )
-                if run.detections or position + 1 == len(labels):
-                    return run
-                last = run
-                if mask_path is not None:
-                    mask_path.unlink(missing_ok=True)
-            assert last is not None
-            return last
+
+            canonical = execute(labels[0], mask_path)
+            coverage = _prompt_coverage(canonical)
+            if len(labels) == 1 or coverage >= _ALIAS_RETRY_MAX_COVERAGE:
+                return canonical
+            if coverage == 0.0:
+                # Nothing to protect: the first alias that sees the entity wins.
+                last = canonical
+                for label in labels[1:]:
+                    if mask_path is not None:
+                        mask_path.unlink(missing_ok=True)
+                    run = execute(label, mask_path)
+                    if _prompt_coverage(run) > 0.0:
+                        return run
+                    last = run
+                return last
+            # The canonical label sees the entity in only part of the video.
+            # Probe the aliases without masks and keep the best clear improver.
+            best: tuple[str, float, _PromptRun] | None = None
+            for label in labels[1:]:
+                probe = execute(label, None)
+                probe_coverage = _prompt_coverage(probe)
+                if probe_coverage < coverage + _ALIAS_MIN_COVERAGE_GAIN:
+                    continue
+                if best is None or probe_coverage > best[1]:
+                    best = (label, probe_coverage, probe)
+            if best is None:
+                return canonical
+            if mask_path is None:
+                return best[2]
+            mask_path.unlink(missing_ok=True)
+            replacement = execute(best[0], mask_path)
+            if _alias_replacement_consistent(canonical, replacement):
+                return replacement
+            # The alias matched something else; restore the canonical masks.
+            mask_path.unlink(missing_ok=True)
+            return execute(labels[0], mask_path)
 
         with _predictor_session(self._predictor, sampled) as session_id:
             return tuple(
@@ -1940,6 +1985,66 @@ def _bounded_float(value: Any, *, lower: float, upper: float) -> float:
     if not math.isfinite(converted) or not lower <= converted <= upper:
         raise ValueError
     return converted
+
+
+def _prompt_coverage(run: _PromptRun) -> float:
+    """Fraction of sampled frames where the prompt detected the entity."""
+    if not run.present_ids_by_frame:
+        return 0.0
+    detected = sum(1 for identifiers in run.present_ids_by_frame if identifiers)
+    return detected / len(run.present_ids_by_frame)
+
+
+def _frame_union_boxes(
+    run: _PromptRun,
+) -> dict[int, tuple[float, float, float, float]]:
+    """Per-frame union of the run's detection boxes as (x0, y0, x1, y1)."""
+    boxes: dict[int, tuple[float, float, float, float]] = {}
+    for detection in run.detections:
+        x, y, width, height = detection.box_xywh
+        candidate = (x, y, x + width, y + height)
+        existing = boxes.get(detection.local_frame_index)
+        if existing is not None:
+            candidate = (
+                min(existing[0], candidate[0]),
+                min(existing[1], candidate[1]),
+                max(existing[2], candidate[2]),
+                max(existing[3], candidate[3]),
+            )
+        boxes[detection.local_frame_index] = candidate
+    return boxes
+
+
+def _box_iou(
+    first: tuple[float, float, float, float],
+    second: tuple[float, float, float, float],
+) -> float:
+    width = min(first[2], second[2]) - max(first[0], second[0])
+    height = min(first[3], second[3]) - max(first[1], second[1])
+    if width <= 0.0 or height <= 0.0:
+        return 0.0
+    intersection = width * height
+    first_area = (first[2] - first[0]) * (first[3] - first[1])
+    second_area = (second[2] - second[0]) * (second[3] - second[1])
+    union = first_area + second_area - intersection
+    return intersection / union if union > 0.0 else 0.0
+
+
+def _alias_replacement_consistent(
+    canonical: _PromptRun, replacement: _PromptRun
+) -> bool:
+    """Do both runs point at the same physical entity where both see it?"""
+    reference = _frame_union_boxes(canonical)
+    candidate = _frame_union_boxes(replacement)
+    if not reference:
+        return True
+    common = sorted(set(reference) & set(candidate))
+    if len(common) < _ALIAS_CONSISTENCY_MIN_FRAMES:
+        return False
+    overlaps = sorted(
+        _box_iou(reference[index], candidate[index]) for index in common
+    )
+    return overlaps[len(overlaps) // 2] >= _ALIAS_CONSISTENCY_MIN_IOU
 
 
 def _visibility_change_source_indices(

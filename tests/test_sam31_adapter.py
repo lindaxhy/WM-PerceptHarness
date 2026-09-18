@@ -3864,3 +3864,105 @@ def test_alias_fallback_keeps_empty_run_when_every_label_misses(
     assert prompts == ["right hand", "red cup", "cup"]
     tracked = {track.entity_id for track in artifact.tracks}
     assert "red_cup" not in tracked
+
+def test_alias_fallback_upgrades_partial_coverage_canonical(
+    tmp_path: Path, fake_torch: SimpleNamespace
+) -> None:
+    """A canonical label seen in only part of the video yields to a consistent alias."""
+
+    def stream(session_number, prompt, request):
+        del session_number
+        start = request["start_frame_index"]
+        stop = start + request["max_frame_num_to_track"]
+        if prompt == "red cup":
+            # Detected on the last frame only: coverage 1/3, under 0.5.
+            return [
+                frame_output(index)
+                if index == stop - 1
+                else frame_output(
+                    index, object_ids=[], probabilities=[], boxes=[], masks=[]
+                )
+                for index in range(start, stop)
+            ]
+        if prompt == "cup":
+            # Full coverage at the same place as the canonical detection.
+            return [frame_output(index) for index in range(start, stop)]
+        return PredictorDouble._default_stream(None, 0, prompt, request)
+
+    request = make_request(tmp_path)
+    predictor = PredictorDouble(stream=stream)
+    provider = make_provider(predictor, fake_torch, MaterializerDouble())
+
+    artifact = provider.analyze(request, tmp_path / "staging")
+
+    prompts = [
+        item["text"] for item in predictor.requests if item["type"] == "add_prompt"
+    ]
+    # canonical, maskless probe of the alias, then the adopted alias with masks.
+    assert prompts == ["right hand", "red cup", "cup", "cup"]
+    cup_tracks = [
+        track for track in artifact.tracks if track.entity_id == "red_cup"
+    ]
+    assert cup_tracks
+    observed_frames = {
+        observation.frame_index
+        for track in cup_tracks
+        for observation in track.observations
+    }
+    assert observed_frames == {0, 1, 2}
+
+
+def test_alias_fallback_rejects_alias_matching_a_different_object(
+    tmp_path: Path, fake_torch: SimpleNamespace
+) -> None:
+    """An alias with better coverage but disjoint geometry must not hijack the track."""
+
+    def stream(session_number, prompt, request):
+        del session_number
+        start = request["start_frame_index"]
+        stop = start + request["max_frame_num_to_track"]
+        if prompt == "red cup":
+            # Detected on the last frame only, at the default box location.
+            return [
+                frame_output(index)
+                if index == stop - 1
+                else frame_output(
+                    index, object_ids=[], probabilities=[], boxes=[], masks=[]
+                )
+                for index in range(start, stop)
+            ]
+        if prompt == "cup":
+            # Full coverage but far away from the canonical detection.
+            return [
+                frame_output(index, boxes=[[0.6, 0.7, 0.2, 0.2]])
+                for index in range(start, stop)
+            ]
+        return PredictorDouble._default_stream(None, 0, prompt, request)
+
+    def render_overlay(*, destination: Path, **kwargs: Any) -> None:
+        del kwargs
+        destination.write_bytes(b"\x89PNG\r\n\x1a\nalias-reject-test")
+
+    request = make_request(tmp_path)
+    predictor = PredictorDouble(stream=stream)
+    provider = make_provider(
+        predictor, fake_torch, MaterializerDouble(), overlay_renderer=render_overlay
+    )
+
+    artifact = provider.analyze(request, tmp_path / "staging")
+
+    prompts = [
+        item["text"] for item in predictor.requests if item["type"] == "add_prompt"
+    ]
+    # canonical, probe, adopted attempt, then the canonical restore run.
+    assert prompts == ["right hand", "red cup", "cup", "cup", "red cup"]
+    cup_tracks = [
+        track for track in artifact.tracks if track.entity_id == "red_cup"
+    ]
+    assert cup_tracks
+    observed_frames = {
+        observation.frame_index
+        for track in cup_tracks
+        for observation in track.observations
+    }
+    assert observed_frames == {2}
