@@ -28,7 +28,7 @@ import zipfile
 import las_repro
 from las_repro.cv.summary import CvEvidenceSummary, OcclusionCandidate, validate_candidate_identity_evidence
 from las_repro.domain import InferenceJob
-from las_repro.models.ark import ArkVideoModel
+from las_repro.models.openai_compat import OpenAICompatVideoModel
 from las_repro.pipelines.embodied import PromptRenderer, _validated_stage_result
 from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
 from las_repro.pipelines.scene_semantics import trusted_target_skeleton
@@ -42,6 +42,7 @@ from las_repro.execution import _model_request
 BUNDLE_SCHEMA = "semantic_reverification_input_v1"
 MODEL_IDENTITY = "doubao-seed-2-1-pro-260628"
 MODEL_ALIAS = "doubao-pro"
+DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 _STAGE_PAIRS = (
     ("full_0001", "scene_semantics", "SceneSemanticsChoices"),
     ("full_0002", "occlusion_semantics", "OcclusionDecisionSet"),
@@ -864,6 +865,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--api-key-file", type=Path, required=True)
+    parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--execute", action="store_true")
     return parser
 
@@ -871,7 +873,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(
     argv: Sequence[str] | None = None,
     *,
-    model_factory: Callable[..., Any] = ArkVideoModel,
+    model_factory: Callable[..., Any] = OpenAICompatVideoModel,
 ) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -890,6 +892,7 @@ def main(
         api_key = _read_api_key(args.api_key_file)
         try:
             model = model_factory(
+                base_url=args.base_url,
                 api_key=api_key,
                 model_registry={MODEL_ALIAS: MODEL_IDENTITY},
                 **settings,

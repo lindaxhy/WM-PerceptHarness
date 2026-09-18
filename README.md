@@ -24,9 +24,6 @@ python3.12 -m venv .venv
 python -m pip install -e .
 ```
 
-Add `-e '.[gpu]'` instead only on a CUDA host if you plan to run the local
-Qwen backend.
-
 ## Configure a backend (once)
 
 ```bash
@@ -40,8 +37,6 @@ Pick one backend:
 |---|---|
 | `openai` | `PERCEPT_OPENAI_BASE_URL` + `PERCEPT_OPENAI_API_KEY` + `PERCEPT_OPENAI_MODEL`. Any OpenAI-compatible chat completions endpoint: Doubao ARK, DashScope, OpenAI, Gemini's compatibility layer, or a local vLLM/SGLang server. `.env.example` lists provider presets. |
 | `fake` | Nothing. Deterministic CPU stub for development and CI. |
-| `doubao` *(deprecated)* | `PERCEPT_ARK_API_KEY` — the legacy ARK Responses adapter; prefer `openai` with the Doubao preset. |
-| `qwen` *(deprecated)* | `PERCEPT_MODEL_REGISTRY` + `PERCEPT_GPU_DEVICES` for in-process GPU inference; prefer `openai` against a local vLLM server. |
 
 Optionally add SAM3.1 visual evidence (`--cv sam31`) for occlusion events and
 CV-grounded scene facts: set the `PERCEPT_CV_*` paths to a local sam3 checkout
@@ -108,11 +103,13 @@ percept eval --videos tests/fixtures --template general_video_captioning \
 ## History
 
 Earlier versions of this repository shipped a self-hosted, LAS-compatible
-Submit/Poll service with multi-process GPU workers. That architecture is
-archived intact at the tag `legacy-las-service` (branch `legacy/las-service`)
-together with its deployment documentation. Videos can still be annotated by
-the official Volcengine LAS operator directly; this repository no longer
-reimplements its API surface.
+Submit/Poll service with multi-process GPU workers, and later in-process
+vendor adapters for Doubao (ARK Responses) and a local Qwen3-VL checkpoint.
+The service architecture is archived intact at the tag `legacy-las-service`
+(branch `legacy/las-service`) together with its deployment documentation; the
+vendor adapters live in git history before the `openai` backend replaced them.
+Videos can still be annotated by the official Volcengine LAS operator
+directly; this repository no longer reimplements its API surface.
 
 ## License status
 

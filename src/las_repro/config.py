@@ -8,17 +8,8 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import BeforeValidator, Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
-def _comma_separated_ints(value: Any) -> tuple[int, ...]:
-    if isinstance(value, str):
-        return tuple(
-            _integer(item.strip(), "GPU device")
-            for item in value.split(",")
-            if item.strip()
-        )
-    return tuple(_integer(item, "GPU device") for item in value)
 
 
 def _integer(value: Any, name: str) -> int:
@@ -72,7 +63,6 @@ def _strict_boolean(value: Any) -> bool:
     raise ValueError("value must be a boolean")
 
 
-CsvInts = Annotated[tuple[int, ...], NoDecode, BeforeValidator(_comma_separated_ints)]
 NonnegativeInteger = Annotated[int, BeforeValidator(_nonnegative_integer)]
 PositiveInteger = Annotated[int, BeforeValidator(_positive_integer)]
 PositiveFinite = Annotated[float, BeforeValidator(_positive_finite)]
@@ -86,6 +76,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="PERCEPT_", extra="ignore")
 
     work_root: Path = Path("work")
+    # Alias registry for the fake backend and stored-result identity; the
+    # openai backend derives its aliases from PERCEPT_OPENAI_MODEL[_REGISTRY].
     model_registry: dict[str, Path] = Field(
         default_factory=lambda: {"qwen3-vl-8b-instruct": Path("models/qwen3-vl-8b-instruct")}
     )
@@ -101,20 +93,12 @@ class Settings(BaseSettings):
     openai_max_request_bytes: PositiveInteger = 32 * 1024 * 1024
     openai_max_output_chars: PositiveInteger = 1_000_000
     openai_proxy: SecretStr | None = None
-    ark_api_key: SecretStr | None = None
-    ark_model_registry: dict[str, str] = Field(default_factory=dict)
-    ark_timeout_seconds: PositiveFinite = 180.0
-    ark_max_frames: PositiveInteger = 128
-    ark_max_request_bytes: PositiveInteger = 32 * 1024 * 1024
-    ark_max_output_chars: PositiveInteger = 1_000_000
-    ark_proxy: SecretStr | None = None
     max_model_output_chars: int = Field(default=1_000_000, gt=0)
     segment_seconds: float = 30.0
     segment_overlap_seconds: float = 2.0
     max_fine_segment_seconds: float = 30.0
     # Retained for pipeline affinity-grace computation; not a service lease.
     lease_seconds: int = 300
-    gpu_devices: CsvInts = (0, 1, 2)
     cv_device: NonnegativeInteger = 3
     cv_provider: Literal["disabled", "fake", "sam31"] = "disabled"
     cv_model_alias: Literal["sam3.1"] = "sam3.1"
@@ -151,19 +135,7 @@ class Settings(BaseSettings):
 
     @property
     def allowed_model_aliases(self) -> frozenset[str]:
-        return (frozenset(self.model_registry) | frozenset(self.ark_model_registry)
-                | frozenset(self.openai_model_aliases))
-
-    @field_validator("gpu_devices")
-    @classmethod
-    def validate_qwen_devices(cls, value: tuple[int, ...]) -> tuple[int, ...]:
-        if not value:
-            raise ValueError("gpu_devices must contain at least one device")
-        if any(device < 0 for device in value):
-            raise ValueError("gpu_devices must be non-negative")
-        if len(set(value)) != len(value):
-            raise ValueError("gpu_devices must be distinct")
-        return value
+        return frozenset(self.model_registry) | frozenset(self.openai_model_aliases)
 
     @field_validator("cv_checkpoint_sha256")
     @classmethod
@@ -174,14 +146,12 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_cv_configuration(self) -> Self:
-        if set(self.model_registry) & set(self.ark_model_registry):
-            raise ValueError("local and ARK model aliases must not overlap")
         if self.openai_model and self.openai_model_registry:
             raise ValueError(
                 "openai_model and openai_model_registry are mutually exclusive"
             )
         openai_aliases = set(self.openai_model_aliases)
-        if openai_aliases & (set(self.model_registry) | set(self.ark_model_registry)):
+        if openai_aliases & set(self.model_registry):
             raise ValueError("OpenAI-compatible aliases must not overlap other registries")
         if self.openai_base_url is not None and not self.openai_base_url.startswith(
             ("https://", "http://")

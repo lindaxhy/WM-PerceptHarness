@@ -174,22 +174,22 @@ def test_cli_eval_reports_missing_videos(
     assert "error" in capsys.readouterr().err
 
 
-def test_cli_eval_doubao_requires_api_key(
+def test_cli_eval_openai_requires_api_key(
     tmp_path: Path,
     silent_video: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.delenv("PERCEPT_ARK_API_KEY", raising=False)
+    monkeypatch.delenv("PERCEPT_OPENAI_API_KEY", raising=False)
     code = cli_main([
         "eval",
         "--videos", str(silent_video),
         "--template", "general_video_captioning",
-        "--backend", "doubao",
+        "--backend", "openai",
         "--output", str(tmp_path / "out"),
     ])
     assert code == 2
-    assert "PERCEPT_ARK_API_KEY" in capsys.readouterr().err
+    assert "PERCEPT_OPENAI_API_KEY" in capsys.readouterr().err
 
 
 def test_cli_eval_exit_code_is_nonzero_when_any_video_fails(

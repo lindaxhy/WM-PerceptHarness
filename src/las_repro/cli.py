@@ -18,7 +18,7 @@ from .runner import (
     run_batch,
 )
 
-_BACKENDS = ("openai", "doubao", "qwen", "fake")
+_BACKENDS = ("openai", "fake")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -75,11 +75,6 @@ def _parser() -> argparse.ArgumentParser:
         "--query",
         default=None,
         help="free-form query for general_video_captioning",
-    )
-    evaluate.add_argument(
-        "--device",
-        default=None,
-        help="CUDA device ordinal for the qwen backend (default: first of PERCEPT_GPU_DEVICES)",
     )
     evaluate.add_argument(
         "--cv",
@@ -199,54 +194,6 @@ def _load_backend(arguments: argparse.Namespace, settings: Settings):
             proxy=settings.openai_proxy.get_secret_value() if settings.openai_proxy else None,
         )
         return model, alias, model.close
-
-    if backend == "doubao":
-        if settings.ark_api_key is None or not settings.ark_api_key.get_secret_value().strip():
-            raise ValueError("PERCEPT_ARK_API_KEY is not configured")
-        if not settings.ark_model_registry:
-            raise ValueError("PERCEPT_ARK_MODEL_REGISTRY is empty")
-        from .models.ark import ArkVideoModel
-
-        alias = arguments.model or _single_alias(
-            settings.ark_model_registry, "PERCEPT_ARK_MODEL_REGISTRY"
-        )
-        if alias not in settings.ark_model_registry:
-            raise KeyError(f"model alias {alias!r} is absent from PERCEPT_ARK_MODEL_REGISTRY")
-        model = ArkVideoModel(
-            api_key=settings.ark_api_key.get_secret_value(),
-            model_registry=settings.ark_model_registry,
-            timeout_seconds=settings.ark_timeout_seconds,
-            max_frames=settings.ark_max_frames,
-            max_request_bytes=settings.ark_max_request_bytes,
-            max_output_chars=settings.ark_max_output_chars,
-            proxy=settings.ark_proxy.get_secret_value() if settings.ark_proxy else None,
-        )
-        return model, alias, model.close
-
-    if backend == "qwen":
-        if not settings.model_registry:
-            raise ValueError("PERCEPT_MODEL_REGISTRY is empty")
-        alias = arguments.model or _single_alias(
-            settings.model_registry, "PERCEPT_MODEL_REGISTRY"
-        )
-        if alias not in settings.model_registry:
-            raise KeyError(f"model alias {alias!r} is absent from PERCEPT_MODEL_REGISTRY")
-        device_ordinal = (
-            int(arguments.device)
-            if arguments.device is not None
-            else settings.gpu_devices[0]
-        )
-        os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0,1,2")
-        from .models.qwen3_vl import Qwen3VLModel
-
-        model = Qwen3VLModel.load_alias(
-            alias,
-            settings.model_registry,
-            f"cuda:{device_ordinal}",
-            "auto",
-            max_output_chars=settings.max_model_output_chars,
-        )
-        return model, alias, lambda: None
 
     raise ValueError(f"unsupported backend {backend!r}")
 
