@@ -844,7 +844,7 @@ def _validate_public_occlusion(decisions, events, duration):
                     "start": interval.start,
                     "end": interval.end,
                     "event_type": interval.event_type.value,
-                    "description": decision.visual_evidence,
+                    "description": interval.description or decision.visual_evidence,
                     "confidence": decision.confidence,
                 }
             )

@@ -410,6 +410,7 @@ def test_positive_occlusion_is_a_checked_projection_of_real_candidates(
                         "event_type": candidate.allowed_event_intervals[0].event_type,
                         "start": candidate.allowed_event_intervals[0].start,
                         "end": candidate.allowed_event_intervals[0].end,
+                        "description": "target visibly slips behind the board",
                     }
                 ]
                 if positive

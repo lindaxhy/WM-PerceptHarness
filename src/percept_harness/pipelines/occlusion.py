@@ -43,6 +43,10 @@ class OcclusionInterval(StrictModel):
     event_type: OcclusionEventType
     start: Timestamp
     end: Timestamp
+    # One sentence describing only this phase's visible change. Optional at
+    # the schema layer so older outputs still parse; validate_occlusion_decisions
+    # requires it on every event of an occlusion decision.
+    description: Annotated[StrictStr, Field(max_length=1024)] | None = None
 
     @field_validator("event_type", mode="before")
     @classmethod
@@ -171,6 +175,17 @@ def validate_occlusion_decisions(
         for event_index, event in enumerate(decision.events):
             event_path = path + ("events", event_index)
             key = (event.start, event.end, event.event_type.value)
+            if event.description is None or not event.description.strip():
+                issues.append(TemporalIssue("OCCLUSION_EVENT_DESCRIPTION_MISSING", event_path + ("description",),
+                                            "each occlusion event needs its own phase-specific description"))
+            elif _has_prohibited_evidence_content(event.description):
+                issues.append(
+                    TemporalIssue(
+                        "OCCLUSION_EVIDENCE_PROHIBITED_CONTENT",
+                        event_path + ("description",),
+                        "event descriptions must be plain text without serialized data or paths",
+                    )
+                )
             if previous_key is not None and key < previous_key:
                 issues.append(TemporalIssue("OCCLUSION_EVENTS_NOT_ORDERED", event_path, "events must be ordered by start, end, and type"))
             if not any((event.event_type.value, event.start, event.end) ==
@@ -251,7 +266,7 @@ def project_occlusion_events(
                 "event_type": event.event_type.value,
                 "target_entity_id": decision.target_entity_id,
                 "occluder_entity_id": decision.occluder_entity_id,
-                "description": decision.visual_evidence,
+                "description": event.description or decision.visual_evidence,
                 "confidence": decision.confidence,
                 "branch": "occlusion",
                 "model_stage": "occlusion_semantics",

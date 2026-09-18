@@ -19,10 +19,14 @@ def gap_bundle(*, visible=(0, 4), frames=(0, 1, 2, 3, 4), extras=()):
 
 
 def decisions(candidate, events):
+    described = [
+        event if event.get('description') else dict(event, description=f"visible {event['event_type']} phase of the target")
+        for event in events
+    ]
     return OcclusionDecisionSet.model_validate({'decisions': [{
         'candidate_id': candidate.candidate_id, 'classification': 'occlusion',
         'target_entity_id': candidate.target_entity_id, 'occluder_entity_id': 'unknown',
-        'events': events, 'visual_evidence': 'Visible partial covering and return', 'confidence': .8,
+        'events': described, 'visual_evidence': 'Visible partial covering and return', 'confidence': .8,
     }]})
 
 
@@ -537,3 +541,33 @@ def test_row_budget_covers_cross_label_only_candidates_before_second_rows():
     assert all(c.identity_evidence is not None and
                (c.identity_evidence.continuation_cues or c.identity_evidence.cross_label_cues)
                for c in bundle.candidates)
+
+def test_occlusion_event_without_description_is_rejected():
+    candidate = gap_bundle().candidates[0]
+    payload = {'decisions': [{
+        'candidate_id': candidate.candidate_id, 'classification': 'occlusion',
+        'target_entity_id': candidate.target_entity_id, 'occluder_entity_id': 'unknown',
+        'events': [{'event_type': 'occlusion_enter', 'start': 0., 'end': .1}],
+        'visual_evidence': 'Visible partial covering and return', 'confidence': .8,
+    }]}
+    result = OcclusionDecisionSet.model_validate(payload)
+    with pytest.raises(TemporalValidationError) as exc:
+        validate_occlusion_decisions(result, (candidate,), duration=.4)
+    assert {i.code for i in exc.value.issues} == {'OCCLUSION_EVENT_DESCRIPTION_MISSING'}
+
+
+def test_projected_events_carry_their_own_phase_descriptions():
+    from percept_harness.pipelines.occlusion import project_occlusion_events
+    candidate = gap_bundle().candidates[0]
+    phases = [
+        {'event_type': 'occlusion_enter', 'start': 0., 'end': .1,
+         'description': 'the item slips behind the cover'},
+        {'event_type': 'occluded', 'start': .1, 'end': .3,
+         'description': 'the item stays hidden behind the cover'},
+        {'event_type': 'occlusion_exit', 'start': .3, 'end': .4,
+         'description': 'the item emerges from behind the cover'},
+    ]
+    projected = project_occlusion_events(
+        decisions(candidate, phases), (candidate,), (), [], repair_history=('initial',)
+    )
+    assert [row['description'] for row in projected] == [p['description'] for p in phases]

@@ -161,6 +161,7 @@ _OCCLUSION_TEMPORAL_CODES = (
     "OCCLUSION_EVIDENCE_PROHIBITED_CONTENT",
     "NON_OCCLUSION_HAS_EVENTS",
     "OCCLUSION_EVENTS_EMPTY",
+    "OCCLUSION_EVENT_DESCRIPTION_MISSING",
     "OCCLUSION_EVENTS_NOT_ORDERED",
     "OCCLUSION_INTERVAL_NOT_ALLOWED",
     "OCCLUSION_EVENT_NONPOSITIVE_DURATION",
@@ -1390,14 +1391,16 @@ def _complete_occlusion_boundaries(
                     o["start"] == interval.end for o in occluded
                 ):
                     events.append({"event_type": kind, "start": interval.start,
-                                   "end": interval.end})
+                                   "end": interval.end,
+                                   "description": row.get("visual_evidence")})
                     chosen.add(key)
                     added += 1
                 if kind == "occlusion_exit" and key not in chosen and any(
                     o["end"] == interval.start for o in occluded
                 ):
                     events.append({"event_type": kind, "start": interval.start,
-                                   "end": interval.end})
+                                   "end": interval.end,
+                                   "description": row.get("visual_evidence")})
                     chosen.add(key)
                     added += 1
             events.sort(key=lambda e: (e["start"], e["end"], e["event_type"]))
