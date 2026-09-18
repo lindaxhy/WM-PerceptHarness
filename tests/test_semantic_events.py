@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from las_repro.pipelines.semantic_events import build_semantic_events
+from percept_harness.pipelines.semantic_events import build_semantic_events
 
 
 def _segment(

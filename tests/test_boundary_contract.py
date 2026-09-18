@@ -7,9 +7,9 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from las_repro.models.response_contract import ModelResponseContract
-from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS as registry
-from las_repro.pipelines.validators import BoundaryPlan
+from percept_harness.models.response_contract import ModelResponseContract
+from percept_harness.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS as registry
+from percept_harness.pipelines.validators import BoundaryPlan
 
 COARSE_EVENTS = ['idle', 'reach_and_grasp', 'lift', 'transport', 'lower_and_place',
                  'release', 'retract', 'search_or_adjust', 'unknown_action']
@@ -154,7 +154,7 @@ def test_boundary_enum_codes_have_deterministic_deduplicated_order():
     ('literal_error', ('actions', 0, 'fine_segments', 2, 'event_type')),
 ])
 def test_unexpected_boundary_enum_paths_or_kinds_remain_generic(kind, path):
-    import las_repro.pipelines.output_validation as validation
+    import percept_harness.pipelines.output_validation as validation
     mapper = getattr(validation, '_boundary_pydantic_issue_codes', None)
     assert callable(mapper)
     error = ValidationError.from_exception_data('synthetic', [dict(type=kind, loc=path,
@@ -172,7 +172,7 @@ def test_explicit_unknown_transition_preserves_model_output_and_valid_schema():
 
 
 def test_task2k_preserves_public_schemas_and_scene_response_bytes():
-    from las_repro.pipelines.scene_choices import SceneSemanticsChoices, prepare_scene_choices
+    from percept_harness.pipelines.scene_choices import SceneSemanticsChoices, prepare_scene_choices
     for model, expected in [(BoundaryPlan, 'c072d2ff4f715ca04e2d11137e2d027a41a01be80633192ae9939df848d862ba'),
                             (SceneSemanticsChoices, 'bc88e7d7990ffe2b2e0192ec0cf2da52fc968c239999547d76306ed94f877be6')]:
         encoded = json.dumps(model.model_json_schema(), sort_keys=True, separators=(',', ':'))

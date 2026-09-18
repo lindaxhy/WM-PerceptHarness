@@ -7,13 +7,13 @@ from importlib import resources
 import pytest
 from test_cv_summary import _artifact, _observation, _track
 from test_scene_provenance import source
-from las_repro.cv.summary import summarize_cv_evidence
-from las_repro.pipelines.scene_choices import canonical, prepare_scene_choices
-from las_repro.pipelines.embodied import PromptRenderer
+from percept_harness.cv.summary import summarize_cv_evidence
+from percept_harness.pipelines.scene_choices import canonical, prepare_scene_choices
+from percept_harness.pipelines.embodied import PromptRenderer
 
 
 def build(context):
-    from las_repro.pipelines.scene_model_view import build_scene_model_view
+    from percept_harness.pipelines.scene_model_view import build_scene_model_view
     return build_scene_model_view(context)
 
 
@@ -25,7 +25,7 @@ def values_for(summary, segments):
     from scripts.reverify_semantic_stages import _extract_prompt_data
     prompt = PromptRenderer().scene_semantics(segments, video_duration=segments[-1]['end'],
                                             evidence_summary=summary)
-    template = resources.files('las_repro.prompts').joinpath('scene_semantics.txt').read_text()
+    template = resources.files('percept_harness.prompts').joinpath('scene_semantics.txt').read_text()
     values, _, suffix = _extract_prompt_data(prompt, template, 'scene_semantics')
     return prompt, values, suffix
 
@@ -165,7 +165,7 @@ def test_disjoint_center_witnesses_keep_their_observed_times():
 
 
 def test_incomplete_search_and_null_offers_do_not_invent_witnesses():
-    from las_repro.cv.summary import _summary_identity
+    from percept_harness.cv.summary import _summary_identity
     summary, segments = source()
     suffix = json.dumps(summary.prompt_record(), ensure_ascii=False, separators=(',', ':'))
     summary = summary.model_copy(update={'prompt_char_limit': len(suffix)})
@@ -180,7 +180,7 @@ def test_incomplete_search_and_null_offers_do_not_invent_witnesses():
 
 @pytest.mark.parametrize('limit', ['options', 'observations', 'pairs', 'tracks', 'endpoints', 'runs', 'gaps'])
 def test_each_row_budget_falls_back_whole_instead_of_truncating(monkeypatch, limit):
-    import las_repro.pipelines.scene_model_view as module
+    import percept_harness.pipelines.scene_model_view as module
     summary = summarize_cv_evidence(_artifact(tuple(_track(f'item_{i}_track', f'item_{i}', tuple(
         _observation(f, visible=f != 1) for f in range(4))) for i in range(2))))
     segments = [dict(segment_index=0, start=0.0, end=1.0, target='unknown')]
@@ -197,7 +197,7 @@ def test_each_row_budget_falls_back_whole_instead_of_truncating(monkeypatch, lim
 
 
 def test_prompt_budget_reserves_repair_space_without_switching_mode(monkeypatch):
-    import las_repro.pipelines.scene_model_view as module
+    import percept_harness.pipelines.scene_model_view as module
     segments = [dict(segment_index=0, start=0.0, end=1.0, target='target', description='x' * 1000)]
     prompt, _, _ = values_for(None, segments)
     monkeypatch.setattr(module, 'MAX_PROMPT_BYTES', len(prompt.encode()) + module.MAX_REPAIR_BYTES - 1)
@@ -211,7 +211,7 @@ def test_prompt_budget_reserves_repair_space_without_switching_mode(monkeypatch)
 
 
 def test_all_registered_repair_codes_fit_reserved_space_and_keep_identical_view():
-    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+    from percept_harness.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
     summary, segments = source()
     initial, values, _ = values_for(summary, segments)
     codes = list(DEFAULT_OUTPUT_SCHEMAS._entries['SceneSemanticsChoices'].allowed_issue_codes)
@@ -228,7 +228,7 @@ def test_operator_direct_stage_rejects_tampered_compact_view_before_output(tmp_p
     stage = _scene_stage(tmp_path)
     context = stage['payload']['schema_context']
     prompt = PromptRenderer().scene_semantics(context['segments'], video_duration=context['duration'])
-    stage['original_template'] = resources.files('las_repro.prompts').joinpath('scene_semantics.txt').read_text()
+    stage['original_template'] = resources.files('percept_harness.prompts').joinpath('scene_semantics.txt').read_text()
     stage['payload']['prompt'] = prompt.replace('"representative_subset"', '"tampered"')
     output = tmp_path / 'output'; output.mkdir(mode=0o700)
     with pytest.raises(OperatorError, match='SCENE_PROMPT_CONTEXT_MISMATCH'):
@@ -240,6 +240,6 @@ def test_operator_cannot_bypass_compact_repair_text_ceiling():
     from scripts.reverify_semantic_stages import rebuild_prompt, OperatorError
     summary, segments = source()
     prompt, _, _ = values_for(summary, segments)
-    template = resources.files('las_repro.prompts').joinpath('scene_semantics.txt').read_text()
+    template = resources.files('percept_harness.prompts').joinpath('scene_semantics.txt').read_text()
     with pytest.raises(OperatorError, match='REPAIR_INVALID'):
         rebuild_prompt(prompt, template, 'scene_semantics', repair={'issue_codes': ['x' * 65536]})

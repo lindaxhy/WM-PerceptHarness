@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from las_repro.cli import main as cli_main
-from las_repro.config import Settings
-from las_repro.models.fake import FakeVideoModel
-from las_repro.runner import (
+from percept_harness.cli import main as cli_main
+from percept_harness.config import Settings
+from percept_harness.models.fake import FakeVideoModel
+from percept_harness.runner import (
     SUPPORTED_TEMPLATES,
     SyncRunner,
     collect_videos,

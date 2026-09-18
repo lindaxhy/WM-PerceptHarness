@@ -427,9 +427,9 @@ def export_hybrid_dataset(
     The existing demo manifest is intentionally not changed here. The returned
     digest-bearing variant manifest supports Task 15's reviewed publication.
     """
-    from las_repro.cv.artifacts import CvArtifactHandle, CvArtifactStore
-    from las_repro.evaluation import las_alignment as las
-    from las_repro.evaluation.viewer_projection import project_hybrid_viewer_data
+    from percept_harness.cv.artifacts import CvArtifactHandle, CvArtifactStore
+    from percept_harness.evaluation import las_alignment as las
+    from percept_harness.evaluation.viewer_projection import project_hybrid_viewer_data
 
     try:
         labels = {
@@ -673,7 +673,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if actual != expected:
         raise ViewerDataError("INPUT_SAMPLE_SET_INVALID")
     if hybrid_requested:
-        from las_repro.evaluation import las_alignment as las
+        from percept_harness.evaluation import las_alignment as las
 
         references, entries = las.load_references(arguments.reference_manifest)
         if (

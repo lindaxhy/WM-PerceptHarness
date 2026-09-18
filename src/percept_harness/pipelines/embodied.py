@@ -62,7 +62,7 @@ WaitJobs = Callable[
     list[dict[str, Any]],
 ]
 
-_PROMPT_PACKAGE = "las_repro.prompts"
+_PROMPT_PACKAGE = "percept_harness.prompts"
 _PROMPT_FILES = {
     "active_objects": "active_objects.txt",
     "embodied_pass_a": "embodied_pass_a.txt",

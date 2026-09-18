@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from las_repro.cv.base import FakeCvEvidenceProvider
-from las_repro.cv.contracts import FrameTimeline, FrameTimestamp
+from percept_harness.cv.base import FakeCvEvidenceProvider
+from percept_harness.cv.contracts import FrameTimeline, FrameTimestamp
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPOSITORY_ROOT / "scripts" / "sam31_smoke.py"

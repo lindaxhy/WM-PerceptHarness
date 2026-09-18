@@ -9,7 +9,7 @@ dependencies = [
 ]
 
 [project.scripts]
-percept = "las_repro.cli:main"
+percept = "percept_harness.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.4,<9", "pytest-cov>=6.2,<7"]
@@ -19,7 +19,7 @@ requires = ["hatchling>=1.27,<2"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/las_repro"]
+packages = ["src/percept_harness"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

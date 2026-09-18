@@ -11,10 +11,10 @@ import pytest
 import test_hybrid_result as hybrid_fixtures
 from test_hybrid_result import source_segments
 
-from las_repro.evaluation.las_alignment import canonical_json
-from las_repro.pipelines.embodied import FineSegmentTableRow
-from las_repro.pipelines.hybrid_result import build_hybrid_result
-from las_repro.pipelines.scene_semantics import unavailable_scene_semantics
+from percept_harness.evaluation.las_alignment import canonical_json
+from percept_harness.pipelines.embodied import FineSegmentTableRow
+from percept_harness.pipelines.hybrid_result import build_hybrid_result
+from percept_harness.pipelines.scene_semantics import unavailable_scene_semantics
 
 available_result = hybrid_fixtures.available_result
 
@@ -38,7 +38,7 @@ def result():
 
 
 def project(result, **kwargs):
-    from las_repro.evaluation.viewer_projection import project_hybrid_viewer_data
+    from percept_harness.evaluation.viewer_projection import project_hybrid_viewer_data
 
     return project_hybrid_viewer_data(
         "full_0001", 1.0, result, source_sha256="c" * 64, **kwargs
@@ -189,7 +189,7 @@ def test_invalid_optional_projection_context_is_rejected(result, kwargs):
     ],
 )
 def test_sample_duration_and_source_digest_are_bound(result, sample, duration, sha):
-    from las_repro.evaluation.viewer_projection import project_hybrid_viewer_data
+    from percept_harness.evaluation.viewer_projection import project_hybrid_viewer_data
 
     with pytest.raises(ValueError):
         project_hybrid_viewer_data(sample, duration, result, source_sha256=sha)

@@ -4,8 +4,8 @@ import copy
 
 import pytest
 
-from las_repro.pipelines import hybrid_result
-from las_repro.pipelines.scene_semantics import unavailable_scene_semantics
+from percept_harness.pipelines import hybrid_result
+from percept_harness.pipelines.scene_semantics import unavailable_scene_semantics
 
 
 def source_segments():
@@ -79,7 +79,7 @@ def test_canonical_projection_preserves_legacy_fields_and_empty_evidence():
 def available_result():
     from test_cv_summary import _artifact, _observation, _track
 
-    from las_repro.cv.summary import summarize_cv_evidence
+    from percept_harness.cv.summary import summarize_cv_evidence
 
     artifact = _artifact(
         (_track("cup_1", "cup", tuple(_observation(i) for i in (0, 5, 10))),)
@@ -144,8 +144,8 @@ def available_result():
 
 @pytest.mark.parametrize("fault", ["ordering", "provenance"])
 def test_scene_spatial_failure_survives_registry(available_result, fault):
-    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
-    from las_repro.pipelines.embodied import _validated_stage_result
+    from percept_harness.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+    from percept_harness.pipelines.embodied import _validated_stage_result
 
     result, summary = available_result
     scene = {key: copy.deepcopy(result[key]) for key in hybrid_result.SCENE_KEYS}
@@ -182,8 +182,8 @@ def test_scene_spatial_failure_survives_registry(available_result, fault):
 
 
 def test_scene_repair_aggregates_independent_faults_without_leaking(available_result):
-    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
-    from las_repro.pipelines.embodied import _validated_stage_result
+    from percept_harness.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+    from percept_harness.pipelines.embodied import _validated_stage_result
 
     result, summary = available_result
     scene = {key: copy.deepcopy(result[key]) for key in hybrid_result.SCENE_KEYS}
@@ -228,7 +228,7 @@ def test_scene_repair_aggregates_independent_faults_without_leaking(available_re
     ("visual_evidence", "moves left/right", "PROHIBITED_CONTENT"),
 ])
 def test_scene_repair_reports_specific_closed_fault(available_result, field, value, code):
-    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+    from percept_harness.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
 
     result, summary = available_result
     scene = {key: copy.deepcopy(result[key]) for key in hybrid_result.SCENE_KEYS}
@@ -247,7 +247,7 @@ def test_scene_repair_reports_specific_closed_fault(available_result, field, val
 
 
 def test_scene_repair_keeps_abstention_and_unavailable_evidence_rules(available_result):
-    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+    from percept_harness.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
 
     result, _ = available_result
     scene = {key: copy.deepcopy(result[key]) for key in hybrid_result.SCENE_KEYS}
@@ -267,7 +267,7 @@ def test_scene_repair_keeps_abstention_and_unavailable_evidence_rules(available_
     ValueError("private/path raw exception"),
 ])
 def test_scene_repair_filters_unknown_provenance_failures(available_result, monkeypatch, error):
-    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+    from percept_harness.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
 
     result, summary = available_result
     scene = {key: copy.deepcopy(result[key]) for key in hybrid_result.SCENE_KEYS}
@@ -291,7 +291,7 @@ def test_scene_repair_filters_unknown_provenance_failures(available_result, monk
 
 
 def test_scene_video_end_is_not_implicitly_an_observed_frame(available_result):
-    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+    from percept_harness.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
 
     result, summary = available_result
     scene = {key: copy.deepcopy(result[key]) for key in hybrid_result.SCENE_KEYS}
@@ -377,9 +377,9 @@ def test_positive_occlusion_is_a_checked_projection_of_real_candidates(
 ):
     from test_cv_summary import _candidate_artifact
 
-    from las_repro.cv.contracts import EvidenceThresholds
-    from las_repro.cv.summary import build_cv_prompt_bundle, summarize_cv_evidence
-    from las_repro.pipelines.occlusion import (
+    from percept_harness.cv.contracts import EvidenceThresholds
+    from percept_harness.cv.summary import build_cv_prompt_bundle, summarize_cv_evidence
+    from percept_harness.pipelines.occlusion import (
         OcclusionDecisionSet,
         project_occlusion_events,
     )
@@ -463,7 +463,7 @@ def test_positive_occlusion_is_a_checked_projection_of_real_candidates(
         "permanent_target_1",
         "stable_target_1",
     ]
-    from las_repro.evaluation.viewer_projection import project_hybrid_viewer_data
+    from percept_harness.evaluation.viewer_projection import project_hybrid_viewer_data
 
     viewer = project_hybrid_viewer_data(
         "candidate-context",
@@ -503,7 +503,7 @@ def test_positive_occlusion_is_a_checked_projection_of_real_candidates(
 
 
 def test_scene_registry_checks_spatial_rows_against_summary(available_result):
-    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+    from percept_harness.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
 
     result, summary = available_result
     scene = {key: copy.deepcopy(result[key]) for key in hybrid_result.SCENE_KEYS}

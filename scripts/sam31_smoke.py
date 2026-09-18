@@ -16,8 +16,8 @@ from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from typing import Any
 
-from las_repro.cv.artifacts import CvArtifactError, CvArtifactStore, cv_cache_key
-from las_repro.cv.contracts import (
+from percept_harness.cv.artifacts import CvArtifactError, CvArtifactStore, cv_cache_key
+from percept_harness.cv.contracts import (
     CvEvidenceRequest,
     EntityPrompt,
     EntityRole,
@@ -26,8 +26,8 @@ from las_repro.cv.contracts import (
     FrameTimeline,
     SamplingPolicy,
 )
-from las_repro.cv.timeline import probe_frame_timeline
-from las_repro.media import probe_video
+from percept_harness.cv.timeline import probe_frame_timeline
+from percept_harness.media import probe_video
 
 PINNED_REPOSITORY_REVISION = "660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7"
 PHYSICAL_CV_DEVICE = 3
@@ -53,7 +53,7 @@ class SmokeDependencies:
 
 
 def _load_provider(**kwargs: Any) -> Any:
-    from las_repro.cv.sam31 import Sam31EvidenceProvider
+    from percept_harness.cv.sam31 import Sam31EvidenceProvider
 
     return Sam31EvidenceProvider.load(**kwargs)
 

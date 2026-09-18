@@ -10,8 +10,8 @@ import zipfile
 
 import pytest
 
-import las_repro
-from las_repro.cv.contracts import (
+import percept_harness
+from percept_harness.cv.contracts import (
     CvEvidenceArtifact,
     CvTrack,
     EntityPrompt,
@@ -20,7 +20,7 @@ from las_repro.cv.contracts import (
     FrameTimestamp,
     TrackObservation,
 )
-from las_repro.cv.summary import (
+from percept_harness.cv.summary import (
     CvEvidenceSummary,
     OccluderProvenance,
     OcclusionCandidate,
@@ -28,8 +28,8 @@ from las_repro.cv.summary import (
     _candidate_identity,
     summarize_cv_evidence,
 )
-from las_repro.pipelines.embodied import PromptRenderer
-from las_repro.pipelines.scene_choices import prepare_scene_choices
+from percept_harness.pipelines.embodied import PromptRenderer
+from percept_harness.pipelines.scene_choices import prepare_scene_choices
 from scripts.reverify_semantic_stages import (
     OperatorError,
     main,
@@ -56,7 +56,7 @@ def _digest(value: object) -> str:
 
 
 def _current_template(stage: str) -> str:
-    return resources.files("las_repro.prompts").joinpath(f"{stage}.txt").read_text()
+    return resources.files("percept_harness.prompts").joinpath(f"{stage}.txt").read_text()
 
 
 def _summary() -> CvEvidenceSummary:
@@ -441,12 +441,12 @@ def test_existing_reservation_refuses_a_repeat_without_calling_model(tmp_path: P
 
 
 def _build_test_wheel(path: Path, *, alter_domain: bool = False) -> str:
-    package = Path(las_repro.__file__).resolve().parent
+    package = Path(percept_harness.__file__).resolve().parent
     with zipfile.ZipFile(path, "w") as archive:
         for source in sorted(package.rglob("*")):
             if source.is_file() and "__pycache__" not in source.parts and source.suffix != ".pyc":
-                destination = "las_repro/" + source.relative_to(package).as_posix()
-                if alter_domain and destination == "las_repro/domain.py":
+                destination = "percept_harness/" + source.relative_to(package).as_posix()
+                if alter_domain and destination == "percept_harness/domain.py":
                     archive.writestr(destination, "altered")
                 else:
                     archive.write(source, destination)
@@ -643,7 +643,7 @@ def test_scene_alignment_rejects_tampered_generation_choices():
 
 def test_scene_operator_persists_distinct_dto_and_public_projection(tmp_path):
     from test_scene_choices import fixture
-    from las_repro.pipelines.scene_choices import SceneInputPackage, canonical
+    from percept_harness.pipelines.scene_choices import SceneInputPackage, canonical
     draft, context = fixture()
     output = tmp_path / 'private'; output.mkdir(mode=0o700)
     stage = _scene_stage(tmp_path)
@@ -679,7 +679,7 @@ def test_scene_operator_reports_response_contract_identity_and_invalid_status(tm
 @pytest.mark.parametrize('repair_type', ['unknown', 'hold'])
 def test_scene_operator_repairs_event_enum_from_immutable_context(tmp_path, repair_type):
     from test_scene_choices import fixture
-    from las_repro.pipelines.scene_choices import SceneInputPackage, canonical
+    from percept_harness.pipelines.scene_choices import SceneInputPackage, canonical
     draft, context = fixture()
     draft['semantic_events'][0].update(event_type='hold', description='hand holds item visibly')
     repaired = copy.deepcopy(draft)

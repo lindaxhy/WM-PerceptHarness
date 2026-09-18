@@ -7,10 +7,10 @@ import json
 import pytest
 from test_cv_summary import _artifact, _entity, _observation, _track
 
-from las_repro.cv.summary import summarize_cv_evidence
-from las_repro.pipelines.embodied import PromptRenderer
-from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
-from las_repro.pipelines.scene_semantics import unavailable_scene_semantics
+from percept_harness.cv.summary import summarize_cv_evidence
+from percept_harness.pipelines.embodied import PromptRenderer
+from percept_harness.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+from percept_harness.pipelines.scene_semantics import unavailable_scene_semantics
 
 
 def source(count=2, frames=31):
@@ -48,7 +48,7 @@ def options(summary, segments, duration=None):
     )
     marker = "[SCENE_SPATIAL_PROVENANCE_OPTIONS_JSON]\n"
     assert marker in prompt, "trusted provenance choices must precede inference"
-    from las_repro.pipelines.scene_provenance import scene_spatial_prompt_data
+    from percept_harness.pipelines.scene_provenance import scene_spatial_prompt_data
     envelope, _ = scene_spatial_prompt_data(
         summary, segments, duration=duration or segments[-1]["end"])
     compact = json.JSONDecoder().raw_decode(prompt.split(marker, 1)[1])[0]
@@ -185,7 +185,7 @@ def test_general_visibility_and_inventory_rules():
     from importlib import resources
 
     read = lambda name: (
-        resources.files("las_repro.prompts").joinpath(name + ".txt").read_text()
+        resources.files("percept_harness.prompts").joinpath(name + ".txt").read_text()
     )
     scene = read("scene_semantics")
     assert "provenance choices, not facts" in scene
@@ -205,13 +205,13 @@ def test_no_room_uses_null_without_changing_summary_or_availability():
     suffix = json.dumps(
         summary.prompt_record(), ensure_ascii=False, separators=(",", ":")
     )
-    from las_repro.cv.summary import _summary_identity
+    from percept_harness.cv.summary import _summary_identity
 
     tight = summary.model_copy(update={"prompt_char_limit": len(suffix)})
     tight = tight.model_copy(update={"summary_id": _summary_identity(tight)})
     envelope, prompt = options(tight, segments)
     assert envelope is None
-    from las_repro.pipelines.scene_choices import prepare_scene_choices
+    from percept_harness.pipelines.scene_choices import prepare_scene_choices
     assert prepare_scene_choices(tight, segments, duration=segments[-1]["end"]).context()["evidence_summary"] == tight.model_dump(mode="json")
     assert '[CV_EVIDENCE_AVAILABILITY_JSON]\n{"available":true}' in prompt
     small = summary.model_copy(update={"prompt_char_limit": len(suffix) + 45})
@@ -306,7 +306,7 @@ def test_segment_boundary_snaps_inward_and_last_witness_is_not_extended():
 
 
 def test_retained_overlay_stems_are_copied_exactly():
-    from las_repro.cv.contracts import ArtifactFile, OverlayRecord
+    from percept_harness.cv.contracts import ArtifactFile, OverlayRecord
 
     path = "overlays/retained_visual_001.png"
     summary = summarize_cv_evidence(
@@ -325,7 +325,7 @@ def test_retained_overlay_stems_are_copied_exactly():
 
 
 def test_unicode_budget_and_oversized_segment_list_omit_whole_options():
-    from las_repro.cv.contracts import EntityPrompt
+    from percept_harness.cv.contracts import EntityPrompt
 
     entities = tuple(
         EntityPrompt(
@@ -372,7 +372,7 @@ def test_unicode_budget_and_oversized_segment_list_omit_whole_options():
 def test_hostile_summary_and_segment_bounds_fail_before_iteration():
     from test_cv_summary import BombList
 
-    from las_repro.pipelines.scene_provenance import scene_spatial_prompt_data
+    from percept_harness.pipelines.scene_provenance import scene_spatial_prompt_data
 
     summary, segments = source()
     with pytest.raises(ValueError):
@@ -383,7 +383,7 @@ def test_hostile_summary_and_segment_bounds_fail_before_iteration():
 
 
 def test_generated_options_validate_source_only_once(monkeypatch):
-    from las_repro.cv.summary import CvEvidenceSummary
+    from percept_harness.cv.summary import CvEvidenceSummary
 
     summary, segments = source()
     original = CvEvidenceSummary.prompt_record
@@ -394,7 +394,7 @@ def test_generated_options_validate_source_only_once(monkeypatch):
         return original(self)
 
     monkeypatch.setattr(CvEvidenceSummary, "prompt_record", counted)
-    from las_repro.pipelines.scene_provenance import scene_spatial_prompt_data
+    from percept_harness.pipelines.scene_provenance import scene_spatial_prompt_data
     envelope, _ = scene_spatial_prompt_data(summary, segments, duration=segments[-1]["end"])
     assert len(envelope["options"]) > 1
     assert len(calls) == 1
@@ -403,7 +403,7 @@ def test_generated_options_validate_source_only_once(monkeypatch):
 def test_hash_collisions_are_rejected_even_for_otherwise_valid_options(monkeypatch):
     from types import SimpleNamespace
 
-    import las_repro.pipelines.scene_provenance as module
+    import percept_harness.pipelines.scene_provenance as module
 
     summary, segments = source()
     monkeypatch.setattr(
@@ -428,7 +428,7 @@ def test_empty_available_summary_and_count_limit():
 
 
 def test_unusable_optional_entity_names_do_not_break_scene_rendering():
-    from las_repro.cv.contracts import EntityPrompt
+    from percept_harness.cv.contracts import EntityPrompt
 
     summary = summarize_cv_evidence(
         _artifact(
@@ -450,7 +450,7 @@ def test_unusable_optional_entity_names_do_not_break_scene_rendering():
 
 
 def test_returned_choices_do_not_mutate_future_provenance_constants():
-    from las_repro.pipelines.scene_provenance import scene_spatial_prompt_data
+    from percept_harness.pipelines.scene_provenance import scene_spatial_prompt_data
 
     summary, segments = source()
     original, _ = scene_spatial_prompt_data(summary, segments, duration=3.0)
@@ -462,7 +462,7 @@ def test_returned_choices_do_not_mutate_future_provenance_constants():
 
 
 def test_output_prohibited_overlay_stem_is_not_offered_as_a_copyable_value():
-    from las_repro.cv.contracts import ArtifactFile, OverlayRecord
+    from percept_harness.cv.contracts import ArtifactFile, OverlayRecord
 
     path = "overlays/retained.npy.png"
     summary = summarize_cv_evidence(

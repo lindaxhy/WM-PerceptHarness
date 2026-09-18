@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from las_repro.config import Settings
+from percept_harness.config import Settings
 
 
 _ACCESS_TOKEN_PATTERN = re.compile(
@@ -104,7 +104,7 @@ def _imported_cv_gpu_packages(source: str) -> set[str]:
 
 
 def _cv_gpu_import_offenders(repository_root: Path) -> list[str]:
-    source_root = repository_root / "src" / "las_repro"
+    source_root = repository_root / "src" / "percept_harness"
     sam_adapter = source_root / "cv" / "sam31.py"
     offenders: list[str] = []
 
@@ -135,7 +135,7 @@ def test_repository_has_no_asr_module_dependency_configuration_or_legacy_test():
         if (match := re.match(r"\s*([A-Za-z0-9_.-]+)", requirement)) is not None
     }
 
-    assert importlib.util.find_spec("las_repro.asr") is None
+    assert importlib.util.find_spec("percept_harness.asr") is None
     assert all(extra.lower() != "asr" for extra in optional_dependencies)
     assert "faster-whisper" not in dependency_names
     assert {
@@ -254,7 +254,7 @@ def test_cv_gpu_import_detector_handles_static_and_constant_dynamic_imports(
 def test_cv_gpu_import_policy_recurses_and_uses_exact_runtime_adapter_paths(
     tmp_path: Path,
 ) -> None:
-    source_root = tmp_path / "src" / "las_repro"
+    source_root = tmp_path / "src" / "percept_harness"
     sources = {
         "cv/sam31.py": "import torch\nimport numpy\n__import__('sam3')",
         "models/qwen3_vl.py": "import importlib\nimportlib.import_module('torch')",
@@ -268,9 +268,9 @@ def test_cv_gpu_import_policy_recurses_and_uses_exact_runtime_adapter_paths(
         path.write_text(source, encoding="utf-8")
 
     assert _cv_gpu_import_offenders(tmp_path) == [
-        "src/las_repro/models/qwen3_vl.py",
-        "src/las_repro/models/sam31.py",
-        "src/las_repro/nested/deeper/bad.py",
+        "src/percept_harness/models/qwen3_vl.py",
+        "src/percept_harness/models/sam31.py",
+        "src/percept_harness/nested/deeper/bad.py",
     ]
 
 
@@ -296,7 +296,7 @@ def test_env_example_documents_disabled_local_cv_defaults() -> None:
     # defaults must keep every CV field at its conservative value.
     assert "PERCEPT_CV_PROVIDER" not in values
 
-    from las_repro.config import Settings
+    from percept_harness.config import Settings
 
     defaults = Settings()
     assert defaults.cv_provider == "disabled"

@@ -5,9 +5,9 @@ import re
 import pytest
 from pydantic import ValidationError
 
-import las_repro.cv.entities as entities_module
-from las_repro.cv.contracts import EntityPrompt, EntityRole
-from las_repro.cv.entities import EntityCandidate, NormalizedEntities, normalize_entities
+import percept_harness.cv.entities as entities_module
+from percept_harness.cv.contracts import EntityPrompt, EntityRole
+from percept_harness.cv.entities import EntityCandidate, NormalizedEntities, normalize_entities
 
 
 class BombTuple(tuple):

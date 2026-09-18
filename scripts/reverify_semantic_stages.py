@@ -25,18 +25,18 @@ import time
 from typing import Any
 import zipfile
 
-import las_repro
-from las_repro.cv.summary import CvEvidenceSummary, OcclusionCandidate, validate_candidate_identity_evidence
-from las_repro.domain import InferenceJob
-from las_repro.models.openai_compat import OpenAICompatVideoModel
-from las_repro.pipelines.embodied import PromptRenderer, _validated_stage_result
-from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
-from las_repro.pipelines.scene_semantics import trusted_target_skeleton
-from las_repro.pipelines.scene_choices import (
+import percept_harness
+from percept_harness.cv.summary import CvEvidenceSummary, OcclusionCandidate, validate_candidate_identity_evidence
+from percept_harness.domain import InferenceJob
+from percept_harness.models.openai_compat import OpenAICompatVideoModel
+from percept_harness.pipelines.embodied import PromptRenderer, _validated_stage_result
+from percept_harness.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+from percept_harness.pipelines.scene_semantics import trusted_target_skeleton
+from percept_harness.pipelines.scene_choices import (
     authenticate_scene_context, compact_scene_options, project_scene_choices,
     SceneLocationChoice, SceneRelationChoice, SceneInputPackage, canonical,
 )
-from las_repro.execution import _model_request
+from percept_harness.execution import _model_request
 
 
 BUNDLE_SCHEMA = "semantic_reverification_input_v1"
@@ -223,7 +223,7 @@ def rebuild_prompt(
         ):
             raise OperatorError("REPAIR_INVALID")
     if stage == "scene_semantics" and "SCENE_MODEL_VIEW_JSON" in values:
-        from las_repro.pipelines.scene_model_view import MAX_REPAIR_BYTES
+        from percept_harness.pipelines.scene_model_view import MAX_REPAIR_BYTES
         if len(_json_bytes(repair)) > MAX_REPAIR_BYTES:
             raise OperatorError("REPAIR_INVALID")
     rendered_values = dict(values)
@@ -640,9 +640,9 @@ def _verify_large_file_hash(path: Path, expected: str, mismatch_code: str) -> No
 
 def _verify_wheel(path: Path, expected_hash: str) -> None:
     _verify_path_hash(path, expected_hash, "WHEEL_HASH_MISMATCH", 512 * 1024 * 1024)
-    package_root = Path(las_repro.__file__).resolve().parent
+    package_root = Path(percept_harness.__file__).resolve().parent
     imported = {
-        "las_repro/" + source.relative_to(package_root).as_posix(): source.read_bytes()
+        "percept_harness/" + source.relative_to(package_root).as_posix(): source.read_bytes()
         for source in package_root.rglob("*")
         if source.is_file()
         and "__pycache__" not in source.parts
@@ -653,7 +653,7 @@ def _verify_wheel(path: Path, expected_hash: str) -> None:
             package_infos = [
                 info
                 for info in archive.infolist()
-                if not info.is_dir() and info.filename.startswith("las_repro/")
+                if not info.is_dir() and info.filename.startswith("percept_harness/")
             ]
             names = [info.filename for info in package_infos]
             if len(names) != len(set(names)) or set(names) != set(imported):
@@ -703,7 +703,7 @@ def _validate_scene_alignment(
             expected_prompt = PromptRenderer().scene_semantics(
                 context["segments"], video_duration=context["duration"],
                 evidence_summary=summary, scene_input=SceneInputPackage(canonical(context)))
-            template = (Path(las_repro.__file__).parent / "prompts" / "scene_semantics.txt").read_text()
+            template = (Path(percept_harness.__file__).parent / "prompts" / "scene_semantics.txt").read_text()
             expected_values, _, expected_suffix = _extract_prompt_data(
                 expected_prompt, template, "scene_semantics")
             if canonical(values) != canonical(expected_values) or canonical(suffix) != canonical(expected_suffix):

@@ -4,9 +4,9 @@ import copy
 import pytest
 from pydantic import ValidationError
 
-import las_repro.cv.summary as sm
-from las_repro.pipelines.occlusion import OcclusionDecisionSet, validate_occlusion_decisions
-from las_repro.pipelines.validators import TemporalValidationError
+import percept_harness.cv.summary as sm
+from percept_harness.pipelines.occlusion import OcclusionDecisionSet, validate_occlusion_decisions
+from percept_harness.pipelines.validators import TemporalValidationError
 from test_cv_summary import _artifact, _track, _observation, _timeline, _thresholds
 
 
@@ -392,7 +392,7 @@ def test_permanent_gap_can_supply_two_continuation_alternatives():
 
 
 def test_scan_caps_omit_truthfully_without_unbounded_geometry_recompute(monkeypatch):
-    import las_repro.cv.identity as identity
+    import percept_harness.cv.identity as identity
     count=0
     original=identity._geometry
     def counted(a,b):
@@ -427,7 +427,7 @@ def test_identity_wire_shape_cannot_smuggle_claims_or_noncanonical_rows(mutation
 
 
 def test_registry_and_operator_authenticate_same_retained_cues():
-    from las_repro.pipelines.output_validation import _validate_occlusion_decision_output
+    from percept_harness.pipelines.output_validation import _validate_occlusion_decision_output
     from scripts.reverify_semantic_stages import _validate_occlusion_alignment, OperatorError
     from test_cv_summary import _reseal_candidate_payload
     other=_track('item_2','item',tuple(_observation(i) for i in (1,2,3)))
@@ -454,7 +454,7 @@ def test_registry_and_operator_authenticate_same_retained_cues():
 
 
 def test_registry_requires_source_for_supplied_identity_cues():
-    from las_repro.pipelines.output_validation import _validate_occlusion_decision_output
+    from percept_harness.pipelines.output_validation import _validate_occlusion_decision_output
     candidate=gap_bundle().candidates[0]
     positive=decisions(candidate,[candidate.allowed_event_intervals[0].model_dump()]).model_dump(mode='json')
     with pytest.raises(ValueError):
@@ -481,7 +481,7 @@ def test_bypass_option_cannot_escape_direct_decision_validation():
 
 
 def test_identity_context_rejects_unrelated_occluder_support_even_with_real_metrics():
-    from las_repro.cv.identity import derive_identity_evidence
+    from percept_harness.cv.identity import derive_identity_evidence
     target=_track('target_1','target',(_observation(0),_observation(4)))
     board=_track('board_1','board',tuple(_observation(i) for i in range(5)))
     summary=sm.summarize_cv_evidence(_artifact((target,board)),timeline=_timeline(0,1,2,3,4))

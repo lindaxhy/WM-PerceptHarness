@@ -6,7 +6,7 @@ extra_body): one synthetic video completed on both the new and the legacy
 backend with the same output schema and consistent content. Step 4 removed
 `ark.py`, `qwen3_vl.py`, their tests, the `[gpu]` extra, and the GPU scripts;
 `reverify_semantic_stages.py` was ported to the new backend (`--base-url`).
-Remaining follow-up (optional): rename the `las_repro` package.
+Remaining follow-up (optional): rename the `percept_harness` package.
 Replaces: `models/ark.py` (Doubao/ARK Responses adapter), `models/qwen3_vl.py`
 (local GPU inference).
 
@@ -87,7 +87,7 @@ provides a multi-entry `PERCEPT_OPENAI_MODEL_REGISTRY` (JSON), for A/B runs.
 
 ## Deletions (after the new backend is validated)
 
-- `src/las_repro/models/ark.py`, `src/las_repro/models/qwen3_vl.py`
+- `src/percept_harness/models/ark.py`, `src/percept_harness/models/qwen3_vl.py`
   (~1,000 lines)
 - `tests/test_ark_backend.py`, `tests/test_qwen_backend.py` → replaced by
   `tests/test_openai_backend.py` using the same injected-`httpx.MockTransport`
@@ -112,7 +112,7 @@ provides a multi-entry `PERCEPT_OPENAI_MODEL_REGISTRY` (JSON), for A/B runs.
    local vLLM Qwen3-VL to confirm the local path.
 4. **Delete** `ark.py`, `qwen3_vl.py`, gpu extra, related scripts/settings/
    tests; update README and `.env.example`.
-5. Separate follow-up PR (optional): rename the `las_repro` package to match
+5. Separate follow-up PR (optional): rename the `percept_harness` package to match
    WM-PerceptHarness (the env prefix is already renamed).
 
 Steps 1–2 and 4 are pure refactor verifiable by the test suite; step 3 is the

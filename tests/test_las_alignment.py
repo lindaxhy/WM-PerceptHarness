@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from las_repro.evaluation.las_alignment import (
+from percept_harness.evaluation.las_alignment import (
     Annotation,
     Event,
     aggregate_metrics,
@@ -117,7 +117,7 @@ def test_pretty_historical_json_is_accepted_without_changing_bytes():
 
 
 def test_frozen_references_verify_bytes_and_closed_references(tmp_path):
-    from las_repro.evaluation import las_alignment as las
+    from percept_harness.evaluation import las_alignment as las
 
     manifest = Path(
         "evaluation/references/las_official_english_2026-09-04/manifest.json"
@@ -149,8 +149,8 @@ def test_frozen_references_verify_bytes_and_closed_references(tmp_path):
 def test_legacy_adapter_uses_existing_primary_projection_only():
     from test_hybrid_result import source_segments
 
-    from las_repro.evaluation import las_alignment as las
-    from las_repro.pipelines.semantic_events import build_semantic_events
+    from percept_harness.evaluation import las_alignment as las
+    from percept_harness.pipelines.semantic_events import build_semantic_events
 
     segments = source_segments()
     result = {
@@ -234,7 +234,7 @@ def test_reviews_must_cover_exact_positive_events_and_digest():
 
 
 def test_metadata_binds_configuration_models_and_all_samples():
-    from las_repro.evaluation import las_alignment as las
+    from percept_harness.evaluation import las_alignment as las
 
     metadata = metadata_fixture()
     las.validate_metadata(metadata, {"s"}, "qwen")
@@ -251,7 +251,7 @@ def test_metadata_binds_configuration_models_and_all_samples():
 
 
 def metadata_fixture():
-    from las_repro.evaluation.las_alignment import digest
+    from percept_harness.evaluation.las_alignment import digest
 
     config = {
         "fps": 2,
@@ -289,7 +289,7 @@ def metadata_fixture():
 
 
 def test_gate_requires_both_controls_same_model_and_all_positive_reviews():
-    from las_repro.evaluation import las_alignment as las
+    from percept_harness.evaluation import las_alignment as las
 
     def aggregate(action=0.8, occ=0.5, reviewed=5, precision=0.8):
         return {
@@ -335,11 +335,11 @@ def test_available_evidence_rebuilt_with_bound_config_and_real_artifact(
     from test_cv_artifacts import artifact_for, cv_request
     from test_hybrid_result import source_segments
 
-    from las_repro.cv.artifacts import CvArtifactStore, cv_cache_key
-    from las_repro.cv.summary import summarize_cv_evidence
-    from las_repro.evaluation import las_alignment as las
-    from las_repro.pipelines.hybrid_result import build_hybrid_result
-    from las_repro.pipelines.scene_semantics import unavailable_scene_semantics
+    from percept_harness.cv.artifacts import CvArtifactStore, cv_cache_key
+    from percept_harness.cv.summary import summarize_cv_evidence
+    from percept_harness.evaluation import las_alignment as las
+    from percept_harness.pipelines.hybrid_result import build_hybrid_result
+    from percept_harness.pipelines.scene_semantics import unavailable_scene_semantics
 
     media_bytes = b"decoder fixture with verified bytes"
     request = cv_request.__wrapped__().model_copy(
@@ -409,7 +409,7 @@ def test_available_evidence_rebuilt_with_bound_config_and_real_artifact(
     # Only replace the decoder: artifact storage, hashes, sidecar validation,
     # run adapter, and production SAM policy execute unchanged.
     monkeypatch.setattr(
-        "las_repro.cv.timeline.probe_frame_timeline", lambda _: request.timeline
+        "percept_harness.cv.timeline.probe_frame_timeline", lambda _: request.timeline
     )
     results_dir, media_dir = tmp_path / "results", tmp_path / "media"
     results_dir.mkdir()
@@ -419,7 +419,7 @@ def test_available_evidence_rebuilt_with_bound_config_and_real_artifact(
     (media_dir / "s.mp4").write_bytes(media_bytes)
     metadata = metadata_fixture()
     metadata["configuration"]["cv"] = config
-    from las_repro.evaluation.las_alignment import digest
+    from percept_harness.evaluation.las_alignment import digest
 
     metadata["configuration_sha256"] = digest(metadata["configuration"])
     metadata["samples"][0].update(
@@ -489,11 +489,11 @@ def test_evaluation_rebuild_keeps_threshold_aware_candidate_provenance(
     from test_cv_summary import _artifact, _observation, _timeline, _track
     from test_hybrid_result import source_segments
 
-    from las_repro.cv.artifacts import CvArtifactStore, cv_cache_key
-    import las_repro.cv.summary as summary_module
-    from las_repro.evaluation import las_alignment as las
-    from las_repro.pipelines.hybrid_result import build_hybrid_result
-    from las_repro.pipelines.scene_semantics import unavailable_scene_semantics
+    from percept_harness.cv.artifacts import CvArtifactStore, cv_cache_key
+    import percept_harness.cv.summary as summary_module
+    from percept_harness.evaluation import las_alignment as las
+    from percept_harness.pipelines.hybrid_result import build_hybrid_result
+    from percept_harness.pipelines.scene_semantics import unavailable_scene_semantics
 
     timeline = _timeline(*range(40))
     tracks = tuple(
@@ -630,7 +630,7 @@ def test_evaluation_rebuild_keeps_threshold_aware_candidate_provenance(
 
 
 def test_report_writer_is_canonical_idempotent_and_refuses_overwrite(tmp_path):
-    from las_repro.evaluation import las_alignment as las
+    from percept_harness.evaluation import las_alignment as las
 
     path = tmp_path / "report.json"
     las.write_report(path, {"b": 1, "a": 2})
@@ -685,7 +685,7 @@ def test_mapping_is_frozen_and_rejects_output_tuned_changes(tmp_path):
 
 
 def test_no_raw_masks_in_legacy_metric_inputs():
-    from las_repro.evaluation import las_alignment as las
+    from percept_harness.evaluation import las_alignment as las
 
     with pytest.raises(ValueError):
         las.Event(0, 1, "motion", target="masks/0.npz")
@@ -768,7 +768,7 @@ def test_unknown_events_are_not_positive_matches():
 
 
 def test_frozen_qwen_identity_cannot_be_relabelled(tmp_path):
-    from las_repro.evaluation import las_alignment as las
+    from percept_harness.evaluation import las_alignment as las
 
     metadata = metadata_fixture()
     metadata["model_identity"] = metadata["samples"][0]["model_identity"] = "qwen-other"
@@ -786,11 +786,11 @@ def test_frozen_qwen_identity_cannot_be_relabelled(tmp_path):
 
 def test_offline_five_sample_cli_with_local_frozen_inputs(tmp_path):
     """Optional integration: existing frozen bytes, synthetic unavailable hybrid."""
-    from las_repro.evaluation import las_alignment as las
-    from las_repro.pipelines.hybrid_result import build_hybrid_result
-    from las_repro.pipelines.scene_semantics import unavailable_scene_semantics
+    from percept_harness.evaluation import las_alignment as las
+    from percept_harness.pipelines.hybrid_result import build_hybrid_result
+    from percept_harness.pipelines.scene_semantics import unavailable_scene_semantics
 
-    from las_repro.pipelines.validators import Skill
+    from percept_harness.pipelines.validators import Skill
 
     qwen = Path("outputs/five-demo/qwen-only")
     if not all(
@@ -882,7 +882,7 @@ def test_offline_five_sample_cli_with_local_frozen_inputs(tmp_path):
 
 
 def test_reference_rejects_wrong_collection_types():
-    from las_repro.evaluation import las_alignment as las
+    from percept_harness.evaluation import las_alignment as las
 
     path = Path(
         "evaluation/references/las_official_english_2026-09-04/references/full_0001.json"
@@ -894,7 +894,7 @@ def test_reference_rejects_wrong_collection_types():
 
 
 def test_metadata_rejects_unsafe_identity_and_unknown_timing_stages():
-    from las_repro.evaluation import las_alignment as las
+    from percept_harness.evaluation import las_alignment as las
 
     for change in (
         lambda m: m["samples"][0].update(stage_seconds={"api_key": 1.0}),
@@ -915,10 +915,10 @@ def test_run_requires_consistent_cv_identity_across_two_verified_artifacts(
     from test_cv_artifacts import artifact_for, cv_request
     from test_hybrid_result import source_segments
 
-    from las_repro.cv.artifacts import CvArtifactStore, cv_cache_key
-    from las_repro.evaluation import las_alignment as las
-    from las_repro.pipelines.hybrid_result import build_hybrid_result
-    from las_repro.pipelines.scene_semantics import unavailable_scene_semantics
+    from percept_harness.cv.artifacts import CvArtifactStore, cv_cache_key
+    from percept_harness.evaluation import las_alignment as las
+    from percept_harness.pipelines.hybrid_result import build_hybrid_result
+    from percept_harness.pipelines.scene_semantics import unavailable_scene_semantics
 
     template = cv_request.__wrapped__().model_copy(
         update={"provider": "sam31", "model_identity": "sam31-pinned"}
@@ -951,7 +951,7 @@ def test_run_requires_consistent_cv_identity_across_two_verified_artifacts(
     # The decoder alone is stubbed; source bytehashes, both artifact manifests,
     # cache identity reconstruction, metadata, and run validation are real.
     monkeypatch.setattr(
-        "las_repro.cv.timeline.probe_frame_timeline", lambda _: template.timeline
+        "percept_harness.cv.timeline.probe_frame_timeline", lambda _: template.timeline
     )
     for sid in ("s1", "s2"):
         source = sid.encode()

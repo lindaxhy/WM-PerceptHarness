@@ -18,11 +18,11 @@ def hybrid_export_case(tmp_path, monkeypatch):
     from test_hybrid_result import source_segments
     from test_las_alignment import metadata_fixture
 
-    from las_repro.cv.artifacts import CvArtifactStore, cv_cache_key
-    from las_repro.cv.summary import build_cv_prompt_bundle, summarize_cv_evidence
-    from las_repro.evaluation import las_alignment as las
-    from las_repro.pipelines.hybrid_result import build_hybrid_result
-    from las_repro.pipelines.scene_semantics import unavailable_scene_semantics
+    from percept_harness.cv.artifacts import CvArtifactStore, cv_cache_key
+    from percept_harness.cv.summary import build_cv_prompt_bundle, summarize_cv_evidence
+    from percept_harness.evaluation import las_alignment as las
+    from percept_harness.pipelines.hybrid_result import build_hybrid_result
+    from percept_harness.pipelines.scene_semantics import unavailable_scene_semantics
 
     root = tmp_path / "repo"
     root.mkdir()
@@ -39,7 +39,7 @@ def hybrid_export_case(tmp_path, monkeypatch):
     sample_ids = ("full_0001", "full_0002", "full_0004", "full_0021", "full_0024")
     timeline = cv_request.__wrapped__().timeline
     monkeypatch.setattr(
-        "las_repro.cv.timeline.probe_frame_timeline", lambda _: timeline
+        "percept_harness.cv.timeline.probe_frame_timeline", lambda _: timeline
     )
     for sid in sample_ids:
         video = f"synthetic source {sid}".encode()
@@ -289,7 +289,7 @@ def test_hybrid_export_rejects_output_symlink_and_broad_target(hybrid_export_cas
 
 @pytest.fixture
 def hybrid_cli_case(hybrid_export_case, monkeypatch):
-    from las_repro.evaluation import las_alignment as las
+    from percept_harness.evaluation import las_alignment as las
     from scripts import build_comparison_viewer_data as exporter
 
     kwargs, _, _ = hybrid_export_case

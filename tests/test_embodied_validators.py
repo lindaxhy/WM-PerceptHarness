@@ -10,12 +10,12 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-import las_repro.pipelines.output_validation as output_validation_module
-from las_repro.pipelines.output_validation import (
+import percept_harness.pipelines.output_validation as output_validation_module
+from percept_harness.pipelines.output_validation import (
     DEFAULT_OUTPUT_SCHEMAS,
     _enrichment_pydantic_issue_codes,
 )
-from las_repro.pipelines.validators import (
+from percept_harness.pipelines.validators import (
     BoundaryPlan,
     CoarsePlan,
     EnrichmentResult,

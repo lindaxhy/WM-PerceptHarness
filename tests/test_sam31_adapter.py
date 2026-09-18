@@ -17,8 +17,8 @@ import zipfile
 
 import pytest
 
-from las_repro.cv.base import CvOutOfMemoryError, CvProviderError
-from las_repro.cv.contracts import (
+from percept_harness.cv.base import CvOutOfMemoryError, CvProviderError
+from percept_harness.cv.contracts import (
     CvEvidenceRequest,
     EntityPrompt,
     EntityRole,
@@ -28,8 +28,8 @@ from las_repro.cv.contracts import (
     FrameTimestamp,
     SamplingPolicy,
 )
-from las_repro.cv.sam31 import Sam31EvidenceProvider
-from las_repro.cv.timeline import SampledFrame, SampledFrameSet
+from percept_harness.cv.sam31 import Sam31EvidenceProvider
+from percept_harness.cv.timeline import SampledFrame, SampledFrameSet
 
 
 PINNED_REVISION = "660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7"
@@ -2446,7 +2446,7 @@ class BlockSam(importlib.abc.MetaPathFinder):
         return None
 
 sys.meta_path.insert(0, BlockSam())
-from las_repro.cv.sam31 import Sam31EvidenceProvider
+from percept_harness.cv.sam31 import Sam31EvidenceProvider
 assert Sam31EvidenceProvider is not None
 assert not any(name == 'sam3' or name.startswith('sam3.') for name in sys.modules)
 """

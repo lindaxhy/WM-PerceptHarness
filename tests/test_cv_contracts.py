@@ -5,9 +5,9 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-import las_repro.cv as cv_public
-import las_repro.cv.contracts as cv_contracts
-from las_repro.cv.contracts import (
+import percept_harness.cv as cv_public
+import percept_harness.cv.contracts as cv_contracts
+from percept_harness.cv.contracts import (
     ArtifactFile,
     CvEvidenceArtifact,
     CvEvidenceRequest,

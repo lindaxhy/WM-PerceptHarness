@@ -7,14 +7,14 @@ from pathlib import Path
 import httpx
 import pytest
 
-from las_repro.media import FrameRef, TimeSpan
-from las_repro.models.base import ModelOutputError, ModelRequest
-from las_repro.models.openai_compat import (
+from percept_harness.media import FrameRef, TimeSpan
+from percept_harness.models.base import ModelOutputError, ModelRequest
+from percept_harness.models.openai_compat import (
     STAGE_MAX_OUTPUT_TOKENS,
     OpenAICompatBackendError,
     OpenAICompatVideoModel,
 )
-from las_repro.models.response_contract import (
+from percept_harness.models.response_contract import (
     CHOICE_CONTRACT,
     ModelResponseContract,
     canonical,

@@ -15,13 +15,13 @@ import weakref
 
 import pytest
 
-from las_repro.cv.artifacts import (
+from percept_harness.cv.artifacts import (
     CvArtifactError,
     CvArtifactHandle,
     CvArtifactStore,
     cv_cache_key,
 )
-from las_repro.cv.contracts import (
+from percept_harness.cv.contracts import (
     ArtifactFile,
     CvEvidenceArtifact,
     CvEvidenceRequest,
@@ -1161,7 +1161,7 @@ def test_fifo_manifest_lookup_returns_promptly_without_writer(tmp_path, cv_reque
     os.mkfifo(entry / "manifest.json", mode=0o600)
     script = (
         "from pathlib import Path; "
-        "from las_repro.cv.artifacts import CvArtifactStore; "
+        "from percept_harness.cv.artifacts import CvArtifactStore; "
         "print(CvArtifactStore(Path(__import__('sys').argv[1])).lookup(__import__('sys').argv[2]))"
     )
 

@@ -5,12 +5,12 @@ import json
 import pytest
 from test_scene_provenance import source, scene_from, context
 
-from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS as registry
-from las_repro.pipelines.scene_provenance import scene_spatial_prompt_data
+from percept_harness.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS as registry
+from percept_harness.pipelines.scene_provenance import scene_spatial_prompt_data
 
 
 def fixture():
-    from las_repro.pipelines.scene_choices import prepare_scene_choices
+    from percept_harness.pipelines.scene_choices import prepare_scene_choices
     summary, segments = source()
     package = prepare_scene_choices(summary, segments, duration=segments[-1]['end'])
     ctx = package.context()
@@ -40,7 +40,7 @@ def test_legacy_contacting_has_closed_enum_code():
 
 
 def test_projection_preserves_nonspatial_and_exact_sources_and_direction():
-    from las_repro.pipelines.scene_choices import project_scene_choices
+    from percept_harness.pipelines.scene_choices import project_scene_choices
     draft, ctx = fixture()
     draft['locations'].reverse()
     draft['relations'].reverse()
@@ -99,7 +99,7 @@ def test_forged_context_is_internal_failure(mutation):
 
 
 def test_no_cv_preserves_supported_nonspatial_and_rejects_fake_envelopes():
-    from las_repro.pipelines.scene_choices import prepare_scene_choices, project_scene_choices
+    from percept_harness.pipelines.scene_choices import prepare_scene_choices, project_scene_choices
     draft, _ = fixture()
     _, segments = source()
     ctx = prepare_scene_choices(None, segments, duration=segments[-1]['end']).context()
@@ -111,7 +111,7 @@ def test_no_cv_preserves_supported_nonspatial_and_rejects_fake_envelopes():
 
 
 def test_compiled_schema_separates_kind_enums_and_empty_branches():
-    from las_repro.pipelines.scene_choices import prepare_scene_choices
+    from percept_harness.pipelines.scene_choices import prepare_scene_choices
     _, ctx = fixture()
     contract = registry.model_response_contract('SceneSemanticsChoices', ctx)
     schema = json.loads(contract.schema_json)
@@ -127,7 +127,7 @@ def test_compiled_schema_separates_kind_enums_and_empty_branches():
 
 
 def test_selection_order_is_irrelevant_even_for_distinct_predicates_on_one_pair():
-    from las_repro.pipelines.scene_choices import project_scene_choices
+    from percept_harness.pipelines.scene_choices import project_scene_choices
     draft, ctx = fixture()
     draft['relations'].append(dict(draft['relations'][0], relation='on'))
     reversed_draft = copy.deepcopy(draft)
@@ -137,8 +137,8 @@ def test_selection_order_is_irrelevant_even_for_distinct_predicates_on_one_pair(
 
 @pytest.mark.parametrize('branch', ['empty_choices', 'empty_offers', 'null_offers'])
 def test_available_cv_fallbacks_preserve_nonspatial(branch):
-    from las_repro.cv.summary import _summary_identity
-    from las_repro.pipelines.scene_choices import prepare_scene_choices, project_scene_choices
+    from percept_harness.cv.summary import _summary_identity
+    from percept_harness.pipelines.scene_choices import prepare_scene_choices, project_scene_choices
     draft, _ = fixture()
     summary, segments = source(frames=1 if branch == 'empty_offers' else 31)
     if branch == 'null_offers':
@@ -167,7 +167,7 @@ def test_combined_selection_cap_is_local_and_duplicates_are_not_collapsed():
 
 @pytest.mark.parametrize('attack', ['bytes', 'nodes', 'depth', 'external_ref'])
 def test_schema_compilation_rejects_unbounded_or_external_structures(monkeypatch, attack):
-    from las_repro.pipelines.scene_choices import SceneSemanticsChoices, prepare_scene_choices
+    from percept_harness.pipelines.scene_choices import SceneSemanticsChoices, prepare_scene_choices
     schema = {'type': 'object'}
     if attack == 'bytes': schema['title'] = 'a' * 65537
     if attack == 'nodes': schema['required'] = ['x'] * 5000
@@ -180,7 +180,7 @@ def test_schema_compilation_rejects_unbounded_or_external_structures(monkeypatch
 
 
 def test_source_preflight_rejects_nonplain_containers_before_traversal():
-    from las_repro.pipelines.scene_choices import authenticate_scene_context
+    from percept_harness.pipelines.scene_choices import authenticate_scene_context
     class Hostile(dict):
         def items(self): raise AssertionError('unbounded traversal')
     with pytest.raises(ValueError): authenticate_scene_context(Hostile())
@@ -241,14 +241,14 @@ def test_scene_choice_enum_feedback_deduplicates_in_closed_domain_order():
 ])
 def test_scene_choice_enum_unexpected_paths_or_kinds_remain_generic(kind, path):
     from pydantic import ValidationError
-    from las_repro.pipelines.output_validation import _scene_choice_pydantic_issue_codes
+    from percept_harness.pipelines.output_validation import _scene_choice_pydantic_issue_codes
     error = ValidationError.from_exception_data('synthetic', [
         dict(type=kind, loc=path, input='private raw value', ctx={'expected': 'private message'})])
     assert _scene_choice_pydantic_issue_codes(error) == ('SCENE_SEMANTICS_CHOICES_ENUM_VALUE',)
 
 
 def test_scene_unknown_requires_explicit_model_value_and_retains_supported_records():
-    from las_repro.pipelines.scene_choices import project_scene_choices
+    from percept_harness.pipelines.scene_choices import project_scene_choices
     draft, ctx = fixture()
     draft['semantic_events'][0].update(event_type='hold', description='hand holds item visibly')
     original = copy.deepcopy(draft)
@@ -280,7 +280,7 @@ def test_scene_choice_enum_mapping_preserves_other_issue_families():
 
 
 def test_legacy_event_enum_feedback_remains_generic():
-    from las_repro.pipelines.scene_choices import project_scene_choices
+    from percept_harness.pipelines.scene_choices import project_scene_choices
     draft, ctx = fixture()
     public = project_scene_choices(draft, ctx)
     public['semantic_events'][0]['event_type'] = 'hold'
@@ -293,10 +293,10 @@ def test_legacy_event_enum_feedback_remains_generic():
 
 def test_scene_normalization_repairs_mechanical_faults_without_a_model_call():
     """Sorting, renumbering, dangling targets, and bad predicates fix locally."""
-    from las_repro.pipelines.output_validation import (
+    from percept_harness.pipelines.output_validation import (
         DEFAULT_OUTPUT_SCHEMAS, NormalizedSchemaOutput,
     )
-    from las_repro.pipelines.scene_choices import normalize_scene_choice_mechanics
+    from percept_harness.pipelines.scene_choices import normalize_scene_choice_mechanics
 
     draft, ctx = fixture()
     draft['semantic_events'] = [
@@ -331,7 +331,7 @@ def test_scene_normalization_repairs_mechanical_faults_without_a_model_call():
 
 def test_scene_normalization_never_hides_a_non_mechanical_fault():
     """A fault outside the mechanical set must still fail and trigger repair."""
-    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+    from percept_harness.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
 
     draft, ctx = fixture()
     draft['outcome']['status'] = 'victorious'
@@ -343,7 +343,7 @@ def test_scene_normalization_never_hides_a_non_mechanical_fault():
 
 def test_invented_option_ids_are_dropped_locally_without_a_model_call():
     """A selection referencing an unoffered option is removed, not retried."""
-    from las_repro.pipelines.output_validation import (
+    from percept_harness.pipelines.output_validation import (
         DEFAULT_OUTPUT_SCHEMAS, NormalizedSchemaOutput,
     )
 
@@ -372,7 +372,7 @@ def test_invented_option_ids_are_dropped_locally_without_a_model_call():
 
 def test_option_kind_mismatch_still_fails_closed():
     """Only wholly unknown option ids are mechanical; kind confusion is not."""
-    from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+    from percept_harness.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
 
     draft, ctx = fixture()
     offered = ctx['spatial_options']['options']

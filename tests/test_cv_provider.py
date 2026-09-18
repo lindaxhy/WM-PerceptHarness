@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from las_repro.cv.base import CvEvidenceProvider, FakeCvEvidenceProvider
-from las_repro.cv.contracts import (
+from percept_harness.cv.base import CvEvidenceProvider, FakeCvEvidenceProvider
+from percept_harness.cv.contracts import (
     CvEvidenceRequest,
     EntityPrompt,
     EntityRole,

@@ -7,20 +7,20 @@ from pathlib import Path
 
 import pytest
 
-from las_repro.config import Settings
-from las_repro.media import TimeSpan
-from las_repro.models.base import (
+from percept_harness.config import Settings
+from percept_harness.media import TimeSpan
+from percept_harness.models.base import (
     ModelOutputError,
     ModelRequest,
     ModelRequestError,
     parse_strict_json,
 )
-from las_repro.models.fake import (
+from percept_harness.models.fake import (
     FakeVideoModel,
     UnknownModelStageError,
     _split_at_visible_changes,
 )
-from las_repro.pipelines.embodied import PromptRenderer
+from percept_harness.pipelines.embodied import PromptRenderer
 
 
 @pytest.mark.parametrize(

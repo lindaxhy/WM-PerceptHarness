@@ -7,12 +7,12 @@ import copy
 import pytest
 from pydantic import ValidationError
 
-from las_repro.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
-from las_repro.pipelines.scene_semantics import (
+from percept_harness.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+from percept_harness.pipelines.scene_semantics import (
     SceneSemantics,
     validate_scene_semantics,
 )
-from las_repro.pipelines.validators import TemporalValidationError
+from percept_harness.pipelines.validators import TemporalValidationError
 
 
 def valid_scene_semantics() -> dict[str, object]:

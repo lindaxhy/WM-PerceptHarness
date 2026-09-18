@@ -11,7 +11,7 @@ import warnings
 import pytest
 from pydantic import ValidationError
 
-from las_repro.cv.contracts import (
+from percept_harness.cv.contracts import (
     ArtifactFile,
     CvEvidenceArtifact,
     CvTrack,
@@ -24,8 +24,8 @@ from las_repro.cv.contracts import (
     OverlayRecord,
     TrackObservation,
 )
-import las_repro.cv.summary as summary_module
-from las_repro.cv.summary import (
+import percept_harness.cv.summary as summary_module
+from percept_harness.cv.summary import (
     CvEvidenceSummary,
     build_occlusion_candidates,
     summarize_cv_evidence,
@@ -1609,7 +1609,7 @@ def test_summary_module_imports_no_gpu_or_sam_runtime() -> None:
             sys.executable,
             "-c",
             (
-                "import sys; import las_repro.cv.summary; "
+                "import sys; import percept_harness.cv.summary; "
                 "assert 'torch' not in sys.modules; "
                 "assert not any(name == 'sam3' or name.startswith('sam3.') "
                 "for name in sys.modules)"

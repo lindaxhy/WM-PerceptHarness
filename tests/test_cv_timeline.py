@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from las_repro.cv.contracts import FrameTimeline, FrameTimestamp, SamplingPolicy
-from las_repro.cv.timeline import (
+from percept_harness.cv.contracts import FrameTimeline, FrameTimestamp, SamplingPolicy
+from percept_harness.cv.timeline import (
     TimelineError,
     initial_sample_indices,
     materialize_sampled_frames,

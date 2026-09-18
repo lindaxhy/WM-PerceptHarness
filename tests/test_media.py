@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-import las_repro.media as media_module
-from las_repro.media import (
+import percept_harness.media as media_module
+from percept_harness.media import (
     FrameRef,
     MediaProbeError,
     TimeSpan,
@@ -299,7 +299,7 @@ def test_extract_frames_stops_exactly_at_end_when_duration_divides_by_fps(
 ) -> None:
     """8s at 3fps: the 25th accumulated timestamp used to round to 7.999...9,
     which is still < 8.0, seeking one frame past the end of the video."""
-    from las_repro.media import probe_video
+    from percept_harness.media import probe_video
 
     metadata = probe_video(short_video)
     frames = extract_frames(

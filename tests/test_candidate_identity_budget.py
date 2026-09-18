@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-import las_repro.cv.summary as sm
-from las_repro.cv.identity import identity_bytes
+import percept_harness.cv.summary as sm
+from percept_harness.cv.identity import identity_bytes
 from test_cv_summary import _artifact, _track, _observation, _timeline, _thresholds
 from test_candidate_v2 import gap_bundle
 
@@ -129,10 +129,10 @@ def test_resealed_identity_subset_still_requires_exact_source_rows(field,value):
 
 
 def test_budget_subset_roundtrips_registry_renderer_and_operator():
-    from las_repro.pipelines.output_validation import _validate_occlusion_decision_output
-    from las_repro.pipelines.embodied import PromptRenderer
-    from las_repro.cv.entities import NormalizedEntities
-    from las_repro.cv.contracts import EntityPrompt
+    from percept_harness.pipelines.output_validation import _validate_occlusion_decision_output
+    from percept_harness.pipelines.embodied import PromptRenderer
+    from percept_harness.cv.entities import NormalizedEntities
+    from percept_harness.cv.contracts import EntityPrompt
     from scripts.reverify_semantic_stages import _validate_occlusion_alignment
     full, bounded = _partial_complete_source()
     result = {'decisions':[{

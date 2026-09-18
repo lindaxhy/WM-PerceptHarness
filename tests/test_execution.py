@@ -8,16 +8,16 @@ from typing import Any
 
 import pytest
 
-from las_repro.domain import InferenceJobSpec, InferenceStatus
-from las_repro.execution import (
+from percept_harness.domain import InferenceJobSpec, InferenceStatus
+from percept_harness.execution import (
     ExecutionError,
     InferenceJobFailed,
     JobWaitTimeout,
     SyncJobStore,
     wait_for_jobs,
 )
-from las_repro.metrics import validate_inference_job_metrics
-from las_repro.models.base import ModelRequest
+from percept_harness.metrics import validate_inference_job_metrics
+from percept_harness.models.base import ModelRequest
 
 
 class _ScriptedModel:

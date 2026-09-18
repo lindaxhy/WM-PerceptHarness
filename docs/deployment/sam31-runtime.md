@@ -38,7 +38,7 @@ Install a transferred harness wheel, dependencies, and SAM into a clean dedicate
 environment from the controlled wheelhouse:
 
 ```bash
-export LAS_WHEEL=/srv/las/releases/las_repro-0.1.0-py3-none-any.whl
+export LAS_WHEEL=/srv/las/releases/percept_harness-0.1.0-py3-none-any.whl
 export WHEELHOUSE=/srv/las/releases/wheelhouse
 export HARNESS_SOURCE=/srv/las/releases/wm-percept-harness
 python3.12 -m venv /srv/las/venvs/sam31
