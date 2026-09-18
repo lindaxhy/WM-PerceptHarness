@@ -15,3 +15,11 @@ def validate_model_alias(value: Any) -> str:
     if not isinstance(value, str) or _MODEL_ALIAS.fullmatch(value) is None:
         raise ValueError("model alias must be an opaque local name")
     return value
+
+
+def alias_for_model_id(model_id: Any) -> str:
+    """Derive a stable local alias from a provider model id (e.g. with '/')."""
+    if not isinstance(model_id, str) or not model_id.strip():
+        raise ValueError("model id must be a non-blank string")
+    candidate = re.sub(r"[^A-Za-z0-9._-]+", "-", model_id).lstrip("._-")[:128]
+    return validate_model_alias(candidate)

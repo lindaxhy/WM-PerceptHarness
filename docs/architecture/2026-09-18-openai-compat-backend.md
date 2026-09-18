@@ -1,6 +1,8 @@
 # Design: one generic OpenAI-compatible VLM backend
 
-Status: draft, 2026-09-18
+Status: steps 1–2 implemented, 2026-09-18 (backend, CLI wiring, tests; env
+prefix renamed `LAS_` → `PERCEPT_` across the repo). Pending: step 3
+(real-endpoint validation) and step 4 (deletions).
 Replaces: `models/ark.py` (Doubao/ARK Responses adapter), `models/qwen3_vl.py`
 (local GPU inference).
 
@@ -13,7 +15,7 @@ instead:
 - `ark.py` hardcodes the Volcengine ARK Responses endpoint, so only Doubao
   works over the network;
 - `qwen3_vl.py` loads a local Qwen3-VL checkpoint with transformers, dragging
-  in the `[gpu]` extra, `LAS_GPU_DEVICES`, `LAS_MODEL_REGISTRY`,
+  in the `[gpu]` extra, `PERCEPT_GPU_DEVICES`, `PERCEPT_MODEL_REGISTRY`,
   `scripts/download_model.py`, and `scripts/gpu_smoke.py`.
 
 Every new model means a new adapter. Meanwhile Doubao ARK, Qwen (DashScope),
@@ -26,9 +28,9 @@ served by vLLM/SGLang all expose the same OpenAI-compatible
 One network backend, `openai`, configured entirely by environment:
 
 ```bash
-LAS_OPENAI_BASE_URL=https://ark.cn-beijing.volces.com/api/v3   # any provider
-LAS_OPENAI_API_KEY=sk-...
-LAS_OPENAI_MODEL=doubao-seed-2-1-pro-260628
+PERCEPT_OPENAI_BASE_URL=https://ark.cn-beijing.volces.com/api/v3   # any provider
+PERCEPT_OPENAI_API_KEY=sk-...
+PERCEPT_OPENAI_MODEL=doubao-seed-2-1-pro-260628
 ```
 
 ```bash
@@ -38,9 +40,9 @@ percept eval --videos ./my_videos --template embodied_action_captioning \
 
 Switching provider = editing three variables. Local models run behind
 `vllm serve Qwen/Qwen3-VL-8B-Instruct` and use the same backend with
-`LAS_OPENAI_BASE_URL=http://localhost:8000/v1`.
+`PERCEPT_OPENAI_BASE_URL=http://localhost:8000/v1`.
 
-Out of scope: the SAM3.1 CV evidence stack (`cv/`, `LAS_CV_*`) is kept
+Out of scope: the SAM3.1 CV evidence stack (`cv/`, `PERCEPT_CV_*`) is kept
 unchanged, including `cv_device`. The `fake` backend stays for CI.
 
 ## New module: `models/openai_compat.py`
@@ -53,28 +55,28 @@ vendor-specific parts replaced:
 |---|---|
 | Frames | Reuse `media.extract_frames` exactly as `ark.py` does: sample JPEG frames for `request.span`, base64-encode. |
 | Request | `POST {base_url}/chat/completions` with one user message: interleaved `image_url` parts (`data:` URLs, timestamp text between frames, matching the ARK payload layout) plus the prompt text. |
-| Auth | `Authorization: Bearer {key}`; `LAS_OPENAI_EXTRA_HEADERS` (JSON object) for providers that need more. |
+| Auth | `Authorization: Bearer {key}`; `PERCEPT_OPENAI_EXTRA_HEADERS` (JSON object) for providers that need more. |
 | Output budget | Keep the per-stage `max_output_tokens` table (`ARK_STAGE_MAX_OUTPUT_TOKENS` moves to the new module unchanged, name generalized). |
-| Structured output | `LAS_OPENAI_RESPONSE_FORMAT=json_schema \| json_object \| none` (default `json_object`). `json_schema` forwards `request.response_contract`; `none` relies on prompting. In every mode the reply still goes through `parse_strict_json`, which is already the safety net for fenced/dirty JSON. |
-| Provider quirks | `LAS_OPENAI_EXTRA_BODY` (JSON object) merged into the request body — covers ARK's `thinking: {type: disabled}`, DashScope's `enable_thinking`, etc., without vendor code. |
-| Limits | Keep `max_frames`, `max_request_bytes`, `max_output_chars`, `timeout_seconds`, `proxy` as `LAS_OPENAI_*` settings with the current ARK defaults. |
-| Semantic cache | `semantic_cache_identity()` includes `base_url`, resolved model id, response-format mode, extra-body hash, and a new `adapter_contract_version` (`openai-compat-v1`). Existing cached ARK results are therefore invalidated once — re-runs are expected and correct. |
+| Structured output | `PERCEPT_OPENAI_RESPONSE_FORMAT=json_schema \| json_object \| none` (default `json_object`). `json_schema` forwards `request.response_contract`; `none` relies on prompting. In every mode the reply still goes through `parse_strict_json`, which is already the safety net for fenced/dirty JSON. |
+| Provider quirks | `PERCEPT_OPENAI_EXTRA_BODY` (JSON object) merged into the request body — covers ARK's `thinking: {type: disabled}`, DashScope's `enable_thinking`, etc., without vendor code. |
+| Limits | Keep `max_frames`, `max_request_bytes`, `max_output_chars`, `timeout_seconds`, `proxy` as `PERCEPT_OPENAI_*` settings with the current ARK defaults. |
+| Semantic cache | `semantic_cache_identity()` includes `base_url`, resolved model id, response-format mode, extra-body hash, and a new `adapter_contract_version` (`openai-compat-chat-completions-v1`). Existing cached ARK results are therefore invalidated once — re-runs are expected and correct. |
 | Errors | Same sanitization discipline as `ArkBackendError`: never echo the key or full payload; surface status code + trimmed body. |
 
-Model naming: `LAS_OPENAI_MODEL` is the provider model id. Internally it
+Model naming: `PERCEPT_OPENAI_MODEL` is the provider model id. Internally it
 registers as a single-entry registry `{alias: model_id}` where the alias is
 the sanitized model id, so `model_alias`, storage, and the semantic cache
 keep working unchanged. `--model` still selects the alias when a user
-provides a multi-entry `LAS_OPENAI_MODEL_REGISTRY` (JSON), for A/B runs.
+provides a multi-entry `PERCEPT_OPENAI_MODEL_REGISTRY` (JSON), for A/B runs.
 
 ## CLI and config changes
 
 - `_BACKENDS` becomes `("openai", "fake")`. `doubao` remains for one release
-  as a deprecated alias: it selects `openai` and, when `LAS_OPENAI_BASE_URL`
-  is unset, falls back to `LAS_ARK_API_KEY` + the ARK base URL with a
+  as a deprecated alias: it selects `openai` and, when `PERCEPT_OPENAI_BASE_URL`
+  is unset, falls back to `PERCEPT_ARK_API_KEY` + the ARK base URL with a
   deprecation warning. Removed after migration.
-- `--device` (qwen-only) is dropped; `LAS_GPU_DEVICES` and the local
-  `LAS_MODEL_REGISTRY` path registry are removed from `Settings`.
+- `--device` (qwen-only) is dropped; `PERCEPT_GPU_DEVICES` and the local
+  `PERCEPT_MODEL_REGISTRY` path registry are removed from `Settings`.
   `cv_device` and all `cv_*` settings stay.
 - `.env.example` is rewritten as provider presets (Doubao ARK, DashScope,
   OpenAI, local vLLM) — comment blocks, one uncommented.
@@ -106,8 +108,8 @@ provides a multi-entry `LAS_OPENAI_MODEL_REGISTRY` (JSON), for A/B runs.
    local vLLM Qwen3-VL to confirm the local path.
 4. **Delete** `ark.py`, `qwen3_vl.py`, gpu extra, related scripts/settings/
    tests; update README and `.env.example`.
-5. Separate follow-up PR (optional): rename `las_repro` package / `LAS_` env
-   prefix to match WM-PerceptHarness.
+5. Separate follow-up PR (optional): rename the `las_repro` package to match
+   WM-PerceptHarness (the env prefix is already renamed).
 
 Steps 1–2 and 4 are pure refactor verifiable by the test suite; step 3 is the
 only part that needs a real key and a GPU host.
@@ -115,7 +117,7 @@ only part that needs a real key and a GPU host.
 ## Risks
 
 - **Provider image-count/size caps differ** (some cap images per request well
-  below 128). Mitigation: `LAS_OPENAI_MAX_FRAMES` already exists as a knob;
+  below 128). Mitigation: `PERCEPT_OPENAI_MAX_FRAMES` already exists as a knob;
   document per-provider suggestions in `.env.example`.
 - **`json_schema` support is uneven** across providers. Default is the widely
   supported `json_object`; `parse_strict_json` + the existing conservative
@@ -123,5 +125,5 @@ only part that needs a real key and a GPU host.
 - **Semantic cache invalidation** on switchover re-runs previously cached
   stages once (API cost). Acceptable; note it in the PR description.
 - **Thinking/reasoning defaults**: some providers enable reasoning by default,
-  inflating latency/cost and sometimes wrapping JSON. `LAS_OPENAI_EXTRA_BODY`
+  inflating latency/cost and sometimes wrapping JSON. `PERCEPT_OPENAI_EXTRA_BODY`
   disables it per provider; validation step 3 must check this for Doubao.

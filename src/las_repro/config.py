@@ -83,12 +83,24 @@ StrictEnvironmentBool = Annotated[bool, BeforeValidator(_strict_boolean)]
 class Settings(BaseSettings):
     """Configuration for the local evaluation harness."""
 
-    model_config = SettingsConfigDict(env_prefix="LAS_", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="PERCEPT_", extra="ignore")
 
     work_root: Path = Path("work")
     model_registry: dict[str, Path] = Field(
         default_factory=lambda: {"qwen3-vl-8b-instruct": Path("models/qwen3-vl-8b-instruct")}
     )
+    openai_base_url: str | None = None
+    openai_api_key: SecretStr | None = None
+    openai_model: str | None = None
+    openai_model_registry: dict[str, str] = Field(default_factory=dict)
+    openai_response_format: Literal["json_schema", "json_object", "none"] = "json_object"
+    openai_extra_body: dict[str, Any] = Field(default_factory=dict)
+    openai_extra_headers: dict[str, str] = Field(default_factory=dict)
+    openai_timeout_seconds: PositiveFinite = 180.0
+    openai_max_frames: PositiveInteger = 128
+    openai_max_request_bytes: PositiveInteger = 32 * 1024 * 1024
+    openai_max_output_chars: PositiveInteger = 1_000_000
+    openai_proxy: SecretStr | None = None
     ark_api_key: SecretStr | None = None
     ark_model_registry: dict[str, str] = Field(default_factory=dict)
     ark_timeout_seconds: PositiveFinite = 180.0
@@ -127,8 +139,20 @@ class Settings(BaseSettings):
     cv_compile_model: StrictEnvironmentBool = False
 
     @property
+    def openai_model_aliases(self) -> dict[str, str]:
+        """Alias -> provider model id for the OpenAI-compatible backend."""
+        if self.openai_model_registry:
+            return dict(self.openai_model_registry)
+        if self.openai_model:
+            from .model_alias import alias_for_model_id
+
+            return {alias_for_model_id(self.openai_model): self.openai_model}
+        return {}
+
+    @property
     def allowed_model_aliases(self) -> frozenset[str]:
-        return frozenset(self.model_registry) | frozenset(self.ark_model_registry)
+        return (frozenset(self.model_registry) | frozenset(self.ark_model_registry)
+                | frozenset(self.openai_model_aliases))
 
     @field_validator("gpu_devices")
     @classmethod
@@ -152,6 +176,17 @@ class Settings(BaseSettings):
     def validate_cv_configuration(self) -> Self:
         if set(self.model_registry) & set(self.ark_model_registry):
             raise ValueError("local and ARK model aliases must not overlap")
+        if self.openai_model and self.openai_model_registry:
+            raise ValueError(
+                "openai_model and openai_model_registry are mutually exclusive"
+            )
+        openai_aliases = set(self.openai_model_aliases)
+        if openai_aliases & (set(self.model_registry) | set(self.ark_model_registry)):
+            raise ValueError("OpenAI-compatible aliases must not overlap other registries")
+        if self.openai_base_url is not None and not self.openai_base_url.startswith(
+            ("https://", "http://")
+        ):
+            raise ValueError("openai_base_url must be an http(s) URL")
         if self.cv_scan_fps > self.cv_max_fps:
             raise ValueError("cv_scan_fps must not exceed cv_max_fps")
         if self.cv_provider == "sam31":
@@ -171,5 +206,5 @@ class Settings(BaseSettings):
 
     @classmethod
     def from_env(cls) -> "Settings":
-        """Construct settings from ``LAS_``-prefixed environment variables."""
+        """Construct settings from ``PERCEPT_``-prefixed environment variables."""
         return cls()

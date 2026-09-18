@@ -111,6 +111,7 @@ def parse_strict_json(
     text: str,
     *,
     max_chars: int = DEFAULT_MAX_MODEL_OUTPUT_CHARS,
+    forbid_duplicate_keys: bool = False,
 ) -> dict[str, Any]:
     """Parse exactly one JSON object, optionally wrapped in one JSON fence.
 
@@ -136,8 +137,12 @@ def parse_strict_json(
         payload = fenced.group("body")
 
     payload = payload.lstrip()
+    decoder = (json.JSONDecoder(object_pairs_hook=_reject_duplicate_pairs)
+               if forbid_duplicate_keys else json.JSONDecoder())
     try:
-        value, end = json.JSONDecoder().raw_decode(payload)
+        value, end = decoder.raw_decode(payload)
+    except ModelOutputError:
+        raise
     except (ValueError, RecursionError):
         raise ModelOutputError("model output is not valid JSON") from None
     if payload[end:].strip():
@@ -149,6 +154,15 @@ def parse_strict_json(
     except RecursionError:
         raise ModelOutputError("model output is not valid JSON") from None
     return value
+
+
+def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ModelOutputError("model output contains duplicate keys")
+        result[key] = value
+    return result
 
 
 def _require_finite_numbers(value: Any) -> None:

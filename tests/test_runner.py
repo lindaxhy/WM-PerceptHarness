@@ -143,7 +143,7 @@ def test_cli_eval_end_to_end_with_fake_backend(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setenv("LAS_WORK_ROOT", str(tmp_path / "work"))
+    monkeypatch.setenv("PERCEPT_WORK_ROOT", str(tmp_path / "work"))
     output = tmp_path / "out"
     code = cli_main([
         "eval",
@@ -180,7 +180,7 @@ def test_cli_eval_doubao_requires_api_key(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.delenv("LAS_ARK_API_KEY", raising=False)
+    monkeypatch.delenv("PERCEPT_ARK_API_KEY", raising=False)
     code = cli_main([
         "eval",
         "--videos", str(silent_video),
@@ -189,13 +189,13 @@ def test_cli_eval_doubao_requires_api_key(
         "--output", str(tmp_path / "out"),
     ])
     assert code == 2
-    assert "LAS_ARK_API_KEY" in capsys.readouterr().err
+    assert "PERCEPT_ARK_API_KEY" in capsys.readouterr().err
 
 
 def test_cli_eval_exit_code_is_nonzero_when_any_video_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("LAS_WORK_ROOT", str(tmp_path / "work"))
+    monkeypatch.setenv("PERCEPT_WORK_ROOT", str(tmp_path / "work"))
     broken = tmp_path / "broken.mp4"
     broken.write_bytes(b"not a real video")
     code = cli_main([

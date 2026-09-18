@@ -297,7 +297,7 @@ def test_env_example_documents_disabled_local_cv_defaults() -> None:
     # CV evidence must stay disabled unless explicitly configured: the
     # example environment must not switch the provider on, and the coded
     # defaults must keep every CV field at its conservative value.
-    assert "LAS_CV_PROVIDER" not in values
+    assert "PERCEPT_CV_PROVIDER" not in values
 
     from las_repro.config import Settings
 
