@@ -1,8 +1,11 @@
 # Design: one generic OpenAI-compatible VLM backend
 
-Status: steps 1–2 implemented, 2026-09-18 (backend, CLI wiring, tests; env
-prefix renamed `LAS_` → `PERCEPT_` across the repo). Pending: step 3
-(real-endpoint validation) and step 4 (deletions).
+Status: steps 1–3 (remote path) done, 2026-09-18. Step 3 validated against
+Doubao ARK's OpenAI-compatible endpoint (`doubao-seed-2-1-pro-260915`, thinking
+disabled via extra_body): one synthetic video completed on both `--backend
+openai` and `--backend doubao` with the same output schema and consistent
+content (segment granularity differed — sampling variance, not a contract
+difference). Pending: optional local vLLM smoke, then step 4 (deletions).
 Replaces: `models/ark.py` (Doubao/ARK Responses adapter), `models/qwen3_vl.py`
 (local GPU inference).
 
