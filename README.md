@@ -84,6 +84,25 @@ percept eval --videos main.mp4 --template embodied_action_captioning \
 
 The context is naming guidance only, never an action script.
 
+### Score generated videos against real ones
+
+`scripts/evaluate_wm_fidelity.py` compares a world model's generated video with
+the same-id real video, using this pipeline's annotation of each as the two
+sides. It reports two independent columns: frame-level event-family mIoU
+(temporal) and tIoU-weighted description similarity (semantic), plus event
+F1@tIoU, outcome agreement, per-family recall/precision, duration strata and a
+paired Wilcoxon test when two systems are given. Because the reference is
+model-produced, pass two independent runs on the real videos as
+`--self-agreement` to get the noise floor the scores are normalised by.
+
+```bash
+python scripts/evaluate_wm_fidelity.py \
+  --reference runs/gt-actions \
+  --system wan=runs/wan-actions --system h3=runs/h3-actions \
+  --self-agreement run1=runs/gt-rerun-a run2=runs/gt-rerun-b \
+  --semantic --out wm_fidelity_report.json      # --semantic needs `uv sync --extra fidelity`
+```
+
 ## Output schema
 
 Every result is schema-validated before it is written; malformed model output
