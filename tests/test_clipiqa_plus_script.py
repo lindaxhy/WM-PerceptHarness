@@ -25,14 +25,8 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "score_clipiqa_plus.p
 
 def load_script():
     """Load the script without importing optional metric dependencies."""
-    name = "score_clipiqa_plus_test_module"
-    spec = importlib.util.spec_from_file_location(name, SCRIPT)
-    if spec is None or spec.loader is None:  # pragma: no cover - broken checkout
-        raise RuntimeError(f"Cannot load {SCRIPT}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+    from percept_harness.video_metrics import clipiqa
+    return clipiqa
 
 
 def optional_runtime_or_skip(test_case: unittest.TestCase):

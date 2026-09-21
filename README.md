@@ -1,136 +1,110 @@
 # WM-PerceptHarness
 
-**A perception evaluation harness for world models and embodied agents.**
+Video annotation and evaluation tools for world models and embodied agents.
 
-Point it at a folder of videos and get structured, temporally-grounded
-annotations: general captions, active-object inventories, and embodied action
-timelines. Inference runs on any OpenAI-compatible VLM endpoint you configure
-once — Doubao ARK, DashScope, OpenAI, or a local model served by vLLM — with a
-base URL, a model id, and an API key. Processing is visual-only: no audio is
-extracted and no ASR is invoked.
+The repository provides three complementary workflows:
 
-```bash
-percept eval --videos ./my_videos --template embodied_action_captioning \
-  --backend openai --output results/
+| Workflow | Input → output | Entry point |
+|---|---|---|
+| Video annotation | Video → captions, active objects, or action timelines | `percept annotate` |
+| Event-timeline fidelity | Real/generated video annotations → temporal and semantic comparisons | `percept score fidelity` |
+| Video quality | Video → CLIP-IQA+ or VBench Motion Smoothness score | `percept score clipiqa` / `motion` |
+
+Annotation uses sampled visual frames through an OpenAI-compatible VLM endpoint; it does not use audio. Direct quality metrics use their own model checkpoints and do not require VLM API credentials. The [metric catalog](docs/metrics/README.md) distinguishes implemented entry points, validation evidence, and planned integrations.
+
+```text
+Real video ────── annotate ── reference timeline ─┐
+                                                ├── fidelity report
+Generated video ─ annotate ── predicted timeline ─┘
+       └──────────────────── video quality metrics
 ```
 
 ## Install
 
-Python 3.12 and FFmpeg/FFprobe are required.
+Use Python 3.12+ and install FFmpeg/FFprobe for annotation.
 
 ```bash
+git clone https://github.com/lindaxhy/WM-PerceptHarness.git
+cd WM-PerceptHarness
 python3.12 -m venv .venv
-. .venv/bin/activate
+source .venv/bin/activate
 python -m pip install -e .
 ```
 
-## Configure a backend (once)
+Optional video metrics have separate environments: see [installation](docs/installation.md). `uv.lock` is available for the core project's reproducibility workflow; ordinary pip installation does not require uv.
+
+## Try annotation
+
+Set the URL, model ID, and key for your chosen vision-capable endpoint:
 
 ```bash
-cp .env.example .env   # then edit
-set -a; . ./.env; set +a
+export PERCEPT_OPENAI_BASE_URL="https://your-provider.example/v1"
+export PERCEPT_OPENAI_MODEL="your-vision-model-id"
+export PERCEPT_OPENAI_API_KEY="your-api-key"
+
+percept annotate --videos ./my_videos \
+  --template embodied_action_captioning --output outputs/actions
 ```
 
-Pick one backend:
-
-| Backend | What you need |
-|---|---|
-| `openai` | `PERCEPT_OPENAI_BASE_URL` + `PERCEPT_OPENAI_API_KEY` + `PERCEPT_OPENAI_MODEL`. Any OpenAI-compatible chat completions endpoint: Doubao ARK, DashScope, OpenAI, Gemini's compatibility layer, or a local vLLM/SGLang server. `.env.example` lists provider presets. |
-| `fake` | Nothing. Deterministic CPU stub for development and CI. |
-
-Optionally add SAM3.1 visual evidence (`--cv sam31`) for occlusion events and
-CV-grounded scene facts: set the `PERCEPT_CV_*` paths to a local sam3 checkout
-and checkpoint. SAM3.1 frame extraction requires FFmpeg 5.1+ (`-fps_mode`); the
-plain eval path works with any FFmpeg.
-
-That is the whole setup. Keys live only in the backend environment; nothing
-else has to be provisioned.
-
-## Evaluate
-
-```bash
-percept eval \
-  --videos ./my_videos \                 # a directory, or one or more files
-  --template embodied_action_captioning \
-  --backend openai \
-  --output results/
-```
-
-Templates:
+The default backend is OpenAI-compatible. `percept eval` and `--backend openai` remain supported. Alternative providers and optional SAM3.1 evidence are described in [advanced configuration](docs/advanced.md).
 
 | Template | Output |
 |---|---|
-| `general_video_captioning` | Whole-video summary plus a timestamped event timeline. |
-| `embodied_active_object_detection` | Inventory of visibly-interacted object instances. |
-| `embodied_action_captioning` | Task summary plus time-bounded action segments with enrichment fields. |
+| `general_video_captioning` | Video summary and timestamped events |
+| `embodied_active_object_detection` | Visibly interacted object inventory |
+| `embodied_action_captioning` | Task summary and time-bounded action segments |
 
-Results land in `--output` as one `<video_stem>.json` per video plus an
-aggregate `results.jsonl`. Re-running the same command skips videos that
-already completed, so an interrupted batch resumes where it left off.
+Results are written as `<video_stem>.json` and `results.jsonl`. Use a fresh output directory when changing videos, models, or prompts; the current resume logic does not fingerprint the full configuration. See [input/output conventions](docs/evaluation.md).
 
-### Recommended two-stage embodied flow
+For a local check without API credentials or weights, run the [synthetic smoke example](examples/README.md). Its fake annotations test the software, not model quality.
 
-For UMI / wrist-camera data, first run object detection on the wrist view,
-then pass the confirmed object names as naming context for the main view:
+## Compare real and generated videos
 
-```bash
-percept eval --videos wrist.mp4 --template embodied_active_object_detection \
-  --backend openai --output stage1/
-
-percept eval --videos main.mp4 --template embodied_action_captioning \
-  --backend openai --output stage2/ \
-  --prompt-context "visible interacted object: red container"
-```
-
-The context is naming guidance only, never an action script.
-
-### Score generated videos against real ones
-
-`scripts/evaluate_wm_fidelity.py` compares a world model's generated video with
-the same-id real video, using this pipeline's annotation of each as the two
-sides. It reports two independent columns: frame-level event-family mIoU
-(temporal) and tIoU-weighted description similarity (semantic), plus event
-F1@tIoU, outcome agreement, per-family recall/precision, duration strata and a
-paired Wilcoxon test when two systems are given. Because the reference is
-model-produced, pass two independent runs on the real videos as
-`--self-agreement` to get the noise floor the scores are normalised by.
+Prepare matching annotations under `reference/<id>/<id>.json` and `generated/<id>/<id>.json`:
 
 ```bash
-python scripts/evaluate_wm_fidelity.py \
-  --reference runs/gt-actions \
-  --system wan=runs/wan-actions --system h3=runs/h3-actions \
-  --self-agreement run1=runs/gt-rerun-a run2=runs/gt-rerun-b \
-  --semantic --out wm_fidelity_report.json      # --semantic needs `uv sync --extra fidelity`
+percept score fidelity \
+  --reference outputs/reference \
+  --system model=outputs/generated \
+  --out outputs/fidelity.json
 ```
 
-## Output schema
+Temporal scoring works with the core installation. For semantic similarity and statistical tests, install `python -m pip install -e '.[fidelity]'` and add `--semantic`. Use two independent real-video annotation runs with `--self-agreement` to estimate annotator self-agreement. See the [evaluation guide](docs/evaluation.md) for the full workflow and interpretation.
 
-Every result is schema-validated before it is written; malformed model output
-is conservatively repaired or the video is marked failed — never silently
-dropped or relabeled. Action segments carry `start`/`end` in seconds on the
-original video timeline.
+## Score video quality
+
+After installing the corresponding [metric environment](docs/metrics/usage.md):
+
+```bash
+percept score clipiqa --video example.mp4 --output outputs/example.clipiqa.json
+
+percept score motion --video example.mp4 \
+  --cache-dir /path/to/vbench-cache --gpu 0 \
+  --output outputs/example.motion.json
+```
+
+CLIP-IQA+ measures sampled-frame image quality; Motion Smoothness measures local interpolation smoothness. Neither establishes action correctness. Both preserve their existing scoring protocols and output fields. The original `scripts/score_*.py` entry points remain available.
+
+## Research use
+
+- [Metric catalog and readiness](docs/metrics/README.md)
+- [Frozen benchmark selection](docs/metrics/FINAL_METRICS.md) — selection is separate from implementation status; CLIP-IQA+ is a backup metric.
+- [Reproduction guide](docs/reproduction.md) — versions, inputs, environments, and evidence to retain.
+- [Third-party sources and notices](docs/metrics/THIRD_PARTY_NOTICES.md)
+
+The current release does not provide an end-to-end reproduction of every metric in the frozen selection. Per-metric limitations are listed in the catalog.
 
 ## Development
 
 ```bash
 python -m pip install -e '.[dev]'
 python -m pytest -q
-percept eval --videos tests/fixtures --template general_video_captioning \
-  --backend fake --output /tmp/percept-smoke
 ```
 
-## History
+Core code lives in `src/percept_harness/`; optional metric implementations are in `video_metrics/`, fidelity scoring in `evaluation/`, compatibility and preparation commands in `scripts/`, and regression tests in `tests/`.
 
-Earlier versions of this repository shipped a self-hosted, LAS-compatible
-Submit/Poll service with multi-process GPU workers, and later in-process
-vendor adapters for Doubao (ARK Responses) and a local Qwen3-VL checkpoint.
-The service architecture is archived intact at the tag `legacy-las-service`
-(branch `legacy/las-service`) together with its deployment documentation; the
-vendor adapters live in git history before the `openai` backend replaced them.
-Videos can still be annotated by the official Volcengine LAS operator
-directly; this repository no longer reimplements its API surface.
+## Project history and license
 
-## License status
+The former LAS-compatible service is archived at `legacy-las-service` / `legacy/las-service`. Historical deployment notes are not prerequisites for current annotation.
 
-This private repository does not yet grant an open-source license. Choose and
-add a license before changing the repository to Public.
+No project-wide open-source license has been granted yet. Add an appropriate license before public release. Third-party components retain their own license terms. Paper citation information will be added when available.

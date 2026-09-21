@@ -21,7 +21,7 @@ class DoverWrapperTests(unittest.TestCase):
     def setUp(self):
         # Ordinary inherited ACLs also work under Windows restricted tokens;
         # tempfile's explicit 0700 ACL can make its child inaccessible there.
-        self.base = Path(tempfile.gettempdir()) / ("dover-wrapper-test-" + uuid4().hex)
+        self.base = Path(tempfile.gettempdir()).resolve() / ("dover-wrapper-test-" + uuid4().hex)
         self.base.mkdir()
         self.addCleanup(shutil.rmtree, self.base)
         self.root = self.base / "DOVER"

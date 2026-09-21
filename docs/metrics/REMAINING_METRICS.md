@@ -54,7 +54,7 @@ static subset; and long-video VBench uses a separate official entry point.
 
 For model-backed dimensions, `--weights-manifest` is required.  It is a JSON
 object mapping every cache-relative required file to its SHA-256.  Create it
-from files already provisioned on Ali02 and review the digests; the wrapper
+from files already provisioned on your evaluation machine and review the digests; the wrapper
 never downloads a missing checkpoint.  `--check-only` validates this inventory
 without starting inference.  Only after a trusted, hash-verified checkpoint
 has been provisioned should a caller opt into `--allow-trusted-pickle` for an
@@ -78,23 +78,9 @@ not faked by this package:
 - PSNR/SSIM/LPIPS need aligned future reference frames; FVD/FID need matched
   real collections.  The generated videos themselves are not valid GT.
 
-## Suggested directory layout on Ali02
+## Local resources
 
-```text
-/mnt/yiyang-workspace/WM-PerceptHarness/
-  scripts/
-  docs/metrics/
-  requirements/
-/root/official_video_metrics_20260918/
-  sources/                  # pinned official source trees
-  weights/                  # external checkpoints, never committed
-  manifests/                # frozen video/prompt/auxiliary metadata
-  results/                  # one fresh directory per run
-```
-
-Keep source, dependencies, model caches, and results outside Git.  Large
-downloads and inference must start inside the persistent `official-metrics`
-tmux session described in the user guide.
+Keep pinned upstream source trees, checkpoints, frozen manifests and run outputs outside Git. Use paths appropriate to your machine; `/path/to/...` in the examples denotes a user-provisioned resource. For long remote jobs, a persistent session is optional. Server-specific operations are preserved in the [historical guide](../archive/metrics-20260920/DETAILED_OPERATION_GUIDE_20260920.md).
 
 ## Direct VBench command
 
@@ -103,17 +89,17 @@ output directory:
 
 ```bash
 python scripts/score_vbench_official.py \
-  --vbench-root /root/official_video_metrics_20260918/sources/VBench \
-  --videos-path /mnt/yiyang-workspace/75_outputs/reuse75_en_v1/wan/full_0582/final.mp4 \
+  --vbench-root /path/to/official-metrics/sources/VBench \
+  --videos-path /path/to/video.mp4 \
   --dimension imaging_quality \
-  --cache-dir /mnt/models/vbench-cache \
-  --weights-manifest /root/official_video_metrics_20260918/manifests/imaging_quality.weights.json \
+  --cache-dir /path/to/vbench-cache \
+  --weights-manifest /path/to/official-metrics/manifests/imaging_quality.weights.json \
   --gpu 0 \
-  --output-dir /root/official_video_metrics_20260918/results/imaging_quality_full_0582
+  --output-dir /path/to/official-metrics/results/imaging_quality_full_0582
 ```
 
 For `overall_consistency`, add `--prompt` for a single video or
-`--prompt-file /root/official_video_metrics_20260918/manifests/video_to_prompt.json`.
+`--prompt-file /path/to/official-metrics/manifests/video_to_prompt.json`.
 For `temporal_flickering`, add `--static-subset-ack` only after the subset
 rule and excluded count have been recorded.
 
@@ -123,11 +109,11 @@ For CLIP Score, the official competition code hard-codes OpenAI CLIP
 
 ```bash
 python scripts/score_vbench_clip_score.py \
-  --vbench-root /root/official_video_metrics_20260918/sources/VBench \
+  --vbench-root /path/to/official-metrics/sources/VBench \
   --videos-path /path/to/video.mp4 \
   --prompt 'the original frozen generation instruction' \
-  --clip-home /root/official_video_metrics_20260918 \
-  --output-dir /root/official_video_metrics_20260918/results/clip_score_one
+  --clip-home /path/to/official-metrics \
+  --output-dir /path/to/official-metrics/results/clip_score_one
 ```
 
 The wrapper does not copy or download the checkpoint.  It calls the
@@ -143,10 +129,10 @@ The first run should be one short, decodable video.  Inspect the official
 [
   {
     "video_id": "wan-full_0582",
-    "video": "/mnt/yiyang-workspace/75_outputs/reuse75_en_v1/wan/full_0582/final.mp4",
+    "video": "/path/to/video.mp4",
     "prompt": "the original frozen generation instruction",
     "dimensions": ["overall_consistency", "clip_score"],
-    "auxiliary_info": "/root/official_video_metrics_20260918/manifests/wan-full_0582.json"
+    "auxiliary_info": "/path/to/official-metrics/manifests/wan-full_0582.json"
   }
 ]
 ```
@@ -155,7 +141,7 @@ Validate it before running:
 
 ```bash
 python scripts/validate_metric_manifest.py \
-  --manifest /root/official_video_metrics_20260918/manifests/videos.json \
+  --manifest /path/to/official-metrics/manifests/videos.json \
   --dimension overall_consistency --check-files
 ```
 

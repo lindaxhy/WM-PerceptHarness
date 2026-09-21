@@ -105,12 +105,15 @@ def _imported_cv_gpu_packages(source: str) -> set[str]:
 
 def _cv_gpu_import_offenders(repository_root: Path) -> list[str]:
     source_root = repository_root / "src" / "percept_harness"
-    sam_adapter = source_root / "cv" / "sam31.py"
+    adapters = {
+        source_root / "cv" / "sam31.py": _CV_GPU_PACKAGES,
+        source_root / "video_metrics" / "clipiqa.py": {"cv2", "numpy", "torch"},
+    }
     offenders: list[str] = []
 
     for path in sorted(source_root.rglob("*.py")):
         imported = _imported_cv_gpu_packages(path.read_text(encoding="utf-8"))
-        allowed = _CV_GPU_PACKAGES if path == sam_adapter else set()
+        allowed = adapters.get(path, set())
         if imported - allowed:
             offenders.append(path.relative_to(repository_root).as_posix())
 
@@ -274,7 +277,7 @@ def test_cv_gpu_import_policy_recurses_and_uses_exact_runtime_adapter_paths(
     ]
 
 
-def test_cv_gpu_packages_are_imported_only_by_the_lazy_sam31_adapter() -> None:
+def test_cv_gpu_packages_are_imported_only_by_explicit_runtime_adapters() -> None:
     repository_root = Path(__file__).resolve().parents[1]
 
     assert _cv_gpu_import_offenders(repository_root) == []

@@ -1,4 +1,4 @@
-"""The `percept` command-line interface: evaluate videos in one process."""
+"""The `percept` command-line interface for annotation and scoring."""
 
 from __future__ import annotations
 
@@ -22,8 +22,24 @@ _BACKENDS = ("openai", "fake")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "score":
+        score_parser = argparse.ArgumentParser(
+            prog="percept score",
+            description="Score annotations or videos in the active metric environment.",
+        )
+        score_parser.add_argument("metric", choices=("fidelity", "clipiqa", "motion"))
+        # Parse only the selector; each evaluator owns its remaining arguments/help.
+        selected = score_parser.parse_args(argv[1:2])
+        if selected.metric == "fidelity":
+            from .evaluation.fidelity_cli import main as score_main
+        elif selected.metric == "clipiqa":
+            from .video_metrics.clipiqa import main as score_main
+        else:
+            from .video_metrics.motion import main as score_main
+        return score_main(argv[2:]) or 0
     arguments = _parser().parse_args(argv)
-    if arguments.command == "eval":
+    if arguments.command in ("annotate", "eval"):
         return _eval(arguments)
     raise AssertionError("unreachable: argparse enforces the command set")
 
@@ -31,11 +47,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="percept",
-        description="Evaluate videos with a configured VLM backend.",
+        description="Annotate videos and compute evaluation metrics.",
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
-    evaluate = commands.add_parser("eval", help="evaluate videos to structured JSON")
+    commands.add_parser(
+        "score", help="score {fidelity,clipiqa,motion} in the corresponding environment",
+    )
+    evaluate = commands.add_parser(
+        "annotate", aliases=["eval"],
+        help="annotate videos to structured JSON (eval is a compatibility alias)",
+    )
     evaluate.add_argument(
         "--videos",
         nargs="+",
@@ -51,7 +73,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     evaluate.add_argument(
         "--backend",
-        required=True,
+        default="openai",
         choices=_BACKENDS,
         help="VLM backend configured in the environment",
     )

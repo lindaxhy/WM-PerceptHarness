@@ -2,9 +2,9 @@
   "schema_version": "1.0",
   "frozen_at": "2026-09-20",
   "authority": {
-    "document": "D:\\北大相关\\ai\\WM评测\\评测指标官方代码包_20260918\\评测指标详解.md",
-    "section": "10.2-10.5",
-    "rule": "第10节去重后的名单为唯一当前口径；文档开头的旧版28项说明不再作为名单依据。"
+    "document": "docs/metrics/FINAL_METRICS.md",
+    "section": "最终交付范围; 单独标记、但不计入上述 26 项",
+    "rule": "本清单为 2026-09-20 冻结的当前选择；旧版 28 项说明不再作为名单依据。"
   },
   "selection": {
     "main_benchmark_count": 21,
