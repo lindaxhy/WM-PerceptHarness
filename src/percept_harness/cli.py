@@ -39,7 +39,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             from .video_metrics.motion import main as score_main
         return score_main(argv[2:]) or 0
     arguments = _parser().parse_args(argv)
-    if arguments.command in ("annotate", "eval"):
+    if arguments.command == "annotate":
         return _eval(arguments)
     raise AssertionError("unreachable: argparse enforces the command set")
 
@@ -55,8 +55,8 @@ def _parser() -> argparse.ArgumentParser:
         "score", help="score {fidelity,clipiqa,motion} in the corresponding environment",
     )
     evaluate = commands.add_parser(
-        "annotate", aliases=["eval"],
-        help="annotate videos to structured JSON (eval is a compatibility alias)",
+        "annotate",
+        help="annotate videos to structured JSON",
     )
     evaluate.add_argument(
         "--videos",

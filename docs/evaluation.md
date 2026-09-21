@@ -2,7 +2,7 @@
 
 ## Annotation
 
-`percept annotate` is the public name for the existing `percept eval` workflow. Both accept the same annotation arguments. The default backend is `openai`; `fake` remains an explicit test option.
+`percept annotate` runs the annotation workflow. The default backend is `openai`; `fake` remains an explicit test option.
 
 ```bash
 percept annotate --videos video.mp4 \
@@ -95,12 +95,6 @@ Both outputs share:
 
 CLIP-IQA+ additionally records frame sampling, resizing, device, and MemoBench revision. Motion Smoothness records checkpoint identity, the official command, original result, and log. Both refuse to overwrite existing result files. Fidelity reports are dataset-level reports with a different schema; no combined score is computed.
 
-Use the short command selector `clipiqa` even though its output metric identifier is `clipiqa+`. Existing scripts remain compatible:
-
-| Packaged command | Existing script |
-|---|---|
-| `percept score fidelity` | `scripts/evaluate_wm_fidelity.py` |
-| `percept score clipiqa` | `scripts/score_clipiqa_plus.py` |
-| `percept score motion` | `scripts/score_vbench_motion_smoothness.py` |
+Use the short command selector `clipiqa` even though its output metric identifier is `clipiqa+`.
 
 Other upstream wrappers remain separate preparation tools listed in the [catalog](metrics/README.md). Their result schemas and validation stages are documented individually.

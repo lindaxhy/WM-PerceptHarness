@@ -1,10 +1,11 @@
 # Metric sources and third-party notices
 
-`scripts/score_clipiqa_plus.py` is a standalone invocation tool, not a new
+`percept score clipiqa` (`src/percept_harness/video_metrics/clipiqa.py`) is a
+standalone invocation tool, not a new
 CLIP-IQA+ model or an official MemoBench release. The default video protocol is
 the one used by MemoBench's evaluation runner: frame stride 4 and maximum image
 side 640. MemoBench's lower-level function has a different default stride of 5;
-this script passes 4 explicitly.
+this tool passes 4 explicitly.
 
 ## Code adapted into this repository
 
@@ -48,7 +49,8 @@ documentation for CLIP-IQA+; that script does not enforce these hashes at runtim
 The Motion Smoothness wrapper verifies the recorded AMT-S hash before enabling
 legacy checkpoint loading in its child process.
 
-`scripts/score_vbench_motion_smoothness.py` is a local invocation wrapper. It
+`percept score motion` (`src/percept_harness/video_metrics/motion.py`) is a
+local invocation wrapper. It
 executes the installed official CLI without copying or modifying VBench/AMT
 scoring code. It adds input/checkpoint checks, isolated run directories, logging,
 result validation and single-video JSON metadata. Official results are retained.

@@ -1,4 +1,4 @@
-"""Tests for the standalone CLIP-IQA+ video scoring script.
+"""Tests for the CLIP-IQA+ video scoring module behind `percept score clipiqa`.
 
 The default tests deliberately use only the Python standard library.  Tests
 which exercise the actual OpenCV/PyTorch protocol are skipped when the metric
@@ -20,11 +20,12 @@ import unittest
 from unittest import mock
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "score_clipiqa_plus.py"
+SCRIPT = (Path(__file__).resolve().parents[1]
+          / "src" / "percept_harness" / "video_metrics" / "clipiqa.py")
 
 
 def load_script():
-    """Load the script without importing optional metric dependencies."""
+    """Load the module without importing optional metric dependencies."""
     from percept_harness.video_metrics import clipiqa
     return clipiqa
 

@@ -8,7 +8,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "score_vbench_motion_smoothness.py"
+SCRIPT = (Path(__file__).resolve().parents[1]
+          / "src" / "percept_harness" / "video_metrics" / "motion.py")
 from percept_harness.video_metrics import motion as module
 
 

@@ -4,11 +4,11 @@ See the [metric catalog](README.md) for scope and validation status. Long remote
 
 This directory documents standalone use of two video metrics, separate from the core `percept` package. CLIP-IQA+ supports CPU or CUDA; the VBench 0.1.5 CLI requires CUDA. Both use external model checkpoints.
 
-Both standalone scripts accept one video and produce a JSON result. The Motion Smoothness wrapper invokes the unchanged official `vbench==0.1.5` CLI; it does not reimplement its scoring algorithm or alter its video preprocessing.
+Both metric commands accept one video and produce a JSON result. The Motion Smoothness wrapper invokes the unchanged official `vbench==0.1.5` CLI; it does not reimplement its scoring algorithm or alter its video preprocessing.
 
 ## CLIP-IQA+
 
-`score_clipiqa_plus.py` reuses the video decoding and frame-scoring protocol from MemoBench revision `f4edb0c4f9f1820bac837ee30d4957811cf275ff`. The model is supplied by PyIQA (`pyiqa==0.1.16`). The script does not implement CLIP-IQA+ itself and does not fall back to MUSIQ, Laplacian sharpness, or another metric.
+`percept score clipiqa` reuses the video decoding and frame-scoring protocol from MemoBench revision `f4edb0c4f9f1820bac837ee30d4957811cf275ff`. The model is supplied by PyIQA (`pyiqa==0.1.16`). The command does not implement CLIP-IQA+ itself and does not fall back to MUSIQ, Laplacian sharpness, or another metric.
 
 The fixed defaults are:
 
@@ -162,8 +162,8 @@ Motion Smoothness estimates local interpolation smoothness. A smooth but incorre
 
 ## Sources and files
 
-- `scripts/score_clipiqa_plus.py` — one-video CLIP-IQA+ entry point.
-- `scripts/score_vbench_motion_smoothness.py` — one-video wrapper around the official VBench Motion Smoothness CLI.
+- `percept score clipiqa` (`src/percept_harness/video_metrics/clipiqa.py`) — one-video CLIP-IQA+ entry point.
+- `percept score motion` (`src/percept_harness/video_metrics/motion.py`) — one-video wrapper around the official VBench Motion Smoothness CLI.
 - `requirements/metrics-clipiqa.txt` — CLIP-IQA+ user-space dependencies; install PyTorch separately for the target hardware.
 - `requirements/metrics-motion-runtime.txt` — dependencies imported by the VBench Motion Smoothness path.
 - `THIRD_PARTY_NOTICES.md` — source revisions, licenses, and modifications.

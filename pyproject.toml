@@ -13,7 +13,7 @@ percept = "percept_harness.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.4,<9", "pytest-cov>=6.2,<7"]
-# optional columns of scripts/evaluate_wm_fidelity.py: description similarity and paired tests
+# optional columns of `percept score fidelity`: description similarity and paired tests
 fidelity = ["sentence-transformers>=3,<7", "scipy>=1.13,<2"]
 
 [build-system]

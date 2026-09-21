@@ -146,7 +146,7 @@ def test_cli_eval_end_to_end_with_fake_backend(
     monkeypatch.setenv("PERCEPT_WORK_ROOT", str(tmp_path / "work"))
     output = tmp_path / "out"
     code = cli_main([
-        "eval",
+        "annotate",
         "--videos", str(silent_video),
         "--template", "embodied_action_captioning",
         "--backend", "fake",
@@ -164,7 +164,7 @@ def test_cli_eval_reports_missing_videos(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     code = cli_main([
-        "eval",
+        "annotate",
         "--videos", str(tmp_path / "absent"),
         "--template", "general_video_captioning",
         "--backend", "fake",
@@ -182,7 +182,7 @@ def test_cli_eval_openai_requires_api_key(
 ) -> None:
     monkeypatch.delenv("PERCEPT_OPENAI_API_KEY", raising=False)
     code = cli_main([
-        "eval",
+        "annotate",
         "--videos", str(silent_video),
         "--template", "general_video_captioning",
         "--backend", "openai",
@@ -199,7 +199,7 @@ def test_cli_eval_exit_code_is_nonzero_when_any_video_fails(
     broken = tmp_path / "broken.mp4"
     broken.write_bytes(b"not a real video")
     code = cli_main([
-        "eval",
+        "annotate",
         "--videos", str(broken),
         "--template", "general_video_captioning",
         "--backend", "fake",

@@ -38,7 +38,7 @@ PERCEPT_OPENAI_MODEL=doubao-seed-2-1-pro-260628
 ```
 
 ```bash
-percept eval --videos ./my_videos --template embodied_action_captioning \
+percept annotate --videos ./my_videos --template embodied_action_captioning \
   --backend openai --output results/
 ```
 

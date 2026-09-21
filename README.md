@@ -46,7 +46,7 @@ percept annotate --videos ./my_videos \
   --template embodied_action_captioning --output outputs/actions
 ```
 
-The default backend is OpenAI-compatible. `percept eval` and `--backend openai` remain supported. Alternative providers and optional SAM3.1 evidence are described in [advanced configuration](docs/advanced.md).
+The default backend is OpenAI-compatible; `--backend openai` remains an explicit option. Alternative providers and optional SAM3.1 evidence are described in [advanced configuration](docs/advanced.md).
 
 | Template | Output |
 |---|---|
@@ -83,7 +83,7 @@ percept score motion --video example.mp4 \
   --output outputs/example.motion.json
 ```
 
-CLIP-IQA+ measures sampled-frame image quality; Motion Smoothness measures local interpolation smoothness. Neither establishes action correctness. Both preserve their existing scoring protocols and output fields. The original `scripts/score_*.py` entry points remain available.
+CLIP-IQA+ measures sampled-frame image quality; Motion Smoothness measures local interpolation smoothness. Neither establishes action correctness. Both preserve their existing scoring protocols and output fields.
 
 ## Research use
 
@@ -101,7 +101,7 @@ python -m pip install -e '.[dev]'
 python -m pytest -q
 ```
 
-Core code lives in `src/percept_harness/`; optional metric implementations are in `video_metrics/`, fidelity scoring in `evaluation/`, compatibility and preparation commands in `scripts/`, and regression tests in `tests/`.
+Core code lives in `src/percept_harness/`; optional metric implementations are in `video_metrics/`, fidelity scoring in `evaluation/`, preparation commands in `scripts/`, and regression tests in `tests/`.
 
 ## Project history and license
 
