@@ -84,6 +84,9 @@ class OpenAICompatVideoModel:
                             ("max_output_chars", max_output_chars)):
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
+        from ..result_store import json_digest
+
+        self._proxy_sha256 = json_digest(proxy)
         self._key = api_key
         self._endpoint = base_url.rstrip("/") + "/chat/completions"
         self._registry = dict(model_registry)
@@ -100,6 +103,29 @@ class OpenAICompatVideoModel:
                                                transport=transport, trust_env=False,
                                                follow_redirects=False)
         self._metrics: dict[str, int] = {}
+        self.supports_batch_resume = client is None and transport is None and frame_extractor is extract_frames
+
+
+    def run_identity(self, model_alias: str) -> dict[str, Any]:
+        """Effective batch settings without credentials or raw provider dictionaries."""
+        from ..result_store import json_digest
+
+        return {
+            "kind": "openai-compatible",
+            "adapter_contract": self.adapter_contract_version,
+            "frame_contract": self.frame_extraction_contract_version,
+            "endpoint_sha256": json_digest(self._endpoint),
+            "proxy_sha256": self._proxy_sha256,
+            "credential_sha256": json_digest(self._key),
+            "model_id": self._registry[model_alias],
+            "response_format": self.response_format,
+            "extra_body_sha256": json_digest(self._extra_body),
+            "extra_headers_sha256": json_digest(self._extra_headers),
+            "max_frames": self.max_frames,
+            "max_request_bytes": self.max_request_bytes,
+            "max_output_chars": self.max_output_chars,
+            "timeout_seconds": self.timeout_seconds,
+        }
 
     def semantic_cache_identity(self, request: ModelRequest) -> dict[str, Any]:
         """Effective request settings plus explicitly recorded, ignored hints."""

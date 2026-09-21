@@ -9,9 +9,31 @@ percept annotate --videos video.mp4 \
   --template embodied_action_captioning --output outputs/actions
 ```
 
-One successful record contains `video_path`, `template`, `status`, `data`, `error`, and `elapsed_seconds`. `data` holds the template-specific output; action times are seconds on the original video timeline. `results.jsonl` aggregates the batch but does not include every per-video metadata field.
+One successful record contains `video_path`, `template`, `status`, `data`, `error`, `elapsed_seconds`, `result_file`, `provenance`, and `data_sha256`. `data` holds the template-specific output; action times are seconds on the original video timeline. `results.jsonl` aggregates the batch but does not include every per-video metadata field.
 
-Each output filename uses the input video stem. Do not combine same-stem videos from different directories in one output directory. Resume currently checks completion and template, not input contents, model, or prompt; use a new output directory whenever those change. These are current implementation limits, not guarantees of a reproducible cache.
+### Result identity and resume
+
+A free `<video_stem>.json` is used for the first source claiming that name. Another source with the same stem gets `<stem-prefix>--<sha256-of-resolved-path>.json`. Ownership is checked against the full resolved source path, even when videos have identical bytes. Existing disambiguated paths remain stable on later runs. Use `result_file` in `results.jsonl` to find each result; do not guess a suffix or assume directory traversal order assigns the plain filename. An unreadable existing record is preserved and the new result uses the disambiguated path. If both names are occupied by unverifiable records, use a fresh output directory.
+
+A result is skipped only when all of these match:
+
+- Resolved input path and SHA-256 of the video bytes.
+- Template, model alias, effective built-in backend settings, query and prompt context.
+- Run settings, packaged Python/prompt asset digest, dependency versions, and FFmpeg/FFprobe version fingerprints.
+- Completed status and intact annotation payload digest.
+
+Legacy records without provenance are rerun. Changed settings or input bytes trigger evaluation. Credentials are included only as a digest: changing API keys conservatively reruns because an account may route a model ID differently. Raw API keys, endpoint URLs, proxies and extra request dictionaries/headers are not persisted; digests distinguish their values without writing credentials into manifests. Record the non-secret provider/model configuration separately for publication: a hash is not a recoverable configuration file.
+
+Custom models, custom pipeline registries, custom transports/frame extractors, and any CV execution currently disable resume because the loaded external implementation/weights cannot yet be verified completely. They still receive provenance and run manifests, but run again each time. Local fingerprints cannot detect a provider silently changing the remote model behind an unchanged ID.
+
+```bash
+percept annotate --videos video.mp4 \
+  --template embodied_action_captioning --output outputs/actions --force
+```
+
+`--force` reruns even a matching result, for independent repeats or changed remote model behavior. Before replacing a current result, its exact bytes are archived in `.percept/history/<record-sha256>.json`. `.percept/runs/<run-id>.json` records the run settings, timestamps, input/result mapping, status, and result-file digest; that digest also identifies a later archived record. Per-video and aggregate files are replaced atomically. Inputs or configuration that change during evaluation produce a failed record, not a reusable success.
+
+A writer lock prevents overlapping batches from using the same output directory. A normal exit or exception releases it. After an abrupt process/machine termination, inspect `.percept/writer.lock` (host/PID) and remove it only after confirming the original writer has stopped. The last manifest may remain `running` after an abrupt termination. Use separate output directories for parallel jobs. Each `results.jsonl` describes the most recent completed batch, while the per-run manifests retain earlier mappings.
 
 For wrist/main-camera annotation, first run `embodied_active_object_detection` on the wrist video, then pass confirmed object names to the main-video action annotation using `--prompt-context`. This is naming guidance, not a prescribed action sequence.
 

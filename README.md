@@ -54,7 +54,7 @@ The default backend is OpenAI-compatible. `percept eval` and `--backend openai` 
 | `embodied_active_object_detection` | Visibly interacted object inventory |
 | `embodied_action_captioning` | Task summary and time-bounded action segments |
 
-Results are written as `<video_stem>.json` and `results.jsonl`. Use a fresh output directory when changing videos, models, or prompts; the current resume logic does not fingerprint the full configuration. See [input/output conventions](docs/evaluation.md).
+Results use `<video_stem>.json`, with a source-path suffix when that name belongs to another video. `results.jsonl` records the exact result filenames. Verified built-in runs resume only when input bytes, model, prompts, configuration and code/runtime fingerprints match. Use `--force` for an independent repeat; displaced results and run manifests are retained under `.percept/`. See [input/output conventions](docs/evaluation.md) for conservative custom/CV behavior.
 
 For a local check without API credentials or weights, run the [synthetic smoke example](examples/README.md). Its fake annotations test the software, not model quality.
 

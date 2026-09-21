@@ -12,9 +12,9 @@ For each reported run, retain:
 - Checkpoint source and hashes, upstream evaluator revision, Python/package versions, FFmpeg version, device and CUDA configuration where applicable.
 - Exact command, logs, original evaluator outputs, parsed reports, failures/exclusions, and evaluated sample count.
 
-The annotation result does not yet embed all this information. Save a separate run manifest. External API model behavior may change even when the client environment is locked; record the run date and repeatability evidence.
+Annotation now saves per-video provenance and `.percept/runs/` manifests containing input/configuration/code/runtime fingerprints and result digests. External CV state and full remote model provenance still need a separate record. External API model behavior may change even when the client environment is locked; record the run date and repeatability evidence.
 
-Use a fresh output directory for each configuration. The annotation resume mechanism does not validate the full experiment identity. Keep raw results, and document any later aggregation separately.
+Use separate output directories for independently reported experiments. Verified built-in annotation runs reuse only matching input/configuration/code/runtime identities; `--force` requests an independent repeat. Displaced result bytes are retained in `.percept/history/`. Custom/CV executions conservatively rerun until their external identities can be verified. See [resume details](evaluation.md#result-identity-and-resume). Keep raw results, and document any later aggregation separately.
 
 ## Environment capture
 

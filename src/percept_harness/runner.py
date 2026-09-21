@@ -8,10 +8,12 @@ import time
 import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import result_store
 from .config import Settings
 from .domain import TaskRecord
 from .execution import SyncJobStore
@@ -37,6 +39,8 @@ class EvalOutcome:
     data: dict[str, Any] | None = None
     error: str | None = None
     elapsed_seconds: float | None = None
+    provenance: dict[str, Any] | None = None
+    result_file: str | None = None
 
 
 def default_pipeline_registry() -> PipelineRegistry:
@@ -66,6 +70,7 @@ class SyncRunner:
         self.model = model
         self.settings = settings
         self.model_alias = model_alias
+        self.custom_registry = registry is not None
         self.registry = registry if registry is not None else default_pipeline_registry()
         self.cv_executor = cv_executor
         self.work_root = work_root if work_root is not None else settings.work_root
@@ -163,31 +168,95 @@ def run_batch(
     *,
     prompt_context: str | None = None,
     query: str | None = None,
+    force: bool = False,
     log=print,
 ) -> list[EvalOutcome]:
-    """Evaluate a batch, skipping videos already completed in ``output_dir``."""
+    """Serialize writers and reuse only results from the same verified experiment."""
+    with result_store.output_lock(Path(output_dir)):
+        return _run_batch(runner, videos, template, output_dir,
+                          prompt_context=prompt_context, query=query, force=force, log=log)
+
+
+def _run_batch(
+    runner: SyncRunner,
+    videos: list[Path],
+    template: str,
+    output_dir: Path,
+    *,
+    prompt_context: str | None = None,
+    query: str | None = None,
+    force: bool = False,
+    log=print,
+) -> list[EvalOutcome]:
+    """Reuse only intact results with matching input and verified execution identity."""
+    output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    run = result_store.run_identity(runner, template, prompt_context, query)
+    manifest = output_dir / ".percept" / "runs" / f"{uuid.uuid4().hex}.json"
+    run_record = {"run": run, "run_fingerprint": result_store.json_digest(run),
+                  "force": force, "status": "running", "results": [],
+                  "started_at": datetime.now(timezone.utc).isoformat()}
+    result_store.write_json(manifest, run_record)
     outcomes: list[EvalOutcome] = []
-    for index, video in enumerate(videos, start=1):
-        result_path = output_dir / f"{video.stem}.json"
-        previous = _completed_result(result_path, video, template)
-        if previous is not None:
-            log(f"[{index}/{len(videos)}] skip {video.name} (already completed)")
-            outcomes.append(EvalOutcome(
-                video_path=video, template=template, status="skipped",
-                data=previous.get("data"),
-            ))
-            continue
-        log(f"[{index}/{len(videos)}] eval {video.name} ...")
-        outcome = runner.evaluate(
-            video, template, prompt_context=prompt_context, query=query
-        )
-        _write_result(result_path, outcome)
-        status = outcome.status
-        elapsed = f" ({outcome.elapsed_seconds:.1f}s)" if outcome.elapsed_seconds else ""
-        log(f"[{index}/{len(videos)}] {status} {video.name}{elapsed}")
-        outcomes.append(outcome)
-    _write_aggregate(output_dir / "results.jsonl", outcomes)
+    if not run["reusable"]:
+        log("resume disabled: custom model, pipeline, or CV execution identity is not verified")
+    try:
+        for index, source in enumerate(videos, start=1):
+            video = Path(source).resolve()
+            path = result_store.result_path(output_dir, video)
+            try:
+                identity = result_store.provenance(video, run)
+            except OSError:
+                identity = None  # The evaluator reports the normal missing/unreadable-input failure.
+            previous = (result_store.completed_result(path, identity)
+                        if identity is not None and not force else None)
+            if previous is not None:
+                try:
+                    if result_store.file_digest(video) != identity["input"]["sha256"]:
+                        previous = None
+                        identity = result_store.provenance(video, run)
+                except OSError:
+                    previous = None
+                    identity = None
+            if previous is not None:
+                outcome = EvalOutcome(
+                    video_path=video, template=template, status="skipped",
+                    data=previous["data"], provenance=identity, result_file=path.name,
+                )
+                log(f"[{index}/{len(videos)}] skip {video.name} (matching input and run)")
+            else:
+                log(f"[{index}/{len(videos)}] eval {video.name} ...")
+                outcome = runner.evaluate(
+                    video, template, prompt_context=prompt_context, query=query
+                )
+                if outcome.status == "completed":
+                    try:
+                        unchanged = identity is not None and result_store.file_digest(video) == identity["input"]["sha256"]
+                    except OSError:
+                        unchanged = False
+                    unchanged = unchanged and result_store.run_identity(
+                        runner, template, prompt_context, query
+                    ) == run
+                    if not unchanged:
+                        outcome = EvalOutcome(video_path=video, template=template, status="failed",
+                                              error="Input or run configuration changed during annotation; result discarded")
+                outcome = replace(outcome, provenance=identity, result_file=path.name)
+                result_store.archive_result(path, output_dir)
+                _write_result(path, outcome)
+                log(f"[{index}/{len(videos)}] {outcome.status} {video.name} -> {path.name}")
+            outcomes.append(outcome)
+            run_record["results"].append({"video_path": str(video), "result_file": path.name,
+                                          "status": outcome.status, "input": identity["input"] if identity else None,
+                                          "record_sha256": result_store.file_digest(path)})
+            result_store.write_json(manifest, run_record)
+        _write_aggregate(output_dir / "results.jsonl", outcomes)
+        run_record["status"] = "completed" if all(o.status != "failed" for o in outcomes) else "failed"
+    except BaseException:
+        run_record["status"] = "interrupted"
+        raise
+    finally:
+        run_record["finished_at"] = datetime.now(timezone.utc).isoformat()
+        result_store.write_json(manifest, run_record)
     return outcomes
 
 
@@ -232,24 +301,6 @@ def _task_dir(work_root: Path, task_id: str) -> Iterator[Path]:
         shutil.rmtree(destination, ignore_errors=True)
 
 
-def _completed_result(
-    result_path: Path, video: Path, template: str
-) -> dict[str, Any] | None:
-    if not result_path.is_file():
-        return None
-    try:
-        record = json.loads(result_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if (
-        isinstance(record, dict)
-        and record.get("status") == "completed"
-        and record.get("template") == template
-    ):
-        return record
-    return None
-
-
 def _write_result(result_path: Path, outcome: EvalOutcome) -> None:
     record = {
         "video_path": str(outcome.video_path),
@@ -258,19 +309,21 @@ def _write_result(result_path: Path, outcome: EvalOutcome) -> None:
         "data": outcome.data,
         "error": outcome.error,
         "elapsed_seconds": outcome.elapsed_seconds,
+        "provenance": outcome.provenance,
+        "data_sha256": result_store.json_digest(outcome.data),
+        "result_file": outcome.result_file,
     }
-    result_path.write_text(
-        json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    result_store.write_json(result_path, record)
 
 
 def _write_aggregate(jsonl_path: Path, outcomes: list[EvalOutcome]) -> None:
-    with jsonl_path.open("w", encoding="utf-8") as stream:
-        for outcome in outcomes:
-            stream.write(json.dumps({
-                "video_path": str(outcome.video_path),
-                "template": outcome.template,
-                "status": outcome.status,
-                "data": outcome.data,
-                "error": outcome.error,
-            }, ensure_ascii=False) + "\n")
+    lines = [json.dumps({
+        "video_path": str(outcome.video_path),
+        "template": outcome.template,
+        "status": outcome.status,
+        "data": outcome.data,
+        "error": outcome.error,
+        "provenance": outcome.provenance,
+        "result_file": outcome.result_file,
+    }, ensure_ascii=False, allow_nan=False) + "\n" for outcome in outcomes]
+    result_store.atomic_text(jsonl_path, "".join(lines))
