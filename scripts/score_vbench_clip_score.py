@@ -26,9 +26,14 @@ import subprocess
 import sys
 
 VBENCH_REVISION = "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490"
-SOURCE_SHA256 = "cc3d2930ab2261d35b7d1fd242cf71c0a87ddd016e3ddd43598203c18cd1d0f0"
+SOURCE_SHA256 = "e2d235a360ac7fb322404c4a6db9e62e39f6986d93564eb2eb31e2e9ca5004f1"
 CLIP_FILENAME = "ViT-B-32.pt"
 CLIP_SHA256 = "40d365715913c9da98579312b702a82c18be219cc2a73407c4526f58eba950af"
+TEXT_SOURCE_SUFFIXES = frozenset({
+    ".c", ".cpp", ".cu", ".h", ".ipynb", ".json", ".md", ".py", ".sh",
+    ".txt", ".yaml", ".yml",
+})
+TEXT_SOURCE_NAMES = frozenset({"Dockerfile", "LICENSE", "Makefile"})
 
 
 def sha256(path: Path) -> str:
@@ -48,7 +53,10 @@ def source_fingerprint(root: Path) -> str:
     digest = hashlib.sha256()
     for path in sorted(files, key=lambda item: item.relative_to(root).as_posix()):
         digest.update(path.relative_to(root).as_posix().encode("utf-8") + b"\0")
-        digest.update(bytes.fromhex(sha256(path)))
+        payload = path.read_bytes()
+        if path.suffix.lower() in TEXT_SOURCE_SUFFIXES or path.name in TEXT_SOURCE_NAMES:
+            payload = payload.replace(b"\r\n", b"\n")
+        digest.update(hashlib.sha256(payload).digest())
     return digest.hexdigest()
 
 

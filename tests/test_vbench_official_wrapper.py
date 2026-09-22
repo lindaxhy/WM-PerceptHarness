@@ -37,6 +37,13 @@ class VBenchOfficialTests(unittest.TestCase):
         self.pin = mock.patch.object(module, "SOURCE_SHA256", module.source_fingerprint(self.source))
         self.pin.start()
         self.addCleanup(self.pin.stop)
+        self.dino_pin = mock.patch.dict(
+            module.KNOWN_SHA256,
+            {"dino_model/dino_vitbase16_pretrain.pth": module.hashlib.sha256(b"test model bytes").hexdigest()},
+            clear=False,
+        )
+        self.dino_pin.start()
+        self.addCleanup(self.dino_pin.stop)
 
     def args(self, **overrides):
         values = dict(vbench_root=self.source, videos_path=self.video,
@@ -61,6 +68,22 @@ class VBenchOfficialTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"test model bytes")
             manifest[relative] = module.sha256(path)
+        if "subject_consistency" in dimensions:
+            repo = self.cache / module.DINO_REPOSITORY_PREFIX
+            for relative, payload in {
+                "hubconf.py": b"def dino_vitb16(**kwargs): pass\n",
+                "utils.py": b"# official dino utils fixture\n",
+                "vision_transformer.py": b"# official dino vision fixture\n",
+            }.items():
+                target = repo / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(payload)
+                key = f"{module.DINO_REPOSITORY_PREFIX}/{relative}"
+                manifest[key] = module.sha256(target)
+            checkpoint = self.cache / module.DINO_CHECKPOINT_RELATIVE
+            torch_checkpoint = self.cache / "torch" / "hub" / "checkpoints" / module.DINO_TORCH_CHECKPOINT_NAME
+            torch_checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            torch_checkpoint.write_bytes(checkpoint.read_bytes())
         path = self.root / "weights.json"
         path.write_text(json.dumps(manifest), encoding="utf-8")
         return path
@@ -91,6 +114,17 @@ class VBenchOfficialTests(unittest.TestCase):
         path.unlink()
         with self.assertRaises(ValueError):
             module.verify_source(self.source)
+
+    def test_source_fingerprint_normalizes_text_but_not_binary_bytes(self):
+        text_file = self.source / "vbench" / "line_endings.md"
+        binary_file = self.source / "vbench" / "opaque.bin"
+        text_file.write_bytes(b"line 1\r\nline 2\r\n")
+        binary_file.write_bytes(b"\x00\r\n\xff")
+        first = module.source_fingerprint(self.source)
+        text_file.write_bytes(b"line 1\nline 2\n")
+        self.assertEqual(first, module.source_fingerprint(self.source))
+        binary_file.write_bytes(b"\x00\n\xff")
+        self.assertNotEqual(first, module.source_fingerprint(self.source))
 
     def test_input_mode_static_and_motion_gates(self):
         cases = [dict(videos_path=self.root), dict(mode="vbench_standard"),
@@ -128,13 +162,23 @@ class VBenchOfficialTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "mismatch"):
             module.verify_cache(self.cache, ["overall_consistency"], manifest)
 
-    def test_dino_requires_official_local_checkpoint_only(self):
+    def test_dino_requires_source_and_matching_torch_url_cache(self):
         manifest = self.provision(["subject_consistency"])
-        module.verify_cache(self.cache, ["subject_consistency"], manifest)
-        # A separate torch hub URL-cache checkpoint is not required by the
-        # official VBench local-source call and must not be fabricated here.
-        self.assertEqual(set(json.loads(manifest.read_text())),
-                         {"dino_model/dino_vitbase16_pretrain.pth"})
+        records = module.verify_cache(
+            self.cache, ["subject_consistency"], manifest,
+            torch_home=self.cache / "torch",
+        )
+        self.assertIn("torch_home/hub/checkpoints/dino_vitbase16_pretrain.pth", records)
+        self.assertTrue(
+            any(key.startswith(module.DINO_REPOSITORY_PREFIX + "/") for key in records)
+        )
+        torch_checkpoint = self.cache / "torch" / "hub" / "checkpoints" / module.DINO_TORCH_CHECKPOINT_NAME
+        torch_checkpoint.write_bytes(b"wrong checkpoint")
+        with self.assertRaisesRegex(ValueError, "URL-cache checkpoint"):
+            module.verify_cache(
+                self.cache, ["subject_consistency"], manifest,
+                torch_home=self.cache / "torch",
+            )
 
     def test_musiq_scale_dynamic_boolean_and_unbounded_regressors(self):
         cases = [("imaging_quality", .75, 75), ("dynamic_degree", 1., True),
@@ -179,6 +223,17 @@ class VBenchOfficialTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 module.run_official(**self.args())
             runner.assert_not_called()
+
+    def test_explicit_torch_home_is_forwarded_without_changing_model_cache(self):
+        torch_home = self.root / "writable-torch-home"
+        def fake_run(command, *, cwd, env, stdout, stderr):
+            self.assertEqual(env["TORCH_HOME"], str(torch_home))
+            self.output.mkdir(exist_ok=True)
+            (self.output / "results_test_eval_results.json").write_text(json.dumps(self.result()))
+            return subprocess.CompletedProcess(command, 0)
+        with mock.patch.object(module.subprocess, "run", side_effect=fake_run):
+            result = module.run_official(**self.args(torch_home=torch_home))
+        self.assertEqual(result["torch_home"], str(torch_home))
 
     def test_failures_keep_log_without_validated_metadata(self):
         for failure in ("exit", "missing", "changed", "invalid", "multiple"):

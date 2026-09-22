@@ -4,6 +4,8 @@
 
 Pinned source: `VQAssessment/DOVER` at `f1ddc96215bc7fbcf8f315c65d47905f339c3419`. The evaluator requires both `pretrained_weights/DOVER.pth` under the source root and `hub/checkpoints/convnext_tiny_1k_224_ema.pth` under `TORCH_HOME`. Record source URLs and full hashes; an observed hash alone is not verification against a trusted expected value.
 
+Checkpoint sources are the [official DOVER release](https://github.com/QualityAssessment/DOVER/releases/download/v0.1.0/DOVER.pth) and the [ConvNeXt initialization checkpoint](https://dl.fbaipublicfiles.com/convnext/convnext_tiny_1k_224_ema.pth). The CPU wheel combination in the archived guide is a local compatibility starting point, not a dependency lock published by the DOVER authors.
+
 Use a separate runtime compatible with upstream requirements. The original Torch 1.13 family is not compatible with every current GPU. A modern runtime is an explicitly unverified compatibility experiment until compared against a validated baseline; `--allow-unverified-runtime` does not certify correctness.
 
 Inspect the wrapper's options without loading models:
