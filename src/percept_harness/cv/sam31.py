@@ -14,6 +14,7 @@ import math
 from numbers import Integral, Real
 import os
 from pathlib import Path
+import logging
 import re
 import shutil
 import stat
@@ -49,6 +50,7 @@ _LOAD_FAILURE = "Unable to load local SAM3.1 runtime"
 _INFERENCE_FAILURE = "SAM3.1 CV evidence inference failed"
 _OOM_FAILURE = "SAM3.1 CV evidence inference ran out of memory"
 _CLOSE_FAILURE = "Unable to close SAM3.1 runtime"
+_logger = logging.getLogger(__name__)
 _HASH_READ_BYTES = 1024 * 1024
 _MAX_OVERLAYS = 24
 _MAX_OBJECTS = 16
@@ -422,7 +424,11 @@ class Sam31EvidenceProvider:
                 except BaseException:
                     pass
             if isinstance(error, Exception):
-                raise CvProviderError(_LOAD_FAILURE) from None
+                # The sanitized message is a stable contract; keep the cause
+                # out of it but on the exception and in the debug log, so an
+                # operator can see *why* the pinned runtime failed to load.
+                _logger.debug("SAM3.1 runtime load failed", exc_info=error)
+                raise CvProviderError(_LOAD_FAILURE) from error
             raise
 
     @property

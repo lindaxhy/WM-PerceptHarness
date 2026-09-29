@@ -51,7 +51,8 @@ def _envelope(text='{"objects": []}', **changes):
 def _model(handler, **changes):
     values = dict(base_url=BASE_URL, api_key="top-secret",
                   model_registry={"doubao-pro": "doubao-seed-2-1-pro-260628"},
-                  transport=httpx.MockTransport(handler), frame_extractor=_frames)
+                  transport=httpx.MockTransport(handler), frame_extractor=_frames,
+                  transport_retries=0)
     values.update(changes)
     return OpenAICompatVideoModel(**values)
 
@@ -279,3 +280,98 @@ def test_oversized_request_is_rejected_before_transport(tmp_path):
     with pytest.raises(OpenAICompatBackendError):
         model.generate(_request(tmp_path))
     assert calls == 0
+
+
+def test_transient_status_is_retried_until_success(tmp_path, monkeypatch):
+    delays = []
+    monkeypatch.setattr("percept_harness.models.openai_compat.time.sleep", delays.append)
+    calls = 0
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            return httpx.Response(429, text="throttled")
+        return httpx.Response(200, json=_envelope())
+    model = _model(handler, transport_retries=3, retry_backoff_seconds=0.01)
+    assert model.generate(_request(tmp_path)) == {"objects": []}
+    assert calls == 3
+    assert len(delays) == 2
+    assert delays[1] > delays[0]  # exponential backoff
+
+
+def test_retries_exhausted_raises_with_attempt_count(tmp_path, monkeypatch):
+    monkeypatch.setattr("percept_harness.models.openai_compat.time.sleep", lambda _: None)
+    calls = 0
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(503, text="secret internals")
+    model = _model(handler, transport_retries=2, retry_backoff_seconds=0.01)
+    with pytest.raises(OpenAICompatBackendError) as info:
+        model.generate(_request(tmp_path))
+    assert calls == 3
+    assert "3 attempts" in str(info.value)
+    assert "503" in str(info.value)
+    assert "secret internals" not in str(info.value)
+
+
+def test_timeout_is_retried_and_cause_is_preserved(tmp_path, monkeypatch):
+    monkeypatch.setattr("percept_harness.models.openai_compat.time.sleep", lambda _: None)
+    calls = 0
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        raise httpx.ReadTimeout("read deadline")
+    model = _model(handler, transport_retries=1, retry_backoff_seconds=0.01)
+    with pytest.raises(OpenAICompatBackendError) as info:
+        model.generate(_request(tmp_path))
+    assert calls == 2
+    assert isinstance(info.value.__cause__, httpx.ReadTimeout)
+
+
+def test_deterministic_status_is_never_retried(tmp_path):
+    calls = 0
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(400, text="bad request")
+    model = _model(handler, transport_retries=3)
+    with pytest.raises(OpenAICompatBackendError):
+        model.generate(_request(tmp_path))
+    assert calls == 1
+
+
+def test_timeout_scales_with_span_and_is_capped(tmp_path):
+    captured = {}
+    def handler(request):
+        captured["timeout"] = request.extensions["timeout"]
+        return httpx.Response(200, json=_envelope())
+    model = _model(handler, timeout_seconds=10.0,
+                   timeout_seconds_per_video_second=2.0, max_timeout_seconds=100.0)
+    model.generate(_request(tmp_path))  # span is (2, 4): 10 + 2*2 = 14
+    assert captured["timeout"]["read"] == pytest.approx(14.0)
+
+    model = _model(handler, timeout_seconds=10.0,
+                   timeout_seconds_per_video_second=100.0, max_timeout_seconds=50.0)
+    model.generate(_request(tmp_path))  # 10 + 100*2 = 210, capped at 50
+    assert captured["timeout"]["read"] == pytest.approx(50.0)
+
+
+def test_run_identity_includes_retry_and_timeout_settings(tmp_path):
+    model = _model(lambda request: httpx.Response(200, json=_envelope()),
+                   transport_retries=2, timeout_seconds_per_video_second=1.5)
+    identity = model.run_identity("doubao-pro")
+    assert identity["transport_retries"] == 2
+    assert identity["timeout_seconds_per_video_second"] == 1.5
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"transport_retries": -1},
+    {"transport_retries": True},
+    {"retry_backoff_seconds": 0},
+    {"timeout_seconds_per_video_second": -0.5},
+    {"max_timeout_seconds": 1.0, "timeout_seconds": 2.0},
+])
+def test_invalid_retry_and_timeout_configuration_is_rejected(kwargs):
+    with pytest.raises(ValueError):
+        _model(lambda request: httpx.Response(200, json=_envelope()), **kwargs)

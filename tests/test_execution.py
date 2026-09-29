@@ -195,3 +195,104 @@ def test_metrics_validation_rejects_unknown_and_malformed_keys() -> None:
         validate_inference_job_metrics({"semantic_cache_key": "not-a-digest"})
     with pytest.raises(TypeError):
         validate_inference_job_metrics(["not", "a", "mapping"])
+
+
+class _CachingModel(_ScriptedModel):
+    """Scripted model that opts into the semantic result cache."""
+
+    supports_semantic_result_cache = True
+
+    def semantic_cache_identity(self, request: ModelRequest) -> dict[str, Any]:
+        return {"endpoint": "https://provider.example/v1", "model": request.model_name}
+
+
+def test_job_error_text_reaches_the_wait_exception(video: Path) -> None:
+    model = _ScriptedModel(RuntimeError("provider rejected the request"))
+    store = SyncJobStore(model, default_model_alias="qwen3-vl-8b-instruct")
+
+    [job] = store.create_inference_jobs("task-1", [_spec(video)])
+
+    with pytest.raises(InferenceJobFailed) as info:
+        wait_for_jobs(store, "task-1", [job.job_id], 1.0)
+    assert info.value.job_error == "provider rejected the request"
+    assert "provider rejected the request" in str(info.value)
+
+
+def test_semantic_cache_replays_identical_requests(video: Path, tmp_path: Path) -> None:
+    from percept_harness.execution import SemanticResultCache
+
+    cache = SemanticResultCache(tmp_path / "semantic-cache")
+    model = _CachingModel(_segment())
+    store = SyncJobStore(model, default_model_alias="qwen3-vl-8b-instruct",
+                         semantic_cache=cache)
+    [first] = store.create_inference_jobs("task-1", [_spec(video)])
+    assert first.status is InferenceStatus.COMPLETED
+    assert first.metrics["semantic_cache_published"] is True
+    validate_inference_job_metrics(first.metrics)
+
+    replay_model = _CachingModel()  # no scripted outputs: a real call would fail
+    replay_store = SyncJobStore(replay_model, default_model_alias="qwen3-vl-8b-instruct",
+                                semantic_cache=cache)
+    [second] = replay_store.create_inference_jobs("task-2", [_spec(video)])
+    assert second.status is InferenceStatus.COMPLETED
+    assert second.metrics["semantic_cache_hit"] is True
+    assert second.result == first.result
+    validate_inference_job_metrics(second.metrics)
+    assert len(replay_model.requests) == 0
+
+
+def test_semantic_cache_misses_on_changed_prompt_or_bytes(video: Path, tmp_path: Path) -> None:
+    from percept_harness.execution import SemanticResultCache
+
+    cache = SemanticResultCache(tmp_path / "semantic-cache")
+    store = SyncJobStore(_CachingModel(_segment()),
+                         default_model_alias="qwen3-vl-8b-instruct", semantic_cache=cache)
+    store.create_inference_jobs("task-1", [_spec(video)])
+
+    other_prompt = _CachingModel(_segment("another visible action"))
+    store2 = SyncJobStore(other_prompt, default_model_alias="qwen3-vl-8b-instruct",
+                          semantic_cache=cache)
+    [job] = store2.create_inference_jobs("task-2", [_spec(video, prompt="different")])
+    assert len(other_prompt.requests) == 1  # miss: prompt changed
+
+    video.write_bytes(b"changed bytes")
+    other_bytes = _CachingModel(_segment())
+    store3 = SyncJobStore(other_bytes, default_model_alias="qwen3-vl-8b-instruct",
+                          semantic_cache=cache)
+    store3.create_inference_jobs("task-3", [_spec(video)])
+    assert len(other_bytes.requests) == 1  # miss: video bytes changed
+
+
+def test_semantic_cache_is_ignored_for_models_without_support(video: Path, tmp_path: Path) -> None:
+    from percept_harness.execution import SemanticResultCache
+
+    cache = SemanticResultCache(tmp_path / "semantic-cache")
+    model = _ScriptedModel(_segment(), _segment())
+    store = SyncJobStore(model, default_model_alias="qwen3-vl-8b-instruct",
+                         semantic_cache=cache)
+    store.create_inference_jobs("task-1", [_spec(video)])
+    store2 = SyncJobStore(_ScriptedModel(_segment()),
+                          default_model_alias="qwen3-vl-8b-instruct", semantic_cache=cache)
+    [job] = store2.create_inference_jobs("task-2", [_spec(video)])
+    assert job.metrics.get("semantic_cache_hit") is None
+
+
+def test_corrupt_cache_entry_is_a_miss(video: Path, tmp_path: Path) -> None:
+    from percept_harness.execution import SemanticResultCache
+
+    root = tmp_path / "semantic-cache"
+    cache = SemanticResultCache(root)
+    model = _CachingModel(_segment())
+    store = SyncJobStore(model, default_model_alias="qwen3-vl-8b-instruct",
+                         semantic_cache=cache)
+    [job] = store.create_inference_jobs("task-1", [_spec(video)])
+    key = job.metrics["semantic_cache_key"]
+    entry = root / key[:2] / f"{key}.json"
+    entry.write_text("{corrupt", encoding="utf-8")
+
+    fresh = _CachingModel(_segment())
+    store2 = SyncJobStore(fresh, default_model_alias="qwen3-vl-8b-instruct",
+                          semantic_cache=SemanticResultCache(root))
+    [again] = store2.create_inference_jobs("task-2", [_spec(video)])
+    assert again.status is InferenceStatus.COMPLETED
+    assert len(fresh.requests) == 1  # corrupt entry ignored, model re-ran

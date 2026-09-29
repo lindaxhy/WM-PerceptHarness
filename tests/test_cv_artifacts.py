@@ -1755,3 +1755,18 @@ def test_concurrent_first_quarantines_reopen_and_fsync_winner(
     assert len(tuple((root / "quarantine").iterdir())) == 2
     assert len(mkdir_threads) == 2
     assert mkdir_threads <= fsync_threads
+
+
+def test_unsafe_directory_error_names_the_failing_ancestor(tmp_path):
+    """The rejection must say which directory failed and why, for operators."""
+    parent = tmp_path / "world-writable"
+    parent.mkdir(mode=0o700)
+    parent.chmod(0o777)
+    root = parent / "cache"
+
+    with pytest.raises(CvArtifactError) as info:
+        CvArtifactStore(root)
+    message = str(info.value)
+    assert "unsafe CV artifact directory" in message
+    assert "world-writable" in message
+    assert "0777" in message

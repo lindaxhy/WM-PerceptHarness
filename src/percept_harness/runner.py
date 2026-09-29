@@ -74,6 +74,15 @@ class SyncRunner:
         self.registry = registry if registry is not None else default_pipeline_registry()
         self.cv_executor = cv_executor
         self.work_root = work_root if work_root is not None else settings.work_root
+        self.semantic_cache = None
+        if settings.semantic_result_cache and getattr(
+            model, "supports_semantic_result_cache", False
+        ):
+            from .execution import SemanticResultCache
+
+            self.semantic_cache = SemanticResultCache(
+                Path(self.work_root) / "semantic-cache"
+            )
 
     def evaluate(
         self,
@@ -97,6 +106,7 @@ class SyncRunner:
                 self.model,
                 default_model_alias=self.model_alias,
                 cv_executor=self.cv_executor,
+                semantic_cache=self.semantic_cache,
             )
             try:
                 with _task_dir(self.work_root, task.task_id) as task_dir:
@@ -191,6 +201,10 @@ def _run_batch(
     """Reuse only intact results with matching input and verified execution identity."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    if force:
+        # --force asks for an independent repeat; replaying cached per-request
+        # results would silently reproduce the previous run instead.
+        runner.semantic_cache = None
     run = result_store.run_identity(runner, template, prompt_context, query)
     manifest = output_dir / ".percept" / "runs" / f"{uuid.uuid4().hex}.json"
     run_record = {"run": run, "run_fingerprint": result_store.json_digest(run),
