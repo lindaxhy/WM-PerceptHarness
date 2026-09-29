@@ -124,8 +124,15 @@ class CvArtifactStore:
                 self._root_descriptor,
                 self._ancestry_identities,
             ) = self._open_trusted_ancestry(self._root, create_final=True)
-        except (OSError, ValueError):
-            raise CvArtifactError("unsafe CV artifact directory") from None
+        except ValueError as error:
+            detail = f" ({error})" if str(error) else ""
+            raise CvArtifactError(
+                f"unsafe CV artifact directory{detail}"
+            ) from None
+        except OSError as error:
+            raise CvArtifactError(
+                f"unsafe CV artifact directory ({type(error).__name__})"
+            ) from None
         root_status = os.fstat(self._root_descriptor)
         self._root_identity = root_status.st_dev, root_status.st_ino
         self._lifecycle_lock = threading.Lock()
@@ -628,7 +635,10 @@ class CvArtifactStore:
         descriptor = cls._open_directory_descriptor(Path("/"))
         identities: list[tuple[int, int]] = []
         try:
-            cls._validate_ancestor_status(os.fstat(descriptor), final=False)
+            try:
+                cls._validate_ancestor_status(os.fstat(descriptor), final=False)
+            except ValueError as error:
+                raise ValueError(f"/: {error}") from None
             root_status = os.fstat(descriptor)
             identities.append((root_status.st_dev, root_status.st_ino))
             parts = path.parts[1:]
@@ -648,7 +658,11 @@ class CvArtifactStore:
                     child = cls._open_directory_descriptor(part, dir_fd=descriptor)
                 try:
                     status = os.fstat(child)
-                    cls._validate_ancestor_status(status, final=final)
+                    try:
+                        cls._validate_ancestor_status(status, final=final)
+                    except ValueError as error:
+                        ancestor = Path(*path.parts[: index + 2])
+                        raise ValueError(f"{ancestor}: {error}") from None
                     if observed_missing:
                         os.fsync(descriptor)
                     identities.append((status.st_dev, status.st_ino))
@@ -666,13 +680,16 @@ class CvArtifactStore:
     def _validate_ancestor_status(status: os.stat_result, *, final: bool) -> None:
         effective_uid = os.geteuid() if hasattr(os, "geteuid") else status.st_uid
         trusted_owners = {effective_uid, 0}
-        if (
-            not stat.S_ISDIR(status.st_mode)
-            or status.st_uid not in trusted_owners
-            or (final and status.st_uid != effective_uid)
-            or status.st_mode & 0o022
-        ):
-            raise ValueError
+        if not stat.S_ISDIR(status.st_mode):
+            raise ValueError("not a directory")
+        if status.st_uid not in trusted_owners:
+            raise ValueError(f"owned by uid {status.st_uid}, not the caller or root")
+        if final and status.st_uid != effective_uid:
+            raise ValueError(f"final directory owned by uid {status.st_uid}, not the caller")
+        if status.st_mode & 0o022:
+            raise ValueError(
+                f"group/other-writable (mode {stat.S_IMODE(status.st_mode):04o})"
+            )
 
     def _open_prefix(self, key: str, *, create: bool) -> int | None:
         name = key[:2]

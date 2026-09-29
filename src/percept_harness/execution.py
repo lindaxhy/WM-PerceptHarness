@@ -7,8 +7,12 @@ current process, so `wait_for_jobs` only collects already-terminal results.
 
 from __future__ import annotations
 
+import json
+import logging
 import math
+import os
 import re
+import tempfile
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
@@ -19,6 +23,8 @@ from .domain import InferenceJob, InferenceJobSpec, InferenceStatus
 from .media import TimeSpan, VideoMetadata
 from .models.base import ModelOutputError, ModelRequest, VideoModel, VideoSession
 from .metrics import validate_inference_job_metrics
+
+logger = logging.getLogger(__name__)
 
 
 class ExecutionError(RuntimeError):
@@ -36,7 +42,9 @@ class InferenceJobFailed(ExecutionError):
         self.job_id = job.job_id
         self.stage = job.stage
         self.ordinal = job.ordinal
-        super().__init__(f"inference job failed at ordinal {job.ordinal}")
+        self.job_error = job.error
+        detail = f": {job.error}" if job.error else ""
+        super().__init__(f"inference job failed at ordinal {job.ordinal}{detail}")
 
 
 class JobStore(Protocol):
@@ -57,6 +65,94 @@ class CvJobExecutor(Protocol):
     def __call__(self, payload: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]: ...
 
 
+class SemanticResultCache:
+    """Content-addressed store of validated per-request model results.
+
+    A repair-loop retry or a whole-task rerun re-issues many requests whose
+    inputs are byte-identical to ones that already succeeded. Keyed on the
+    video bytes, span, prompt, schema context, and the backend's own
+    ``semantic_cache_identity``, a hit replays the validated result instead of
+    paying for another inference. Entries are JSON files written atomically;
+    a corrupt or unreadable entry is treated as a miss and rewritten.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self._root = Path(root)
+        self._root.mkdir(parents=True, exist_ok=True)
+        self._video_digests: dict[Path, tuple[tuple[int, int], str]] = {}
+
+    def _video_digest(self, path: Path) -> str:
+        from .result_store import file_digest
+
+        resolved = path.resolve(strict=True)
+        status = resolved.stat()
+        identity = (status.st_size, status.st_mtime_ns)
+        cached = self._video_digests.get(resolved)
+        if cached is not None and cached[0] == identity:
+            return cached[1]
+        digest = file_digest(resolved)
+        self._video_digests[resolved] = (identity, digest)
+        return digest
+
+    def key(
+        self,
+        request: ModelRequest,
+        backend_identity: Mapping[str, Any],
+        schema_context: Mapping[str, Any] | None,
+    ) -> str:
+        from .result_store import json_digest
+
+        return json_digest({
+            "video_sha256": self._video_digest(request.video_path),
+            "span": [request.span.start, request.span.end],
+            "fps": request.fps,
+            "stage": request.stage,
+            "prompt": request.prompt,
+            "schema_name": request.schema_name,
+            "schema_context": dict(schema_context) if schema_context else None,
+            "backend": dict(backend_identity),
+        })
+
+    def _entry_path(self, key: str) -> Path:
+        return self._root / key[:2] / f"{key}.json"
+
+    def load(self, key: str) -> dict[str, Any] | None:
+        path = self._entry_path(key)
+        try:
+            entry = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(entry, dict) or not isinstance(entry.get("result"), dict):
+            return None
+        return entry["result"]
+
+    def publish(self, key: str, result: Mapping[str, Any]) -> bool:
+        path = self._entry_path(key)
+        encoded = json.dumps(
+            {"key": key, "result": dict(result)},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        )
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor, staging = tempfile.mkstemp(
+                dir=path.parent, prefix=".staging-", suffix=".json"
+            )
+            try:
+                with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                    stream.write(encoded)
+                os.replace(staging, path)
+            except BaseException:
+                try:
+                    os.unlink(staging)
+                except OSError:
+                    pass
+                raise
+        except OSError:
+            logger.debug("semantic cache publish failed for %s", key, exc_info=True)
+            return False
+        return True
+
+
 class SyncJobStore:
     """Execute inference jobs eagerly and remember their terminal records."""
 
@@ -67,6 +163,7 @@ class SyncJobStore:
         default_model_alias: str,
         output_schemas: Any | None = None,
         cv_executor: CvJobExecutor | None = None,
+        semantic_cache: SemanticResultCache | None = None,
     ) -> None:
         if output_schemas is None:
             # Imported lazily: output_validation transitively imports modules
@@ -78,6 +175,11 @@ class SyncJobStore:
         self.default_model_alias = default_model_alias
         self._output_schemas = output_schemas
         self._cv_executor = cv_executor
+        self._semantic_cache = (
+            semantic_cache
+            if getattr(model, "supports_semantic_result_cache", False)
+            else None
+        )
         self._jobs: dict[str, InferenceJob] = {}
         self._sessions: dict[str, VideoSession] = {}
 
@@ -169,7 +271,27 @@ class SyncJobStore:
                 request.schema_name, context
             ),
         )
+        cache_key: str | None = None
+        if self._semantic_cache is not None:
+            identity = getattr(self.model, "semantic_cache_identity", None)
+            if callable(identity):
+                try:
+                    cache_key = self._semantic_cache.key(request, identity(request), context)
+                except (OSError, TypeError, ValueError):
+                    logger.debug("semantic cache key derivation failed", exc_info=True)
+            if cache_key is not None:
+                cached = self._semantic_cache.load(cache_key)
+                if cached is not None:
+                    result = self._output_schemas.sanitize(
+                        request.schema_name, cached, context
+                    )
+                    return result, {
+                        "inference_seconds": 0.0,
+                        "semantic_cache_hit": True,
+                        "semantic_cache_key": cache_key,
+                    }
         started = time.monotonic()
+        cacheable = True
         try:
             try:
                 generated = self.model.generate(request)
@@ -186,7 +308,12 @@ class SyncJobStore:
             result = self._output_schemas.model_output_failure(request.schema_name)
             if result is None:
                 raise
+            cacheable = False  # never replay a malformed-output placeholder
         metrics = _model_request_metrics(self.model, inference_seconds=inference_seconds)
+        if cache_key is not None and cacheable:
+            published = self._semantic_cache.publish(cache_key, result)
+            metrics["semantic_cache_key"] = cache_key
+            metrics["semantic_cache_published"] = published
         return result, metrics
 
     def _attach_session(self, request: ModelRequest, job: InferenceJob) -> ModelRequest:

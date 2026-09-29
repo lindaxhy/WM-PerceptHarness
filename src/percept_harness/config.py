@@ -48,6 +48,18 @@ def _positive_finite(value: Any) -> float:
     return parsed
 
 
+def _nonnegative_finite(value: Any) -> float:
+    if isinstance(value, bool):
+        raise ValueError("value must be finite and non-negative")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        raise ValueError("value must be finite and non-negative") from None
+    if not math.isfinite(parsed) or parsed < 0:
+        raise ValueError("value must be finite and non-negative")
+    return parsed
+
+
 def _positive_fraction(value: Any) -> float:
     parsed = _positive_finite(value)
     if parsed > 1:
@@ -66,6 +78,7 @@ def _strict_boolean(value: Any) -> bool:
 NonnegativeInteger = Annotated[int, BeforeValidator(_nonnegative_integer)]
 PositiveInteger = Annotated[int, BeforeValidator(_positive_integer)]
 PositiveFinite = Annotated[float, BeforeValidator(_positive_finite)]
+NonnegativeFinite = Annotated[float, BeforeValidator(_nonnegative_finite)]
 PositiveFraction = Annotated[float, BeforeValidator(_positive_fraction)]
 StrictEnvironmentBool = Annotated[bool, BeforeValidator(_strict_boolean)]
 
@@ -89,7 +102,17 @@ class Settings(BaseSettings):
     openai_extra_body: dict[str, Any] = Field(default_factory=dict)
     openai_extra_headers: dict[str, str] = Field(default_factory=dict)
     openai_timeout_seconds: PositiveFinite = 180.0
+    # Per-request timeout grows with clip length: base + per_video_second * span,
+    # capped at max. Zero keeps the fixed base timeout for every request.
+    openai_timeout_seconds_per_video_second: NonnegativeFinite = 0.0
+    openai_max_timeout_seconds: PositiveFinite = 1_800.0
+    # Extra attempts for transient transport/service failures (timeouts, 429, 5xx).
+    openai_transport_retries: NonnegativeInteger = 3
+    openai_retry_backoff_seconds: PositiveFinite = 5.0
     openai_max_frames: PositiveInteger = 128
+    # Replay validated per-request results for byte-identical inputs across
+    # repair-loop retries and task reruns (openai backend only).
+    semantic_result_cache: StrictEnvironmentBool = True
     openai_max_request_bytes: PositiveInteger = 32 * 1024 * 1024
     openai_max_output_chars: PositiveInteger = 1_000_000
     openai_proxy: SecretStr | None = None

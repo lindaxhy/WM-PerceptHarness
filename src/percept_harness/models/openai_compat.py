@@ -11,14 +11,19 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import math
+import random
 import shutil
 import tempfile
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 from ..media import FrameRef, TimeSpan, extract_frames
 from ..model_alias import validate_model_alias
@@ -36,6 +41,9 @@ STAGE_MAX_OUTPUT_TOKENS = {
     "occlusion_semantics": 4_096,
 }
 RESPONSE_FORMAT_MODES = ("json_schema", "json_object", "none")
+# Provider statuses worth one more attempt: throttling, and transient
+# service-side failures. 4xx besides 429 are deterministic and never retried.
+_RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 # Overriding these through extra_body would silently invalidate the semantic
 # cache identity or replace the visual payload; providers never need them.
 _RESERVED_BODY_KEYS = frozenset({"model", "messages", "stream", "max_tokens", "response_format"})
@@ -60,6 +68,10 @@ class OpenAICompatVideoModel:
                  extra_body: Mapping[str, Any] | None = None,
                  extra_headers: Mapping[str, str] | None = None,
                  timeout_seconds: float = 180.0, max_frames: int = 128,
+                 timeout_seconds_per_video_second: float = 0.0,
+                 max_timeout_seconds: float = 1_800.0,
+                 transport_retries: int = 3,
+                 retry_backoff_seconds: float = 5.0,
                  max_request_bytes: int = 32 * 1024 * 1024,
                  max_output_chars: int = 1_000_000, proxy: str | None = None,
                  transport: httpx.BaseTransport | None = None,
@@ -80,6 +92,18 @@ class OpenAICompatVideoModel:
             )
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be finite and positive")
+        if (isinstance(timeout_seconds_per_video_second, bool)
+                or not isinstance(timeout_seconds_per_video_second, (int, float))
+                or not math.isfinite(timeout_seconds_per_video_second)
+                or timeout_seconds_per_video_second < 0):
+            raise ValueError("timeout_seconds_per_video_second must be finite and non-negative")
+        if not math.isfinite(max_timeout_seconds) or max_timeout_seconds < timeout_seconds:
+            raise ValueError("max_timeout_seconds must be finite and at least timeout_seconds")
+        if isinstance(transport_retries, bool) or not isinstance(transport_retries, int) \
+                or transport_retries < 0:
+            raise ValueError("transport_retries must be a non-negative integer")
+        if not math.isfinite(retry_backoff_seconds) or retry_backoff_seconds <= 0:
+            raise ValueError("retry_backoff_seconds must be finite and positive")
         for name, value in (("max_frames", max_frames), ("max_request_bytes", max_request_bytes),
                             ("max_output_chars", max_output_chars)):
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -94,6 +118,10 @@ class OpenAICompatVideoModel:
         self._extra_body = extra_body
         self._extra_headers = dict(extra_headers or {})
         self.timeout_seconds, self.max_frames = timeout_seconds, max_frames
+        self.timeout_seconds_per_video_second = float(timeout_seconds_per_video_second)
+        self.max_timeout_seconds = max_timeout_seconds
+        self.transport_retries = transport_retries
+        self.retry_backoff_seconds = retry_backoff_seconds
         self.max_request_bytes, self.max_output_chars = max_request_bytes, max_output_chars
         self._extract = frame_extractor
         if client is not None and transport is not None:
@@ -125,6 +153,9 @@ class OpenAICompatVideoModel:
             "max_request_bytes": self.max_request_bytes,
             "max_output_chars": self.max_output_chars,
             "timeout_seconds": self.timeout_seconds,
+            "timeout_seconds_per_video_second": self.timeout_seconds_per_video_second,
+            "max_timeout_seconds": self.max_timeout_seconds,
+            "transport_retries": self.transport_retries,
         }
 
     def semantic_cache_identity(self, request: ModelRequest) -> dict[str, Any]:
@@ -164,8 +195,16 @@ class OpenAICompatVideoModel:
             raise OpenAICompatBackendError("model alias is not allowlisted") from None
         temporary = Path(tempfile.mkdtemp(prefix="percept-frames-"))
         try:
+            span_seconds = max(0.0, request.span.end - request.span.start)
+            fps = request.fps
+            if span_seconds > 0 and fps * span_seconds > self.max_frames:
+                # A long clip at the requested cadence would exceed max_frames
+                # and previously failed outright. Spread the frame budget
+                # evenly across the span instead (0.5 guards the < end loop
+                # boundary against rounding up to max_frames + 1).
+                fps = (self.max_frames - 0.5) / span_seconds
             try:
-                frames = self._extract(request.video_path, request.span, request.fps, temporary)
+                frames = self._extract(request.video_path, request.span, fps, temporary)
                 content = self._content(request, frames)
             except OpenAICompatBackendError:
                 raise
@@ -186,24 +225,57 @@ class OpenAICompatVideoModel:
             encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
             if len(encoded) > self.max_request_bytes:
                 raise OpenAICompatBackendError("request exceeds configured size limit")
+            request_timeout = min(
+                self.max_timeout_seconds,
+                self.timeout_seconds + self.timeout_seconds_per_video_second * span_seconds,
+            )
+            raw = self._post_with_retries(encoded, request_timeout)
+            return self._parse(raw)
+        finally:
+            shutil.rmtree(temporary, ignore_errors=True)
+
+    def _post_with_retries(self, encoded: bytes, request_timeout: float) -> bytes:
+        """POST once, then retry transient transport/service failures with backoff.
+
+        Deterministic failures (non-retryable statuses, oversized or malformed
+        responses) raise immediately. The final attempt's failure is raised
+        with its underlying cause preserved for diagnosis.
+        """
+        attempts = self.transport_retries + 1
+        for attempt in range(attempts):
+            retryable: str | None = None
+            cause: BaseException | None = None
             try:
                 with self._client.stream("POST", self._endpoint,
                     headers={"Authorization": f"Bearer {self._key}",
                              "Content-Type": "application/json", **self._extra_headers},
-                    content=encoded, timeout=self.timeout_seconds,
+                    content=encoded, timeout=request_timeout,
                     follow_redirects=False) as response:
-                    if response.status_code != 200:
+                    if response.status_code == 200:
+                        return self._bounded_body(response)
+                    if response.status_code in _RETRYABLE_STATUS_CODES:
+                        retryable = f"service status {response.status_code}"
+                    else:
                         raise OpenAICompatBackendError(
                             f"service request failed with status {response.status_code}"
                         )
-                    raw = self._bounded_body(response)
             except (OpenAICompatBackendError, ModelOutputError):
                 raise
-            except (httpx.HTTPError, OSError):
-                raise OpenAICompatBackendError("transport failed") from None
-            return self._parse(raw)
-        finally:
-            shutil.rmtree(temporary, ignore_errors=True)
+            except (httpx.TimeoutException, httpx.TransportError) as error:
+                retryable = f"transport {type(error).__name__}"
+                cause = error
+            except (httpx.HTTPError, OSError) as error:
+                raise OpenAICompatBackendError("transport failed") from error
+            if attempt + 1 == attempts:
+                message = f"service request failed after {attempts} attempts: {retryable}"
+                raise OpenAICompatBackendError(message) from cause
+            delay = self.retry_backoff_seconds * (2 ** attempt) * (1 + random.random())
+            logger.warning(
+                "retrying request (%s; attempt %d/%d) in %.1fs",
+                retryable, attempt + 1, attempts, delay,
+            )
+            time.sleep(delay)
+        raise OpenAICompatBackendError("transport failed")  # pragma: no cover
 
     def _content(self, request: ModelRequest, frames: list[FrameRef]) -> list[dict[str, Any]]:
         if not frames or len(frames) > self.max_frames:

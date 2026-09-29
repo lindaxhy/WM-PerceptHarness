@@ -486,9 +486,10 @@ class EmbodiedActionPipeline:
                     [job.job_id],
                     self._wait_timeout,
                 )
-            except InferenceJobFailed:
+            except InferenceJobFailed as error:
+                detail = f" ({error.job_error})" if error.job_error else ""
                 raise EmbodiedActionPipelineError(
-                    f"{_stage_label(stage)} inference failed",
+                    f"{_stage_label(stage)} inference failed{detail}",
                     repair_history=_repair_history_for(ordinal),
                 ) from None
             except JobWaitTimeout:
@@ -933,8 +934,11 @@ class EmbodiedActiveObjectsPipeline:
                     [job.job_id],
                     self._wait_timeout,
                 )
-            except InferenceJobFailed:
-                raise ActiveObjectPipelineError("active object inference failed") from None
+            except InferenceJobFailed as error:
+                detail = f" ({error.job_error})" if error.job_error else ""
+                raise ActiveObjectPipelineError(
+                    f"active object inference failed{detail}"
+                ) from None
             except JobWaitTimeout:
                 raise ActiveObjectPipelineError("active object inference timed out") from None
 
