@@ -395,3 +395,46 @@ def test_long_span_downsamples_to_frame_budget_instead_of_failing(tmp_path):
     request = _request(tmp_path, span=TimeSpan(0, 60), fps=3)
     assert model.generate(request) == {"objects": []}
     assert seen["fps"] * 60 <= 16
+
+
+def test_oversized_payload_thins_frames_instead_of_failing(tmp_path):
+    """A dense clip over the byte budget resamples frames evenly, keeping order."""
+    def many_frames(path, span, fps, output):
+        frames = []
+        for index in range(64):
+            frame = output / f"frame-{index}.jpg"
+            frame.write_bytes(b"j" * 4096)  # 64 * ~5.5KiB base64 ≈ 470KiB payload
+            frames.append(FrameRef(frame, span.start + index * 0.03))
+        return frames
+    captured = {}
+    def handler(request):
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json=_envelope())
+    model = _model(handler, frame_extractor=many_frames, max_request_bytes=120_000)
+    assert model.generate(_request(tmp_path)) == {"objects": []}
+    images = [part for part in captured["messages"][0]["content"]
+              if part.get("type") == "image_url"]
+    assert 8 <= len(images) < 64
+    stamps = [part["text"] for part in captured["messages"][0]["content"]
+              if part.get("type") == "text" and part["text"].startswith("Frame timestamp")]
+    assert stamps == sorted(stamps)
+
+
+def test_truly_oversized_request_still_fails(tmp_path):
+    """Thinning stops at the frame floor; a still-oversized request errors."""
+    def big_frames(path, span, fps, output):
+        frames = []
+        for index in range(9):
+            frame = output / f"frame-{index}.jpg"
+            frame.write_bytes(b"j" * 65536)
+            frames.append(FrameRef(frame, span.start + index * 0.1))
+        return frames
+    calls = 0
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=_envelope())
+    model = _model(handler, frame_extractor=big_frames, max_request_bytes=4096)
+    with pytest.raises(OpenAICompatBackendError, match="size limit"):
+        model.generate(_request(tmp_path))
+    assert calls == 0

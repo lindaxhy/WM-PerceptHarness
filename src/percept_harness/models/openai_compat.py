@@ -44,6 +44,9 @@ RESPONSE_FORMAT_MODES = ("json_schema", "json_object", "none")
 # Provider statuses worth one more attempt: throttling, and transient
 # service-side failures. 4xx besides 429 are deterministic and never retried.
 _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+# Payload thinning floor: below this frame count a request that still exceeds
+# the byte budget is a genuine configuration problem, not a dense clip.
+_MIN_FRAMES = 8
 # Overriding these through extra_body would silently invalidate the semantic
 # cache identity or replace the visual payload; providers never need them.
 _RESERVED_BODY_KEYS = frozenset({"model", "messages", "stream", "max_tokens", "response_format"})
@@ -223,6 +226,20 @@ class OpenAICompatVideoModel:
                 payload["response_format"] = {"type": "json_object"}
             payload.update(self._extra_body)
             encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+            while len(encoded) > self.max_request_bytes and len(frames) > _MIN_FRAMES:
+                # High-bitrate sources can exceed the request budget at any
+                # frame count. Thin the sampled frames evenly (keeping the
+                # first frame) instead of failing the whole task.
+                keep = max(_MIN_FRAMES, int(len(frames) * self.max_request_bytes
+                                            / len(encoded) * 0.9))
+                if keep >= len(frames):
+                    keep = len(frames) - 1
+                step = (len(frames) - 1) / (keep - 1) if keep > 1 else 1
+                frames = [frames[round(i * step)] for i in range(keep)]
+                payload["messages"] = [
+                    {"role": "user", "content": self._content(request, frames)}
+                ]
+                encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
             if len(encoded) > self.max_request_bytes:
                 raise OpenAICompatBackendError("request exceeds configured size limit")
             request_timeout = min(

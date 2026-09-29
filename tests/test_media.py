@@ -310,3 +310,57 @@ def test_extract_frames_stops_exactly_at_end_when_duration_divides_by_fps(
     )
     expected = [index / 3.0 for index in range(int(metadata.duration * 3))]
     assert [frame.timestamp for frame in frames] == pytest.approx(expected)
+
+
+def test_extract_frames_drops_a_decimal_timestamp_that_rounds_to_span_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Decimal grid point below end whose float equals end must be dropped.
+
+    duration 20/3: at 3 fps the 21st point is 20/3 - epsilon in Decimal but
+    rounds to exactly span.end as a float; the backend rejects a frame at or
+    past span.end, so extraction must not emit it.
+    """
+    def fake_run(command: list[str], **kwargs: object) -> object:
+        Path(command[-1]).write_bytes(b"jpeg")
+        return object()
+
+    monkeypatch.setattr(media_module.subprocess, "run", fake_run)
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"video")
+    end = 6.666666666666667
+    frames = extract_frames(video, TimeSpan(0.0, end), 3.0, tmp_path / "frames")
+    assert len(frames) == 20
+    assert all(frame.timestamp < end for frame in frames)
+
+
+def test_extract_frames_treats_a_silently_missing_tail_frame_as_clip_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ffmpeg can exit zero yet write nothing past the last decodable frame."""
+    calls = {"n": 0}
+
+    def fake_run(command: list[str], **kwargs: object) -> object:
+        calls["n"] += 1
+        if calls["n"] < 3:  # write only the first two frames
+            Path(command[-1]).write_bytes(b"jpeg")
+        return object()
+
+    monkeypatch.setattr(media_module.subprocess, "run", fake_run)
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"video")
+    frames = extract_frames(video, TimeSpan(0.0, 2.0), 2.0, tmp_path / "frames")
+    assert len(frames) == 2
+    assert all(frame.path.is_file() for frame in frames)
+
+
+def test_extract_frames_fails_when_no_frame_is_decodable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        media_module.subprocess, "run", lambda *args, **kwargs: object()
+    )
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"video")
+    with pytest.raises(media_module.FrameExtractionError):
+        extract_frames(video, TimeSpan(0.0, 1.0), 2.0, tmp_path / "frames")
