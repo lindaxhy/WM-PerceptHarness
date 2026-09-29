@@ -222,6 +222,11 @@ def extract_frames(
     index = 0
     while timestamp < end:
         absolute = float(timestamp)
+        if absolute >= span.end:
+            # Decimal division can land fractionally below the Decimal end
+            # while rounding to the float end exactly; such a frame would be
+            # out of span downstream and often has no decodable frame at all.
+            break
         milliseconds = int((timestamp * 1000).quantize(Decimal("1"), ROUND_HALF_UP))
         destination = output_dir / f"frame_{index:06d}_{milliseconds:012d}.jpg"
         try:
@@ -255,6 +260,12 @@ def extract_frames(
         except (OSError, subprocess.SubprocessError):
             destination.unlink(missing_ok=True)
             raise FrameExtractionError("unable to extract video frame") from None
+        if not destination.is_file():
+            # ffmpeg exits zero yet writes nothing when the seek lands past
+            # the last decodable frame; treat it as the end of the clip.
+            if frames:
+                break
+            raise FrameExtractionError("unable to extract video frame")
         frames.append(FrameRef(destination, absolute))
         index += 1
         # Exact per-index division: accumulating a pre-rounded interval can
