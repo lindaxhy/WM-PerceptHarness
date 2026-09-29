@@ -195,8 +195,16 @@ class OpenAICompatVideoModel:
             raise OpenAICompatBackendError("model alias is not allowlisted") from None
         temporary = Path(tempfile.mkdtemp(prefix="percept-frames-"))
         try:
+            span_seconds = max(0.0, request.span.end - request.span.start)
+            fps = request.fps
+            if span_seconds > 0 and fps * span_seconds > self.max_frames:
+                # A long clip at the requested cadence would exceed max_frames
+                # and previously failed outright. Spread the frame budget
+                # evenly across the span instead (0.5 guards the < end loop
+                # boundary against rounding up to max_frames + 1).
+                fps = (self.max_frames - 0.5) / span_seconds
             try:
-                frames = self._extract(request.video_path, request.span, request.fps, temporary)
+                frames = self._extract(request.video_path, request.span, fps, temporary)
                 content = self._content(request, frames)
             except OpenAICompatBackendError:
                 raise
@@ -217,7 +225,6 @@ class OpenAICompatVideoModel:
             encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
             if len(encoded) > self.max_request_bytes:
                 raise OpenAICompatBackendError("request exceeds configured size limit")
-            span_seconds = max(0.0, request.span.end - request.span.start)
             request_timeout = min(
                 self.max_timeout_seconds,
                 self.timeout_seconds + self.timeout_seconds_per_video_second * span_seconds,

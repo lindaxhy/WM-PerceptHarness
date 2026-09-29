@@ -375,3 +375,23 @@ def test_run_identity_includes_retry_and_timeout_settings(tmp_path):
 def test_invalid_retry_and_timeout_configuration_is_rejected(kwargs):
     with pytest.raises(ValueError):
         _model(lambda request: httpx.Response(200, json=_envelope()), **kwargs)
+
+
+def test_long_span_downsamples_to_frame_budget_instead_of_failing(tmp_path):
+    """fps * span above max_frames spreads the budget instead of erroring."""
+    seen = {}
+    def extractor(path, span, fps, output):
+        seen["fps"] = fps
+        frames = []
+        count = int((span.end - span.start) * fps) + 1
+        for index in range(count):
+            frame = output / f"frame-{index}.jpg"
+            frame.write_bytes(b"jpeg")
+            frames.append(FrameRef(frame, span.start + index / fps))
+        return [f for f in frames if f.timestamp < span.end]
+    model = _model(lambda request: httpx.Response(200, json=_envelope()),
+                   frame_extractor=extractor, max_frames=16)
+    # span (0, 60) at 3 fps would need 180 frames; budget is 16.
+    request = _request(tmp_path, span=TimeSpan(0, 60), fps=3)
+    assert model.generate(request) == {"objects": []}
+    assert seen["fps"] * 60 <= 16
