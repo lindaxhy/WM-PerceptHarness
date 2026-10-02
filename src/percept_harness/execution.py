@@ -66,14 +66,20 @@ class CvJobExecutor(Protocol):
 
 
 class SemanticResultCache:
-    """Content-addressed store of validated per-request model results.
+    """Content-addressed store of sanitized per-request model results.
 
     A repair-loop retry or a whole-task rerun re-issues many requests whose
     inputs are byte-identical to ones that already succeeded. Keyed on the
     video bytes, span, prompt, schema context, and the backend's own
-    ``semantic_cache_identity``, a hit replays the validated result instead of
-    paying for another inference. Entries are JSON files written atomically;
-    a corrupt or unreadable entry is treated as a miss and rewritten.
+    ``semantic_cache_identity``, a hit returns the stored result instead of
+    paying for another inference.
+
+    Entries hold the *sanitized* result (plain data or a normalized envelope),
+    so a hit is returned as-is; re-sanitizing it would treat the envelope as raw
+    model output and reject it. Invalid-output envelopes are never cached: a
+    retry must reach the model again. Entries are JSON files written
+    atomically; a corrupt or unreadable entry is treated as a miss and
+    rewritten.
     """
 
     def __init__(self, root: Path) -> None:
@@ -281,11 +287,12 @@ class SyncJobStore:
                     logger.debug("semantic cache key derivation failed", exc_info=True)
             if cache_key is not None:
                 cached = self._semantic_cache.load(cache_key)
-                if cached is not None:
-                    result = self._output_schemas.sanitize(
-                        request.schema_name, cached, context
-                    )
-                    return result, {
+                if cached is not None and self._output_schemas.failure_codes(
+                    request.schema_name, cached
+                ) is None:
+                    # Stored results are already sanitized; re-running sanitize
+                    # would treat the envelope as raw model output and reject it.
+                    return cached, {
                         "inference_seconds": 0.0,
                         "semantic_cache_hit": True,
                         "semantic_cache_key": cache_key,
@@ -304,6 +311,11 @@ class SyncJobStore:
             if not isinstance(generated, Mapping):
                 raise ModelOutputError("model output must be a structured object")
             result = self._output_schemas.sanitize(request.schema_name, generated, context)
+            if self._output_schemas.failure_codes(request.schema_name, result) is not None:
+                # An invalid-output envelope is a terminal verdict for this
+                # attempt, not a result: caching it would replay the rejection
+                # on every retry instead of reaching the model again.
+                cacheable = False
         except ModelOutputError:
             result = self._output_schemas.model_output_failure(request.schema_name)
             if result is None:
