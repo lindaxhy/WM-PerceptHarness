@@ -74,13 +74,20 @@ class SemanticResultCache:
     ``semantic_cache_identity``, a hit returns the stored result instead of
     paying for another inference.
 
-    Entries hold the *sanitized* result (plain data or a normalized envelope),
-    so a hit is returned as-is; re-sanitizing it would treat the envelope as raw
-    model output and reject it. Invalid-output envelopes are never cached: a
-    retry must reach the model again. Entries are JSON files written
-    atomically; a corrupt or unreadable entry is treated as a miss and
-    rewritten.
+    Entries hold the *raw* model output for the request, so a hit replays it
+    through the same ``sanitize`` step a live call would run. Caching the
+    sanitized shape instead is wrong: re-sanitizing an envelope treats it as raw
+    model output, and the pipeline's own envelope unpacking is only defined for
+    some schemas, so a replayed normalized envelope would fail there. Failed
+    attempts are never cached: a retry must reach the model again. Entries are
+    JSON files written atomically; a corrupt or unreadable entry is treated as a
+    miss and rewritten.
     """
+
+    # Bumped when the stored payload's meaning changes, so entries written by
+    # an incompatible version are ignored rather than misread. Version 1 stored
+    # the sanitized shape; version 2 stores the raw model output.
+    _FORMAT_VERSION = 2
 
     def __init__(self, root: Path) -> None:
         self._root = Path(root)
@@ -128,14 +135,22 @@ class SemanticResultCache:
             entry = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return None
-        if not isinstance(entry, dict) or not isinstance(entry.get("result"), dict):
+        if (
+            not isinstance(entry, dict)
+            or entry.get("format_version") != self._FORMAT_VERSION
+            or not isinstance(entry.get("result"), dict)
+        ):
             return None
         return entry["result"]
 
     def publish(self, key: str, result: Mapping[str, Any]) -> bool:
         path = self._entry_path(key)
         encoded = json.dumps(
-            {"key": key, "result": dict(result)},
+            {
+                "key": key,
+                "format_version": self._FORMAT_VERSION,
+                "result": dict(result),
+            },
             ensure_ascii=False, sort_keys=True, separators=(",", ":"),
         )
         try:
@@ -287,16 +302,23 @@ class SyncJobStore:
                     logger.debug("semantic cache key derivation failed", exc_info=True)
             if cache_key is not None:
                 cached = self._semantic_cache.load(cache_key)
-                if cached is not None and self._output_schemas.failure_codes(
-                    request.schema_name, cached
-                ) is None:
-                    # Stored results are already sanitized; re-running sanitize
-                    # would treat the envelope as raw model output and reject it.
-                    return cached, {
-                        "inference_seconds": 0.0,
-                        "semantic_cache_hit": True,
-                        "semantic_cache_key": cache_key,
-                    }
+                if cached is not None:
+                    # Replay the raw output through the same sanitize step a
+                    # live call runs, so the pipeline sees an identical result.
+                    try:
+                        result = self._output_schemas.sanitize(
+                            request.schema_name, cached, context
+                        )
+                    except (ValueError, TypeError):
+                        result = None
+                    if result is not None and self._output_schemas.failure_codes(
+                        request.schema_name, result
+                    ) is None:
+                        return result, {
+                            "inference_seconds": 0.0,
+                            "semantic_cache_hit": True,
+                            "semantic_cache_key": cache_key,
+                        }
         started = time.monotonic()
         cacheable = True
         try:
@@ -310,7 +332,8 @@ class SyncJobStore:
                     release(request)
             if not isinstance(generated, Mapping):
                 raise ModelOutputError("model output must be a structured object")
-            result = self._output_schemas.sanitize(request.schema_name, generated, context)
+            raw = dict(generated)
+            result = self._output_schemas.sanitize(request.schema_name, raw, context)
             if self._output_schemas.failure_codes(request.schema_name, result) is not None:
                 # An invalid-output envelope is a terminal verdict for this
                 # attempt, not a result: caching it would replay the rejection
@@ -323,7 +346,7 @@ class SyncJobStore:
             cacheable = False  # never replay a malformed-output placeholder
         metrics = _model_request_metrics(self.model, inference_seconds=inference_seconds)
         if cache_key is not None and cacheable:
-            published = self._semantic_cache.publish(cache_key, result)
+            published = self._semantic_cache.publish(cache_key, raw)
             metrics["semantic_cache_key"] = cache_key
             metrics["semantic_cache_published"] = published
         return result, metrics
