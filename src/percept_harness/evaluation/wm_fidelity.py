@@ -75,13 +75,14 @@ class Sample:
 
 
 def load_sample(path: str | Path, sample_id: str | None = None) -> Sample | None:
-    """Parse one pipeline output file. Returns None when the pipeline failed
-    (no ``segments``), so failed samples never enter the paired set."""
+    """Parse one pipeline output file. Empty segments (actionless clips) are
+    allowed and return a Sample with no events."""
     path = Path(path)
     raw = json.loads(path.read_text())
     data = raw.get("data") or {}
-    if not data.get("segments"):
-        return None
+    segments = data.get("segments")
+    if segments is None:
+        return None  # pipeline failed before producing a result structure
     events = []
     for e in data.get("semantic_events", []):
         kind = e["event_type"]
@@ -128,7 +129,8 @@ def frame_overlap(reference: Sample, prediction: Sample) -> dict[str, tuple[int,
 def frame_miou(overlap: dict[str, tuple[int, int]]) -> float:
     inter = sum(v[0] for v in overlap.values())
     union = sum(v[1] for v in overlap.values())
-    return inter / union if union else 0.0
+    # When both timelines are empty (union=0), they match perfectly
+    return inter / union if union else 1.0
 
 
 # ---------------------------------------------------------------- event level
@@ -199,6 +201,9 @@ class PairScore:
 def score_pair(reference: Sample, prediction: Sample, similarity: SimilarityFn | None = None) -> PairScore:
     if reference.sample_id != prediction.sample_id:
         raise ValueError("sample identity mismatch")
+    # When both timelines are empty (actionless clips), frame overlap gives the
+    # base score (1.0 for identical clips). When one is empty and the other is
+    # not, the frame mismatch leads to low overlap, correctly signaling divergence.
     matched = {t: len(event_matches(reference, prediction, t)) for t in TAUS}
     base = event_matches(reference, prediction, MATCH_TAU)
     iou_sum = sum(m.iou for m in base)

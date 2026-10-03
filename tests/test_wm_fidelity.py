@@ -203,8 +203,11 @@ def test_load_sample_drops_occlusion_unknown_and_failed(tmp_path):
     assert s.sample_id == "full_0001" and s.outcome == "failure"
     assert [e.family for e in s.events] == ["place", "passive"]
     assert s.task_description == "topple the tower"
-    failed = _write(tmp_path, "full_0002", {"duration": 5.0, "segments": [], "semantic_events": []})
-    assert load_sample(failed) is None
+    # Empty segments now return a valid empty Sample (not None) for actionless clips
+    empty_seg = _write(tmp_path, "full_0002", {"duration": 5.0, "segments": [], "semantic_events": []})
+    s_empty = load_sample(empty_seg)
+    assert s_empty is not None and s_empty.sample_id == "full_0002"
+    assert len(s_empty.events) == 0
 
 
 def test_score_groups_pairs_only_common_ids(tmp_path):
