@@ -2301,3 +2301,31 @@ def test_enrichment_requires_exact_ordered_unique_index_set_and_six_fields():
         "UNEXPECTED_ENRICHMENT_INDEX",
     ]
     assert error.value.issues[-1].message == "unexpected enrichment indices: 5"
+
+
+def test_actionless_clip_is_a_valid_annotation():
+    """A static clip legitimately yields no actions; the prompt forbids inventing one."""
+    empty = CoarsePlan.model_validate(
+        {"task_description": "static tabletop scene", "entity_candidates": [], "actions": []}
+    )
+    validate_coarse_plan(empty, 5.0)  # must not raise
+
+    boundary = BoundaryPlan.model_validate(
+        {"task_description": "static tabletop scene", "actions": []}
+    )
+    validate_boundary_plan(boundary, empty)  # must not raise
+
+    # An empty Pass B is still an omission when Pass A found real actions.
+    coarse = CoarsePlan.model_validate({
+        "task_description": "move the block",
+        "entity_candidates": [{"name": "right hand", "aliases": ["hand"], "role": "actor"}],
+        "actions": [{"action_index": 0, "start": 0.0, "end": 1.0,
+                     "description": "right hand reaches for unknown",
+                     "event_type": "reach_and_grasp"}],
+    })
+    with pytest.raises(TemporalValidationError) as error:
+        validate_boundary_plan(
+            BoundaryPlan.model_validate({"task_description": "move the block", "actions": []}),
+            coarse,
+        )
+    assert "EMPTY_ACTIONS" in [issue.code for issue in error.value.issues]

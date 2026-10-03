@@ -262,34 +262,38 @@ def validate_coarse_plan(
     issues: list[TemporalIssue] = []
     actions = plan.actions
     if not actions:
-        _issue(issues, "EMPTY_ACTIONS", ("actions",), "at least one action is required")
-    else:
-        _validate_action_indices(actions, issues)
-        for index, action in enumerate(actions):
-            if not _strictly_before(action.start, action.end):
-                _issue(
-                    issues,
-                    "ACTION_NONPOSITIVE_DURATION",
-                    ("actions", index),
-                    "action end must be greater than start",
-                )
-            if (
-                action.start < -comparison_epsilon
-                or action.end > duration + comparison_epsilon
-            ):
-                _issue(
-                    issues,
-                    "ACTION_OUTSIDE_VIDEO",
-                    ("actions", index),
-                    "action must stay within the probed video",
-                )
-            if index and actions[index - 1].end > action.start + comparison_epsilon:
-                _issue(
-                    issues,
-                    "ACTION_OVERLAP",
-                    ("actions", index, "start"),
-                    "actions must not overlap",
-                )
+        # An actionless clip is a valid annotation outcome, not a defect: the
+        # prompt instructs the model to leave static intervals uncovered
+        # rather than invent a filler action, so a source video with no
+        # visible action legitimately yields an empty list. Downstream
+        # consumers treat zero actions as an empty timeline.
+        return
+    _validate_action_indices(actions, issues)
+    for index, action in enumerate(actions):
+        if not _strictly_before(action.start, action.end):
+            _issue(
+                issues,
+                "ACTION_NONPOSITIVE_DURATION",
+                ("actions", index),
+                "action end must be greater than start",
+            )
+        if (
+            action.start < -comparison_epsilon
+            or action.end > duration + comparison_epsilon
+        ):
+            _issue(
+                issues,
+                "ACTION_OUTSIDE_VIDEO",
+                ("actions", index),
+                "action must stay within the probed video",
+            )
+        if index and actions[index - 1].end > action.start + comparison_epsilon:
+            _issue(
+                issues,
+                "ACTION_OVERLAP",
+                ("actions", index, "start"),
+                "actions must not overlap",
+            )
     if not plan.entity_candidates and any(
         _action_requires_entity_candidate(action) for action in actions
     ):
@@ -349,7 +353,10 @@ def validate_boundary_plan(
         )
 
     actions = plan.actions
-    if not actions:
+    if not actions and coarse.actions:
+        # Pass A found actions, so an empty Pass B is a real omission. When
+        # Pass A is itself actionless the clip genuinely has no action to
+        # segment, and an empty Pass B is the correct answer.
         _issue(issues, "EMPTY_ACTIONS", ("actions",), "at least one action is required")
 
     _validate_action_indices(actions, issues)
