@@ -410,8 +410,7 @@ def validate_hybrid_result(
         raise ValueError("partial trusted evidence context")
     segments = result["segments"]
     expected_actions = build_semantic_events(segments)
-    if not segments:
-        raise ValueError("hybrid segments are empty")
+    # Empty segments are allowed — they represent an actionless clip
     duration = result["duration"]
     if isinstance(duration, bool) or not isinstance(duration, (int, float)):
         raise ValueError("hybrid duration must be a number")

@@ -201,6 +201,15 @@ class EmbodiedActionPipeline:
             metadata=metadata,
         )
         coarse = CoarsePlan.model_validate(coarse_data)
+        if not coarse.actions:
+            # Pass A found no action to describe, which the prompt explicitly
+            # allows for a static clip. There is nothing to segment or enrich,
+            # so every later model stage is skipped and the empty timeline is
+            # reported directly. Running them would either fabricate content or
+            # fail on an actionless context.
+            return self._actionless_result(
+                task, context, coarse, span, started, pass_a_job, media_seconds
+            )
         normalized_entities = normalize_entities(
             coarse.entity_candidates,
             limit=context.settings.cv_entity_limit,
@@ -419,6 +428,42 @@ class EmbodiedActionPipeline:
                 OSError, ValueError, TypeError):
             return {"status": "unavailable"}, None, None, None, (
                 decode_seconds if decode_seconds is not None else time.monotonic() - decode_started)
+
+    def _actionless_result(
+        self, task, context, coarse, span, started, pass_a_job, media_seconds
+    ):
+        """Return an empty timeline when pass A found no action to describe.
+
+        The prompt explicitly allows this for static clips. Running CV, pass B,
+        or enrichment would either fabricate content or fail on an actionless
+        context, so every later model stage is skipped and the actionless result
+        is reported directly.
+        """
+        jobs = context.store.list_inference_jobs(task.task_id)
+        performance = build_performance(
+            jobs,
+            media_seconds=media_seconds,
+            cv_seconds=0.0,
+            occlusion_seconds=0.0,
+            merge_seconds=0.0,
+            total_seconds=time.monotonic() - started,
+            degradation_count=0,
+        )
+        result = build_hybrid_result(
+            task_description=coarse.task_description,
+            duration=span.end,
+            segments=[],
+            scene=unavailable_scene_semantics(),
+            scene_status="unavailable",
+            cv_evidence={"status": "disabled"},
+            warnings=[{"code": "ACTIONLESS_CLIP"}],
+            performance=performance,
+            occlusion={"status": "disabled", "decisions": [], "events": []},
+            action_history=("initial",),
+            scene_history=("initial",),
+        )
+        result["performance"]["total_seconds"] = time.monotonic() - started
+        return result
 
     def _run_validated_stage(
         self,

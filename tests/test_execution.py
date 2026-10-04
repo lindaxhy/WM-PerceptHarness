@@ -18,6 +18,7 @@ from percept_harness.execution import (
 )
 from percept_harness.metrics import validate_inference_job_metrics
 from percept_harness.models.base import ModelRequest
+from percept_harness.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
 
 
 class _ScriptedModel:
@@ -296,3 +297,149 @@ def test_corrupt_cache_entry_is_a_miss(video: Path, tmp_path: Path) -> None:
     [again] = store2.create_inference_jobs("task-2", [_spec(video)])
     assert again.status is InferenceStatus.COMPLETED
     assert len(fresh.requests) == 1  # corrupt entry ignored, model re-ran
+
+
+def _coarse_spec(video: Path) -> InferenceJobSpec:
+    """A spec whose schema has a real validator (unlike general_segment)."""
+    return _spec(video, stage="coarse_plan", schema_name="CoarsePlan",
+                 schema_context={"duration": 1.0})
+
+
+_VALID_COARSE_PLAN = {
+    "task_description": "lift the block",
+    "entity_candidates": [
+        {"name": "right hand", "aliases": ["hand"], "role": "actor"},
+        {"name": "block", "aliases": ["cube"], "role": "manipulated_object"}],
+    "actions": [{"action_index": 0, "start": 0.0, "end": 1.0,
+                 "description": "hand lifts the block",
+                 "event_type": "reach_and_grasp"}]}
+
+
+def _seed_cache_key(video: Path, cache) -> str:
+    """The exact key the store uses for ``_coarse_spec`` (real schema context)."""
+    [job] = SyncJobStore(_CachingModel(_VALID_COARSE_PLAN),
+                         default_model_alias="qwen3-vl-8b-instruct",
+                         semantic_cache=cache).create_inference_jobs(
+        "seed", [_coarse_spec(video)])
+    return job.metrics["semantic_cache_key"]
+
+
+def test_invalid_output_is_not_cached_and_a_retry_reaches_the_model(
+    video: Path, tmp_path: Path
+) -> None:
+    """An invalid-output envelope is a verdict, not a result: retries must retry."""
+    from percept_harness.execution import SemanticResultCache
+
+    root = tmp_path / "semantic-cache"
+    store = SyncJobStore(_CachingModel({"unexpected": "shape"}),
+                         default_model_alias="qwen3-vl-8b-instruct",
+                         semantic_cache=SemanticResultCache(root))
+    [job] = store.create_inference_jobs("task-1", [_coarse_spec(video)])
+
+    assert DEFAULT_OUTPUT_SCHEMAS.failure_codes("CoarsePlan", job.result) is not None
+    assert "semantic_cache_published" not in job.metrics
+    assert list(root.rglob("*.json")) == []
+
+    retry_model = _CachingModel({"unexpected": "shape"})
+    retry = SyncJobStore(retry_model, default_model_alias="qwen3-vl-8b-instruct",
+                         semantic_cache=SemanticResultCache(root))
+    retry.create_inference_jobs("task-2", [_coarse_spec(video)])
+    assert len(retry_model.requests) == 1
+
+
+def test_cached_invalid_envelope_written_by_older_code_is_a_miss(
+    video: Path, tmp_path: Path
+) -> None:
+    """Entries published before this fix must not be replayed."""
+    from percept_harness.execution import SemanticResultCache
+
+    root = tmp_path / "semantic-cache"
+    cache = SemanticResultCache(root)
+    key = _seed_cache_key(video, cache)
+    assert cache.publish(key, {  # the shape the old code stored
+        "_schema_validation": {"schema_name": "CoarsePlan", "status": "invalid",
+                               "issue_codes": ["COARSE_PLAN_EXTRA_FIELD"]}})
+
+    retry_model = _CachingModel({"unexpected": "shape"})
+    SyncJobStore(retry_model, default_model_alias="qwen3-vl-8b-instruct",
+                 semantic_cache=SemanticResultCache(root)).create_inference_jobs(
+        "task-2", [_coarse_spec(video)])
+    assert len(retry_model.requests) == 1
+
+
+def test_valid_result_is_cached_and_replayed_without_the_model(
+    video: Path, tmp_path: Path
+) -> None:
+    """The raw model output is cached, then replayed through the same path."""
+    from percept_harness.execution import SemanticResultCache
+
+    root = tmp_path / "semantic-cache"
+    valid = {"task_description": "lift the block",
+             "entity_candidates": [
+                 {"name": "right hand", "aliases": ["hand"], "role": "actor"},
+                 {"name": "block", "aliases": ["cube"], "role": "manipulated_object"},
+             ],
+             "actions": [{"action_index": 0, "start": 0.0, "end": 1.0,
+                          "description": "hand lifts the block",
+                          "event_type": "reach_and_grasp"}]}
+    store = SyncJobStore(_CachingModel(valid), default_model_alias="qwen3-vl-8b-instruct",
+                         semantic_cache=SemanticResultCache(root))
+    [first] = store.create_inference_jobs("task-1", [_coarse_spec(video)])
+    assert DEFAULT_OUTPUT_SCHEMAS.failure_codes("CoarsePlan", first.result) is None
+    assert first.metrics["semantic_cache_published"] is True
+
+    replay_model = _CachingModel()
+    [second] = SyncJobStore(
+        replay_model, default_model_alias="qwen3-vl-8b-instruct",
+        semantic_cache=SemanticResultCache(root),
+    ).create_inference_jobs("task-2", [_coarse_spec(video)])
+    assert second.metrics["semantic_cache_hit"] is True
+    assert second.result == first.result
+    assert len(replay_model.requests) == 0
+
+
+def test_cached_normalized_envelope_from_older_code_is_a_miss(
+    video: Path, tmp_path: Path
+) -> None:
+    """A sanitized envelope is not raw output; replaying it must not be attempted."""
+    from percept_harness.execution import SemanticResultCache
+
+    root = tmp_path / "semantic-cache"
+    cache = SemanticResultCache(root)
+    key = _seed_cache_key(video, cache)
+    assert cache.publish(key, {  # a normalized envelope, as the old code stored
+        "_schema_validation": {"schema_name": "CoarsePlan", "status": "normalized",
+                               "issue_codes": ["COARSE_PLAN_TOPOLOGY_NORMALIZED"],
+                               "normalized_field_count": 1},
+        "data": {"task_description": "x", "entity_candidates": [], "actions": []}})
+
+    retry_model = _CachingModel({"unexpected": "shape"})
+    [job] = SyncJobStore(
+        retry_model, default_model_alias="qwen3-vl-8b-instruct",
+        semantic_cache=SemanticResultCache(root),
+    ).create_inference_jobs("task-2", [_coarse_spec(video)])
+    assert len(retry_model.requests) == 1  # reached the model, not replayed
+    assert "semantic_cache_hit" not in job.metrics
+
+
+def test_cache_stores_raw_model_output_not_the_sanitized_shape(
+    video: Path, tmp_path: Path
+) -> None:
+    """The stored payload must equal what the model returned."""
+    import json as _json
+    from percept_harness.execution import SemanticResultCache
+
+    root = tmp_path / "semantic-cache"
+    valid = {"task_description": "lift the block",
+             "entity_candidates": [
+                 {"name": "right hand", "aliases": ["hand"], "role": "actor"},
+                 {"name": "block", "aliases": ["cube"], "role": "manipulated_object"}],
+             "actions": [{"action_index": 0, "start": 0.0, "end": 1.0,
+                          "description": "hand lifts the block",
+                          "event_type": "reach_and_grasp"}]}
+    SyncJobStore(_CachingModel(valid), default_model_alias="qwen3-vl-8b-instruct",
+                 semantic_cache=SemanticResultCache(root)).create_inference_jobs(
+        "task-1", [_coarse_spec(video)])
+    entries = list(root.rglob("*.json"))
+    assert len(entries) == 1
+    assert _json.loads(entries[0].read_text())["result"] == valid
