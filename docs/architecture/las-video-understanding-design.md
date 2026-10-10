@@ -2,6 +2,8 @@
 
 日期：2026-09-02
 
+> 历史设计：本文描述已归档的异步 Submit/Poll 服务，不代表当前安装方式或功能。旧实现保存在 [`legacy-las-service` 标签](https://github.com/lindaxhy/WM-PerceptHarness/tree/legacy-las-service)。当前版本使用同步 `percept annotate` CLI 和远端 VLM 接口，请从 [README](../../README.md) 与[现行评估指南](../evaluation.md)开始。
+
 ## 1. 目标
 
 实现一个完全自托管的视频精细理解服务。服务复现《LAS 视频精细理解算子 × 方舟模型接入指南》中的异步调用方式，但模型推理不调用、不转发方舟或其他外部模型 API。

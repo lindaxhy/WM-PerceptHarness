@@ -2,7 +2,7 @@
 
 See the [metric catalog](README.md) for scope and validation status. Long remote runs can optionally use tmux; it is not a dependency.
 
-This directory documents standalone use of two video metrics, separate from the core `percept` package. CLIP-IQA+ supports CPU or CUDA; the VBench 0.1.5 CLI requires CUDA. Both use external model checkpoints.
+This directory documents two video metric commands shipped in the `percept` package, with optional dependencies installed in separate runtime environments. CLIP-IQA+ supports CPU or CUDA; the VBench 0.1.5 CLI requires CUDA. Both use external model checkpoints.
 
 Both metric commands accept one video and produce a JSON result. The Motion Smoothness wrapper invokes the unchanged official `vbench==0.1.5` CLI; it does not reimplement its scoring algorithm or alter its video preprocessing.
 

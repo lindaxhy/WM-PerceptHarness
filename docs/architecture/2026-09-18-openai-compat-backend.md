@@ -1,12 +1,14 @@
 # Design: one generic OpenAI-compatible VLM backend
 
+> Historical migration design. The problem statement and migration steps below describe the old implementation and transition plan, not current setup instructions. The installed package is `percept_harness`; the public backends are `openai` and `fake`. For current configuration, see [advanced configuration](../advanced.md) and the [README](../../README.md).
+
 Status: done (steps 1–4), 2026-09-18. Step 3 validated against Doubao ARK's
 OpenAI-compatible endpoint (`doubao-seed-2-1-pro-260915`, thinking disabled via
 extra_body): one synthetic video completed on both the new and the legacy
 backend with the same output schema and consistent content. Step 4 removed
 `ark.py`, `qwen3_vl.py`, their tests, the `[gpu]` extra, and the GPU scripts;
 `reverify_semantic_stages.py` was ported to the new backend (`--base-url`).
-Remaining follow-up (optional): rename the `percept_harness` package.
+The package rename to `percept_harness` is complete.
 Replaces: `models/ark.py` (Doubao/ARK Responses adapter), `models/qwen3_vl.py`
 (local GPU inference).
 
@@ -112,8 +114,8 @@ provides a multi-entry `PERCEPT_OPENAI_MODEL_REGISTRY` (JSON), for A/B runs.
    local vLLM Qwen3-VL to confirm the local path.
 4. **Delete** `ark.py`, `qwen3_vl.py`, gpu extra, related scripts/settings/
    tests; update README and `.env.example`.
-5. Separate follow-up PR (optional): rename the `percept_harness` package to match
-   WM-PerceptHarness (the env prefix is already renamed).
+5. Completed follow-up: renamed the import package to `percept_harness`; the
+   environment prefix is `PERCEPT_`.
 
 Steps 1–2 and 4 are pure refactor verifiable by the test suite; step 3 is the
 only part that needs a real key and a GPU host.
