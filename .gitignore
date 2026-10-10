@@ -1,6 +1,8 @@
 .worktrees/
 .DS_Store
 .superpowers/
+.claude/
+/docs/superpowers/
 .env
 .venv/
 __pycache__/
@@ -8,11 +10,14 @@ __pycache__/
 .coverage
 .coverage.*
 htmlcov/
+.ruff_cache/
+/build/
+/dist/
+*.egg-info/
 *.sqlite*
 /models/
 data/
-!evaluation/viewer/data/
-!evaluation/viewer/data/**
+/evaluation/
 work/
 outputs/
 /las_runs/

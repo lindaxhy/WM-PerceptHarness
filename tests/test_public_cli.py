@@ -62,3 +62,38 @@ main(['score', 'clipiqa', '--help'])
     result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert '--sample-step' in result.stdout
+
+
+def test_fidelity_scoring_is_independent_of_retired_las_experiment(tmp_path):
+    for group in ('reference', 'generated'):
+        folder = tmp_path / group / 'sample'
+        folder.mkdir(parents=True)
+        (folder / 'sample.json').write_text(json.dumps({'data': {
+            'duration': 2,
+            'segments': [{'start': 0, 'end': 2}],
+            'semantic_events': [{'event_type': 'move', 'start': 0, 'end': 2}],
+        }}))
+    output = tmp_path / 'report.json'
+    code = '''
+import sys
+class BlockLegacyExperiment:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname in {
+            'percept_harness.evaluation.las_alignment',
+            'percept_harness.evaluation.viewer_projection',
+        }:
+            raise RuntimeError('fidelity still depends on the retired LAS experiment')
+sys.meta_path.insert(0, BlockLegacyExperiment())
+from percept_harness.cli import main
+raise SystemExit(main(sys.argv[1:]))
+'''
+    result = subprocess.run(
+        [sys.executable, '-c', code, 'score', 'fidelity',
+         '--reference', str(tmp_path / 'reference'),
+         '--system', f'demo={tmp_path / "generated"}', '--out', str(output)],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    report = json.loads(output.read_text())
+    assert report['systems']['demo']['paired_samples'] == 1
+    assert report['systems']['demo']['frame_miou_micro'] == 1

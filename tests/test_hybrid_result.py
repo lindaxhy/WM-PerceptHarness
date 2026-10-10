@@ -464,29 +464,6 @@ def test_positive_occlusion_is_a_checked_projection_of_real_candidates(
         "permanent_target_1",
         "stable_target_1",
     ]
-    from percept_harness.evaluation.viewer_projection import project_hybrid_viewer_data
-
-    viewer = project_hybrid_viewer_data(
-        "candidate-context",
-        1.0,
-        result,
-        source_sha256="c" * 64,
-        overlay_references=[
-            {
-                "keyframe_id": "board-1-00000001",
-                "track_id": "board_1",
-                "frame_index": 1,
-                "timestamp_seconds": 0.1,
-                "path": "evaluation/viewer/data/hybrid/overlays/" + "d" * 64 + ".png",
-                "sha256": "d" * 64,
-                "size_bytes": 1,
-            }
-        ],
-    )
-    assert viewer["layers"]["occlusion_events"]["events"][0][
-        "occluder_entity_id"
-    ] == semantic_occluder
-    assert viewer["provenance"]["overlays"][0]["track_id"] == "board_1"
     empty = copy.deepcopy(result)
     empty["annotation_branches"]["occlusion"].update(decisions=[], events=[])
     with pytest.raises(ValueError):

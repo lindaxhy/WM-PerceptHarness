@@ -16,7 +16,18 @@ The application does not automatically load `.env`. Keep keys outside committed 
 
 ## Optional SAM3.1 evidence
 
-Add `--cv sam31` after configuring the local checkout, checkpoints and `PERCEPT_CV_*` settings. This adds CV evidence for supported occlusion and scene semantics; it introduces a separate GPU runtime. See [SAM3.1 deployment](deployment/sam31-runtime.md) for existing details. Deployment examples may describe the original research server and should be adapted to your environment.
+Add `--cv sam31` after configuring a compatible local SAM checkout, checkpoint, tokenizer assets and GPU runtime. This adds CV evidence for supported occlusion and scene semantics. Configure these settings for your environment:
+
+| Environment variable | Value |
+|---|---|
+| `PERCEPT_CV_REPOSITORY_PATH` | Local SAM source checkout |
+| `PERCEPT_CV_CHECKPOINT_PATH` | Local checkpoint file |
+| `PERCEPT_CV_CHECKPOINT_SHA256` | SHA-256 digest of that checkpoint |
+| `PERCEPT_CV_BPE_PATH` | Local tokenizer vocabulary file |
+| `PERCEPT_CV_DEVICE` | GPU device index for your runtime |
+| `PERCEPT_CV_CACHE_ROOT` | Writable local artifact cache directory |
+
+The core installation does not install the GPU runtime or download weights. The old server-specific deployment procedure and its fixed-GPU smoke script are preserved on the [viewer archive branch](https://github.com/lindaxhy/WM-PerceptHarness/tree/archive/las-comparison-viewer/docs/deployment/sam31-runtime.md); they are not a required setup step for ordinary annotation. Run a small annotation with your own video and `--cv sam31` to validate an optional CV installation, and inspect the result's CV status and warnings rather than assuming that a completed annotation proves CV succeeded.
 
 ## Historical architecture
 
