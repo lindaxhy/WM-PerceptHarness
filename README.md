@@ -96,14 +96,47 @@ The current release does not provide an end-to-end reproduction of every metric 
 
 ## Development
 
+Use Python 3.12+ and FFmpeg/FFprobe. Run the regression suite from the repository root:
+
 ```bash
 python -m pip install -e '.[dev]'
 python -m pytest -q
 ```
 
-Core code lives in `src/percept_harness/`; optional metric implementations are in `video_metrics/`, fidelity scoring in `evaluation/`, preparation commands in `scripts/`, and regression tests in `tests/`.
+The suite uses synthetic media, fake models and mocked external evaluators to check software behavior; it does not establish real-model quality. Optional runtime tests skip when their dependencies are unavailable.
+
+### Repository layout
+
+| Path | Responsibility |
+|---|---|
+| `src/percept_harness/` | Installable Python package and the public `percept` CLI |
+| `src/percept_harness/pipelines/` | Annotation stages and output validation |
+| `src/percept_harness/evaluation/` | Event-fidelity scoring and shared temporal event matching |
+| `src/percept_harness/video_metrics/` | Optional CLIP-IQA+ and Motion Smoothness implementations |
+| `scripts/` | Repository utilities: input preparation, external evaluator wrappers and semantic diagnostics |
+| `tests/` | Python regression tests and small fixtures; retained in source control, excluded from the wheel |
+| `requirements/` | Dependency lists for separate optional metric environments |
+| `docs/` | User guides, metric protocols and architecture notes; dated historical material belongs in `docs/archive/` |
+| `examples/` | Small, reproducible usage examples |
+
+Keep reusable application logic under `src/percept_harness/`. Repository scripts may import the package; the package must not depend on `scripts/` or a repository checkout. Run scripts from the repository root after installing the package. Existing standalone evaluator wrappers may require the separate environments documented in the [metric catalog](docs/metrics/README.md).
+
+`scripts/` is not currently limited to thin entry points: `reverify_semantic_stages.py` also contains substantial diagnostic logic. When that logic becomes part of a public command or is reused by the package, move it into a focused package module and retain the script as a compatibility entry point.
+
+Keep regression tests for scoring, timestamp boundaries, model-output validation, resume identity and command behavior. Add real-model validation separately with its environment and evidence, rather than making ordinary tests require API credentials or GPU checkpoints.
+
+Local agent state (`.superpowers/`, `.claude/`, `docs/superpowers/`), caches, generated outputs and model weights are ignored. Keep useful long-lived design decisions in `docs/architecture/`; do not commit agent task transcripts. Existing files must also be removed from Git tracking before ignore rules take effect.
 
 ## Project history and license
+
+The old five-video LAS comparison viewer, machine-generated references, dated SAM3.1 evaluation results, LAS-specific evaluator and server-specific smoke script are preserved together on [`archive/las-comparison-viewer`](https://github.com/lindaxhy/WM-PerceptHarness/tree/archive/las-comparison-viewer). They are historical diagnostics, not inputs required by current annotation or fidelity scoring. To inspect them without changing your checkout:
+
+```bash
+git fetch origin
+git worktree add ../WM-PerceptHarness-viewer origin/archive/las-comparison-viewer
+```
+
+Follow `evaluation/viewer/README.md` in that worktree. Its ignored video files must still be supplied locally. The old `scripts/evaluate_las_alignment.py`, `scripts/build_comparison_viewer_data.py` and `scripts/sam31_smoke.py` commands are available only on the archive branch; current scoring uses `percept score fidelity` with caller-supplied annotations.
 
 The former LAS-compatible service is archived at `legacy-las-service` / `legacy/las-service`. Historical deployment notes are not prerequisites for current annotation.
 

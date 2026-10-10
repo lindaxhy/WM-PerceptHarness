@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from .las_alignment import Event, match_events
+from .event_matching import Event, match_events
 
 OCCLUSION_TYPES = frozenset({"occluded", "occlusion_enter", "occlusion_exit"})
 FAMILY_OF = {
