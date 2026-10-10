@@ -138,6 +138,6 @@ git worktree add ../WM-PerceptHarness-viewer origin/archive/las-comparison-viewe
 
 Follow `evaluation/viewer/README.md` in that worktree. Its ignored video files must still be supplied locally. The old `scripts/evaluate_las_alignment.py`, `scripts/build_comparison_viewer_data.py` and `scripts/sam31_smoke.py` commands are available only on the archive branch; current scoring uses `percept score fidelity` with caller-supplied annotations.
 
-The former LAS-compatible service is archived at `legacy-las-service` / `legacy/las-service`. Historical deployment notes are not prerequisites for current annotation.
+The former LAS-compatible service is preserved by the [`legacy-las-service` tag](https://github.com/lindaxhy/WM-PerceptHarness/tree/legacy-las-service). The tag remains usable if the old development branch is deleted. Historical deployment notes are not prerequisites for current annotation.
 
 No project-wide open-source license has been granted yet. Add an appropriate license before public release. Third-party components retain their own license terms. Paper citation information will be added when available.

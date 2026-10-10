@@ -1,7 +1,7 @@
 # Remaining metrics preparation package
 
-This increment prepares the metrics that were absent from the earlier
-CLIP-IQA+ / Motion Smoothness PR.  It keeps the official evaluators as the
+These repository tools prepare additional metrics beyond the packaged
+CLIP-IQA+ and Motion Smoothness commands. They keep the official evaluators as the
 source of scores and adds only orchestration, input validation, and an
 analysis-only VideoPhy-2 Joint aggregation.
 
@@ -10,8 +10,8 @@ analysis-only VideoPhy-2 Joint aggregation.
 `scripts/score_vbench_official.py` runs the pinned VBench `evaluate.py` for
 `imaging_quality`, `aesthetic_quality`, `temporal_flickering`,
 `dynamic_degree`, `subject_consistency`, `background_consistency`, and
-`overall_consistency`.  Motion Smoothness remains in its already-submitted
-wrapper and is deliberately rejected here.  The wrapper records the exact
+`overall_consistency`. Motion Smoothness uses `percept score motion`
+and is deliberately rejected here. The wrapper records the exact
 command, environment choices, source root, cache, and log.  It does not alter
 VBench sampling, preprocessing, models, or formulas.  `overall_consistency`
 requires a frozen prompt or video-to-prompt JSON. `temporal_flickering`
@@ -43,6 +43,13 @@ VideoPhy-2. It only preserves caller-supplied fields and writes a separate
 local `video_map` when an upstream metadata file intentionally has no video
 path. See `docs/metrics/OFFICIAL_INPUT_ADAPTERS.md`; this helper does not
 replace any upstream evaluator or make missing checkpoints available.
+
+`scripts/run_official_external.py` provides preflight and command forwarding for
+the external evaluator families. It checks required source revisions and local
+resource paths, then runs the caller-supplied command after `--`. It does not
+download models, infer the correct evaluator arguments, or compute scores itself.
+Use `python scripts/run_official_external.py --help` for metric identifiers and
+required resource options; `--check-only` performs preflight without inference.
 
 ## Current state by family
 
@@ -84,8 +91,8 @@ Keep pinned upstream source trees, checkpoints, frozen manifests and run outputs
 
 ## Direct VBench command
 
-From the pinned VBench source root, after verifying the cache and a fresh
-output directory:
+From the WM-PerceptHarness repository root, after verifying the cache and a fresh
+output directory. Pass the separate pinned VBench source checkout through `--vbench-root`:
 
 ```bash
 python scripts/score_vbench_official.py \

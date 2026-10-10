@@ -10,7 +10,7 @@ Use this page to find an evaluator and understand its validation level. Benchmar
 | CLIP-IQA+ | `percept score clipiqa` | PyIQA 0.1.16; CPU or CUDA | Implemented sampled-frame scorer and protocol tests; a fresh full dependency installation is not validated by the historical record |
 | VBench Motion Smoothness / AMT-S | `percept score motion` | VBench 0.1.5, CUDA, AMT-S weights | Existing record marks single-video smoke completed; this is not a full-dataset validation |
 
-See [installation and exact protocols](usage.md), [input/output conventions](../evaluation.md), and [weight provenance](weights.json). The packaged commands use the active environment; they do not merge the different dependency stacks. Legacy script entry points remain supported.
+See [installation and exact protocols](usage.md), [input/output conventions](../evaluation.md), and [weight provenance](weights.json). The packaged commands use the active environment; they do not merge the different dependency stacks. Use the `percept score` commands above for these public workflows. The repository scripts listed below are separate integration tools; removed legacy script paths are not compatibility entry points.
 
 CLIP-IQA+ is a **backup**, excluded from the current frozen main selection. Motion Smoothness is selected. Event fidelity is the repository's annotation-based workflow and is not silently inserted into the separate frozen 21-item list.
 
@@ -24,6 +24,7 @@ The following code is preparation/integration support. Offline tests do not esta
 | CLIPScore | `scripts/score_vbench_clip_score.py` | CLIP weights, original prompts, real inference validation |
 | DOVER | `scripts/score_dover_official.py` | Independent compatible runtime, weights, real inference validation; see [DOVER](DOVER.md) |
 | WorldModelBench, T2V-CompBench, VBench-2.0, PhyGenBench, VideoPhy-2 inputs | `scripts/official_input_adapters.py` | Official evaluators, environments, weights and task metadata; adapters do not run the models |
+| External evaluator launch | `scripts/run_official_external.py` | Checks the required source revision and resource paths, then forwards a caller-supplied command; upstream runtime and scoring validation remain the caller's responsibility |
 | Reference metrics | `scripts/build_reference_manifest.py` | Actual aligned future reference frames; pairing is not PSNR/SSIM/LPIPS scoring |
 | VideoPhy-2 Joint analysis | `scripts/aggregate_videophy_joint.py` | Official PC/SA outputs matched by video ID; Joint is not an independent metric |
 | Manifest preflight | `scripts/validate_metric_manifest.py` | Caller-provided frozen input metadata; no missing prompts or references are generated |

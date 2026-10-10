@@ -14,6 +14,22 @@ set +a
 
 The application does not automatically load `.env`. Keep keys outside committed configuration files. `--model` currently selects an alias from the configured registry; it is not an arbitrary provider model ID. For a single model, set `PERCEPT_OPENAI_MODEL` and omit `--model`. Multi-model runs can use `PERCEPT_OPENAI_MODEL_REGISTRY` instead; those two settings are mutually exclusive.
 
+## Timeouts and transient failures
+
+The OpenAI-compatible backend retries timeouts, transport errors, and HTTP 429, 500, 502, 503 and 504. Other HTTP error statuses fail immediately. The default is three extra attempts, with exponential backoff and jitter starting from a five-second base. Configure these through:
+
+```bash
+export PERCEPT_OPENAI_TRANSPORT_RETRIES=3
+export PERCEPT_OPENAI_RETRY_BACKOFF_SECONDS=5
+export PERCEPT_OPENAI_TIMEOUT_SECONDS=180
+export PERCEPT_OPENAI_TIMEOUT_SECONDS_PER_VIDEO_SECOND=0
+export PERCEPT_OPENAI_MAX_TIMEOUT_SECONDS=1800
+```
+
+Set retries to `0` to disable transport retries. A positive per-video-second value scales each request's timeout as `min(max_timeout, base_timeout + per_video_second * requested_span_seconds)`; zero keeps the fixed base timeout. These are request settings, not an overall batch deadline. Model-output repair is a separate pipeline step. Check failed result records and retry logs before changing sampling or timeout settings.
+
+For repeatability and the separate request-level cache, see [result identity and resume](evaluation.md#result-identity-and-resume).
+
 ## Optional SAM3.1 evidence
 
 Add `--cv sam31` after configuring a compatible local SAM checkout, checkpoint, tokenizer assets and GPU runtime. This adds CV evidence for supported occlusion and scene semantics. Configure these settings for your environment:
