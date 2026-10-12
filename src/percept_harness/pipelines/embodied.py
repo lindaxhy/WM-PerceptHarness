@@ -70,6 +70,7 @@ _PROMPT_FILES = {
     "embodied_enrichment": "embodied_enrichment.txt",
     "scene_semantics": "scene_semantics.txt",
     "occlusion_semantics": "occlusion_semantics.txt",
+    "scene_revision": "scene_revision.txt",
 }
 _MARKER = re.compile(r"\{\{(?P<name>[A-Z][A-Z0-9_]*)\}\}")
 _MAX_BOUNDARY_SLOTS_PER_ACTION = 10_000
@@ -201,7 +202,7 @@ class EmbodiedActionPipeline:
             metadata=metadata,
         )
         coarse = CoarsePlan.model_validate(coarse_data)
-        if not coarse.actions:
+        if not coarse.actions and context.settings.cv_provider == "disabled":
             # Pass A found no action to describe, which the prompt explicitly
             # allows for a static clip. There is nothing to segment or enrich,
             # so every later model stage is skipped and the empty timeline is
@@ -241,65 +242,67 @@ class EmbodiedActionPipeline:
                         "message": warning,
                     }
                 )
-        max_fine_segment_seconds = _action_positive_finite(
-            context.settings.max_fine_segment_seconds,
-            "max_fine_segment_seconds",
-        )
+        segments = []
+        if coarse.actions:
+            max_fine_segment_seconds = _action_positive_finite(
+                context.settings.max_fine_segment_seconds,
+                "max_fine_segment_seconds",
+            )
 
-        # Feasibility windows guide generation but are intentionally absent
-        # from schema_context. The durable output contract remains the strict
-        # parent/adjacency/reference/hard-cap validator; local code must not
-        # rewrite an otherwise valid evidence-backed timestamp to fit a prompt
-        # planning envelope.
-        boundary_data, _, boundary_normalization = self._run_validated_stage(
-            task,
-            context,
-            media_path,
-            span,
-            fps,
-            stage="embodied_pass_b",
-            schema_name="BoundaryPlan",
-            schema_context={
-                "coarse_plan": coarse.model_dump(mode="json"),
-                "max_segment_seconds": max_fine_segment_seconds,
-            },
-            render_prompt=lambda repair: self._renderer.pass_b(
-                coarse,
-                max_fine_segment_seconds=max_fine_segment_seconds,
-                repair=repair,
-            ),
-            affinity_anchor=pass_a_job,
-            metadata=metadata,
-        )
-        boundary = BoundaryPlan.model_validate(boundary_data)
-        _guard_enrichment_record_count(boundary)
-        segment_table = _fine_segment_table(boundary)
-        expected_indices = [row.segment_index for row in segment_table]
+            # Feasibility windows guide generation but are intentionally absent
+            # from schema_context. The durable output contract remains the strict
+            # parent/adjacency/reference/hard-cap validator; local code must not
+            # rewrite an otherwise valid evidence-backed timestamp to fit a prompt
+            # planning envelope.
+            boundary_data, _, boundary_normalization = self._run_validated_stage(
+                task,
+                context,
+                media_path,
+                span,
+                fps,
+                stage="embodied_pass_b",
+                schema_name="BoundaryPlan",
+                schema_context={
+                    "coarse_plan": coarse.model_dump(mode="json"),
+                    "max_segment_seconds": max_fine_segment_seconds,
+                },
+                render_prompt=lambda repair: self._renderer.pass_b(
+                    coarse,
+                    max_fine_segment_seconds=max_fine_segment_seconds,
+                    repair=repair,
+                ),
+                affinity_anchor=pass_a_job,
+                metadata=metadata,
+            )
+            boundary = BoundaryPlan.model_validate(boundary_data)
+            _guard_enrichment_record_count(boundary)
+            segment_table = _fine_segment_table(boundary)
+            expected_indices = [row.segment_index for row in segment_table]
 
-        enrichment_data, enrichment_job, enrichment_normalization = self._run_validated_stage(
-            task,
-            context,
-            media_path,
-            span,
-            fps,
-            stage="embodied_enrichment",
-            schema_name="EnrichmentResult",
-            schema_context={"expected_indices": expected_indices},
-            render_prompt=lambda repair: self._renderer.enrichment(
-                [row.prompt_record() for row in segment_table],
-                expected_indices=expected_indices,
-                evidence_summary=summary,
-                repair=repair,
-            ),
-            affinity_anchor=pass_a_job,
-            metadata=metadata,
-        )
-        enrichment = EnrichmentResult.model_validate(enrichment_data)
-        if boundary_normalization is not None:
-            warnings.append(_boundary_normalization_warning(boundary_normalization))
-        if enrichment_normalization is not None:
-            warnings.append(_enrichment_normalization_warning(enrichment_normalization))
-        segments = _merge_enrichment(segment_table, enrichment)
+            enrichment_data, enrichment_job, enrichment_normalization = self._run_validated_stage(
+                task,
+                context,
+                media_path,
+                span,
+                fps,
+                stage="embodied_enrichment",
+                schema_name="EnrichmentResult",
+                schema_context={"expected_indices": expected_indices},
+                render_prompt=lambda repair: self._renderer.enrichment(
+                    [row.prompt_record() for row in segment_table],
+                    expected_indices=expected_indices,
+                    evidence_summary=summary,
+                    repair=repair,
+                ),
+                affinity_anchor=pass_a_job,
+                metadata=metadata,
+            )
+            enrichment = EnrichmentResult.model_validate(enrichment_data)
+            if boundary_normalization is not None:
+                warnings.append(_boundary_normalization_warning(boundary_normalization))
+            if enrichment_normalization is not None:
+                warnings.append(_enrichment_normalization_warning(enrichment_normalization))
+            segments = _merge_enrichment(segment_table, enrichment)
         scene_input = prepare_scene_choices(summary, segments, duration=span.end)
         scene_status = "available"
         scene_history = ("initial",)
@@ -336,23 +339,45 @@ class EmbodiedActionPipeline:
         scene = SceneSemantics.model_validate(scene_data)
         occlusion_started = time.monotonic()
         occlusion = {"status": cv_evidence["status"], "decisions": [], "events": []}
-        if bundle is not None and bundle.candidates:
-            decisions, history, occlusion_normalization = self.adjudicate_occlusions(
-                task, context, media_path, span, fps, candidates=bundle.candidates,
-                normalized_entities=normalized_entities, evidence_summary=summary,
-                frame_pts=[frame.timestamp_seconds for frame in timeline.frames],
-                affinity_anchor=pass_a_job, metadata=metadata)
-            if occlusion_normalization is not None:
-                warnings.append(
-                    _occlusion_normalization_warning(occlusion_normalization)
-                )
-            if len(decisions.decisions) != len(bundle.candidates):
-                occlusion["status"] = "unavailable"
-                warnings.append({"code": "OCCLUSION_UNAVAILABLE"})
-            else:
-                occlusion["decisions"] = decisions.model_dump(mode="json")["decisions"]
-                occlusion["events"] = project_occlusion_events(
-                    decisions, bundle.candidates, artifact.tracks, segments, repair_history=history)
+        scene_stage = "scene_semantics"
+        if bundle is not None:
+            # One review call returns the complete revised scene plus its
+            # visibility adjudications. Never publish the draft as reviewed.
+            review_context = {
+                "scene_context": scene_input.context(),
+                "draft": scene.model_dump(mode="json"),
+                "occlusion_context": {
+                    "duration": span.end,
+                    "evidence_summary": summary.model_dump(mode="json"),
+                    "candidates": [c.model_dump(mode="json") for c in bundle.candidates],
+                },
+            }
+            def review_prompt(repair):
+                base = self._renderer.scene_semantics(
+                    segments, video_duration=span.end, evidence_summary=summary,
+                    scene_input=scene_input, repair=repair)
+                visibility = self._renderer.occlusion_semantics(
+                    tuple(bundle.candidates), normalized_entities, summary,
+                    video_duration=span.end,
+                    frame_pts=[f.timestamp_seconds for f in timeline.frames], repair=repair)
+                return base + "\n\n" + visibility + "\n\n" + self._renderer.render(
+                    "scene_revision", {"DRAFT_SCENE_JSON": scene.model_dump(mode="json")})
+            reviewed, review_job, _ = self._run_validated_stage(
+                task, context, media_path, span, fps,
+                stage="occlusion_semantics", schema_name="SceneRevision",
+                schema_context=review_context, render_prompt=review_prompt,
+                affinity_anchor=pass_a_job, metadata=metadata, max_attempts=3)
+            scene_history = _repair_history_for(review_job.ordinal)
+            scene = SceneSemantics.model_validate(project_scene_choices(
+                reviewed["scene"], scene_input.context(), repair_history=scene_history))
+            scene_status = "available"
+            warnings = [w for w in warnings if w["code"] != "SCENE_SEMANTICS_UNAVAILABLE"]
+            scene_stage = "occlusion_semantics"
+            decisions = OcclusionDecisionSet.model_validate({"decisions": reviewed["decisions"]})
+            occlusion["decisions"] = reviewed["decisions"]
+            occlusion["events"] = project_occlusion_events(
+                decisions, bundle.candidates, artifact.tracks, segments,
+                repair_history=scene_history)
         merge_started = time.monotonic()
         occlusion_seconds = merge_started - occlusion_started
         jobs = context.store.list_inference_jobs(task.task_id)
@@ -362,7 +387,7 @@ class EmbodiedActionPipeline:
             degradation_count=sum(s == "unavailable" for s in
                                   (cv_evidence["status"], scene_status, occlusion["status"])))
         result = build_hybrid_result(task_description=coarse.task_description,
-            duration=span.end,
+            duration=span.end, scene_stage=scene_stage,
             segments=segments, scene=scene.model_dump(mode="json"), scene_status=scene_status,
             cv_evidence=cv_evidence, evidence_summary=summary, warnings=warnings,
             performance=performance, occlusion=occlusion,

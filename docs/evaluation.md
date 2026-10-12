@@ -41,6 +41,31 @@ A writer lock prevents overlapping batches from using the same output directory.
 
 For wrist/main-camera annotation, first run `embodied_active_object_detection` on the wrist video, then pass confirmed object names to the main-video action annotation using `--prompt-context`. This is naming guidance, not a prescribed action sequence.
 
+## Scene visibility labels
+
+Scene events (`data.semantic_events` and `annotation_branches.scene_facts.events`)
+support `out_of_frame` for an absence interval following visible departure
+through a frame edge, and `enter_frame` for a visible entry or re-entry
+transition. These labels do not imply motion relative to the world; camera
+movement can also produce frame exit and entry. Physical covering/uncovering
+uses `occlusion_enter`, `occluded`, and `occlusion_exit`. Missing detection alone
+does not establish either cause; use `unknown` without supporting evidence.
+
+The visibility labels extend the scene vocabulary only, not fine action skills.
+When SAM evidence is available, the review VLM receives the complete scene draft,
+video frames, spatial choices and tracking/candidate evidence. A single call
+returns a complete revised scene and visibility decisions. The revised scene
+replaces the draft in all final scene-event fields; draft responses remain in
+the request cache when enabled. Review also runs with an empty candidate list.
+SAM itself provides tracking, not semantic classifications. Contradictory
+visibility labels, dropped draft objects and invalid scene/candidate references
+trigger bounded repair; exhausted review fails annotation rather than publishing
+an unreviewed draft as success. Without usable SAM evidence the original scene
+path remains, with explicit CV status. Review scope is scene facts and events;
+coarse task description and fine action segments remain separate outputs.
+Current action fidelity excludes frame visibility labels, as it excludes
+occlusion and other types outside its action families.
+
 ## Event-timeline fidelity
 
 The scorer expects matching IDs in a nested layout:
@@ -104,3 +129,32 @@ CLIP-IQA+ additionally records frame sampling, resizing, device, and MemoBench r
 Use the short command selector `clipiqa` even though its output metric identifier is `clipiqa+`.
 
 Other upstream wrappers remain separate preparation tools listed in the [catalog](metrics/README.md). Their result schemas and validation stages are documented individually.
+
+## Multi-GPU manifest annotation
+
+A JSONL manifest supplies one absolute `video_path` and a unique relative
+`job_id` per line. Optional `expected_sha256` binds an input to a known version.
+Each job writes normal annotation results under `<output>/<job_id>/`.
+
+```bash
+percept annotate --manifest corpus.jsonl --template embodied_action_captioning \
+  --cv sam31 --cv-devices 0,1,2,3 --workers-per-gpu 2 \
+  --request-concurrency 9 --output outputs/annotations
+```
+
+One spawned SAM process stays loaded per GPU. Independent CPU threads own VLM
+clients and serialize CV requests to their GPU. The per-process VLM limit ramps
+from two healthy calls, up to `--request-concurrency`, and halves on observed
+HTTP 429; ordinary backend transport retries remain enabled. Multiple hosts can
+use the same manifest and output root with distinct `--shard-index` values and
+one common `--shard-count`. SHA-256 of `job_id` assigns each job to exactly one
+shard. All hosts must see the input and output paths.
+
+Shard status files record worker PIDs, active jobs, accepted results, failures,
+and observed request concurrency. Missing SAM evidence or a missing full review
+is not accepted as a successful manifest job. Existing conservative CV resume
+rules remain: whole-result skipping is disabled for unverifiable CV execution;
+validated request and CV-artifact caches can still be reused. To retry a subset,
+create a manifest of failed/pending jobs after checking the prior worker is no
+longer running. Do not restart a live shard just because an observation timed
+out. Size CV-cache byte/file budgets and temporary storage for the full corpus.

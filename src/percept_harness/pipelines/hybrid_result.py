@@ -176,6 +176,7 @@ def build_hybrid_result(
     action_history=("initial",),
     scene_history=("initial",),
     occlusion=None,
+    scene_stage="scene_semantics",
 ):
     if evidence_summary is not None:
         evidence_summary.prompt_record()
@@ -205,7 +206,7 @@ def build_hybrid_result(
                 [event["actor"], names.get(event["target_object_id"], "unknown")],
                 evidence_summary,
                 "scene",
-                "scene_semantics",
+                scene_stage,
                 scene_history,
             )
         )
@@ -213,6 +214,7 @@ def build_hybrid_result(
     for key in ("locations", "relations"):
         for row in scene[key]:
             row["repair_history"] = list(scene_history)
+            row["model_stage"] = scene_stage
     legacy_scene = [legacy_scene_event_projection(event) for event in events]
     if duration is None:
         duration = segments[-1]["end"] if segments else 0.0
@@ -460,7 +462,7 @@ def validate_hybrid_result(
         _exact(event, set(SceneSemanticEvent.model_fields) | SCENE_ADDITIONS)
         if (
             event["branch"] != "scene"
-            or event["model_stage"] != "scene_semantics"
+            or event["model_stage"] not in {"scene_semantics", "occlusion_semantics"}
             or event["review_status"] != "not_required"
         ):
             raise ValueError("canonical scene provenance is invalid")

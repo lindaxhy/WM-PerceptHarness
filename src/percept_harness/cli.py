@@ -58,10 +58,10 @@ def _parser() -> argparse.ArgumentParser:
         "annotate",
         help="annotate videos to structured JSON",
     )
-    evaluate.add_argument(
+    inputs = evaluate.add_mutually_exclusive_group(required=True)
+    inputs.add_argument(
         "--videos",
         nargs="+",
-        required=True,
         type=Path,
         help="video files and/or directories (searched recursively)",
     )
@@ -83,6 +83,12 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="output directory for per-video JSON and results.jsonl",
     )
+    inputs.add_argument("--manifest", type=Path, help="JSONL job_id/video_path manifest for multi-GPU annotation")
+    evaluate.add_argument("--cv-devices", help="comma-separated physical GPUs for manifest mode")
+    evaluate.add_argument("--workers-per-gpu", type=int, default=2)
+    evaluate.add_argument("--request-concurrency", type=int, default=9)
+    evaluate.add_argument("--shard-index", type=int, default=0)
+    evaluate.add_argument("--shard-count", type=int, default=1)
     evaluate.add_argument("--force", action="store_true", help="rerun matching results; archive displaced files")
     evaluate.add_argument(
         "--model",
@@ -114,6 +120,13 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _eval(arguments: argparse.Namespace) -> int:
+    if arguments.manifest is not None:
+        from .batch import run_manifest
+        try:
+            return run_manifest(arguments)
+        except (ValueError, RuntimeError) as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 2
     try:
         settings = Settings.from_env()
     except Exception as error:
