@@ -325,7 +325,27 @@ class FakeCuda:
 
 @pytest.fixture
 def fake_torch() -> SimpleNamespace:
-    return SimpleNamespace(cuda=FakeCuda())
+    return SimpleNamespace(
+        __version__="2.10.0+cu128",
+        cuda=FakeCuda(),
+    )
+
+
+def test_runtime_identity_reports_torch_version_and_device_name():
+    torch_module = SimpleNamespace(
+        __version__="2.11.0",
+        cuda=SimpleNamespace(get_device_name=lambda device: f"GPU-{device}"),
+    )
+    provider = Sam31EvidenceProvider(predictor=PredictorDouble(), torch_module=torch_module)
+    identity = provider.runtime_identity()
+    assert identity == {"torch_version": "2.11.0", "device_name": "GPU-0"}
+
+
+def test_runtime_identity_handles_missing_cuda_or_method():
+    torch_module = SimpleNamespace(__version__="2.10.0")
+    provider = Sam31EvidenceProvider(predictor=PredictorDouble(), torch_module=torch_module)
+    identity = provider.runtime_identity()
+    assert identity == {"torch_version": "2.10.0"}
 
 
 def make_request(
