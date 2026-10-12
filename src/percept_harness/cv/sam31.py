@@ -616,6 +616,21 @@ class Sam31EvidenceProvider:
         """Return bounded metrics for the most recent completed request."""
         return dict(self._metrics)
 
+    def runtime_identity(self) -> dict[str, str]:
+        """Report the loaded Torch/CUDA identity for this provider's device."""
+        torch_module = self._torch
+        if torch_module is None:
+            return {}
+        identity = {"torch_version": str(getattr(torch_module, "__version__", ""))}
+        cuda = getattr(torch_module, "cuda", None)
+        get_device_name = getattr(cuda, "get_device_name", None)
+        if callable(get_device_name):
+            try:
+                identity["device_name"] = str(get_device_name(0))
+            except Exception:
+                pass
+        return identity
+
     def _clear_retry_plan(self) -> None:
         self._retry_request = None
         self._retry_final_indices = None

@@ -107,13 +107,13 @@ def _cv_worker(connection, cv_settings, gpu):
         from .cli import _cv_executor
         settings = Settings(**cv_settings)
         with _cv_executor(settings.cv_provider, SimpleNamespace(cv_device=gpu), settings) as execute:
-            import importlib.metadata
+            provider = execute.provider
             identity = {"pid": os.getpid(), "provider": settings.cv_provider,
-                        "checkpoint_sha256": getattr(execute.provider, "checkpoint_sha256", None),
-                        "repository_revision": getattr(execute.provider, "repository_revision", None)}
-            if settings.cv_provider == "sam31":
-                import torch
-                identity.update(torch_version=torch.__version__, device_name=torch.cuda.get_device_name(0))
+                        "checkpoint_sha256": getattr(provider, "checkpoint_sha256", None),
+                        "repository_revision": getattr(provider, "repository_revision", None)}
+            runtime_identity = getattr(provider, "runtime_identity", None)
+            if callable(runtime_identity):
+                identity.update(runtime_identity())
             connection.send(("ready", identity))
             while True:
                 payload = connection.recv()
