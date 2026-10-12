@@ -71,15 +71,25 @@ Temporal scoring works with the core installation. For semantic similarity and s
 
 ## Score video quality
 
-After installing the corresponding [metric environment](docs/metrics.md):
+Install the corresponding [metric environment](docs/metrics.md), download its checkpoints, then score. `pip install` installs code and dependencies only; it does not download model weights. For CLIP-IQA+ (after installing a compatible PyTorch/TorchVision build):
 
 ```bash
-percept score clipiqa --video example.mp4 --output outputs/example.clipiqa.json
+python -m pip install -e '.[clipiqa]'
+percept download clipiqa --cache-dir ./weights
+percept score clipiqa --video example.mp4 --cache-dir ./weights \
+  --output outputs/example.clipiqa.json
+```
 
+For Motion Smoothness, install the [motion environment](docs/metrics.md#motion-smoothness), then:
+
+```bash
+percept download motion --cache-dir ./weights
 percept score motion --video example.mp4 \
-  --cache-dir /path/to/vbench-cache --gpu 0 \
+  --cache-dir ./weights --gpu 0 \
   --output outputs/example.motion.json
 ```
+
+The downloader currently supports `clipiqa` and `motion`. It verifies SHA-256, reuses matching files, and replaces corrupt files only after a verified download. Downloads default to `./weights`; pass the same directory to scoring. Interrupted downloads can be rerun (partial files are discarded). Other external evaluators retain their [official setup requirements](docs/metrics.md#vbench-and-external-evaluators).
 
 CLIP-IQA+ measures sampled-frame image quality; Motion Smoothness measures local interpolation smoothness. Neither establishes action correctness. Both preserve their existing scoring protocols and output fields.
 

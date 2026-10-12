@@ -10,7 +10,7 @@ The CLIP-IQA+ model itself is supplied by PyIQA, not implemented here.
 from __future__ import annotations
 
 import argparse
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 import hashlib
 import importlib.metadata
 import json
@@ -72,11 +72,32 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+@contextmanager
+def _weight_cache(cache: Path | None):
+    """Temporarily point both PyIQA caches at the prepared directory."""
+    if cache is None:
+        yield
+        return
+    import torch
+    from pyiqa.utils import download_util
+
+    previous_hub = torch.hub.get_dir()
+    previous_pyiqa = download_util.DEFAULT_CACHE_DIR
+    torch.hub.set_dir(str(cache))
+    download_util.DEFAULT_CACHE_DIR = str(cache / "pyiqa")
+    try:
+        yield
+    finally:
+        torch.hub.set_dir(previous_hub)
+        download_util.DEFAULT_CACHE_DIR = previous_pyiqa
+
+
 def score_video(
     video_path: str | Path,
     device: str = "auto",
     sample_step: int = 4,
     max_side: int = 640,
+    cache_dir: Path | None = None,
 ) -> dict:
     """Return one CLIP-IQA+ video score and its sampling/version metadata.
 
@@ -88,6 +109,10 @@ def score_video(
         raise ValueError(f"Expected a video file: {path}")
     if sample_step < 1 or max_side < 1:
         raise ValueError("sample_step and max_side must be positive")
+    if cache_dir is not None:
+        from percept_harness.weights import verify_weights
+        cache_dir = Path(cache_dir).expanduser().resolve()
+        verify_weights("clipiqa", cache_dir)
     version = importlib.metadata.version("pyiqa")
     if version != PYIQA_VERSION:
         raise RuntimeError(f"Expected pyiqa=={PYIQA_VERSION}; found {version}")
@@ -106,7 +131,8 @@ def score_video(
     reader = VideoReader(str(path), max_side=max_side)
     try:
         # Load exactly this model; propagate loading errors rather than substituting.
-        metric = pyiqa.create_metric("clipiqa+", device=device).eval()
+        with _weight_cache(cache_dir):
+            metric = pyiqa.create_metric("clipiqa+", device=device).eval()
         transform = ToTensor()
         indices = range(0, reader.num_frames, sample_step)
         scores = []
@@ -160,6 +186,7 @@ def _positive_int(value: str) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--video", required=True, type=Path, help="One video file")
+    parser.add_argument("--cache-dir", type=Path, help="Prepared weight cache; omit to use PyIQA defaults")
     parser.add_argument("--device", default="auto", help="auto, cpu, cuda:0, etc.")
     parser.add_argument("--sample-step", type=_positive_int, default=4)
     parser.add_argument("--max-side", type=_positive_int, default=640)
@@ -171,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
             raise FileExistsError(f"Output already exists; choose a new filename: {output}")
         # Keep stdout machine-readable; model loading messages go to stderr.
         with redirect_stdout(sys.stderr):
-            result = score_video(args.video, args.device, args.sample_step, args.max_side)
+            result = score_video(args.video, args.device, args.sample_step, args.max_side, args.cache_dir)
         payload = json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
         if output is not None:
             output.parent.mkdir(parents=True, exist_ok=True)

@@ -34,6 +34,9 @@ _SCORE_MODULES = {
 
 def main(argv: Sequence[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "download":
+        from .weights import main as download_main
+        return download_main(argv[1:])
     if argv and argv[0] == "score":
         score_parser = argparse.ArgumentParser(
             prog="percept score",
@@ -60,6 +63,7 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser(
         "score", help="score annotations or videos (use percept score --help for evaluators)",
     )
+    commands.add_parser("download", help="download and verify metric checkpoints")
     evaluate = commands.add_parser(
         "annotate",
         help="annotate videos to structured JSON",

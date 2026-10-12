@@ -43,9 +43,11 @@ or their model weights. Refer to the licenses shipped with the exact installed
 versions and to the upstream checkpoint terms.
 
 No model checkpoints or third-party model implementation are distributed here.
-[weights.json](weights.json) records download URLs, cache-relative filenames,
-and reference SHA-256 values from the existing evaluation environment. It is
-documentation for CLIP-IQA+; that script does not enforce these hashes at runtime.
+The packaged [weight registry](../src/percept_harness/weights.py) records download URLs, cache-relative filenames,
+and reference SHA-256 values from the existing evaluation environment.
+`percept download` verifies these digests before publishing files. CLIP-IQA+
+verifies both checkpoints when `--cache-dir` is supplied; omitting it retains
+PyIQA’s own default cache and download behavior.
 The Motion Smoothness wrapper verifies the recorded AMT-S hash before enabling
 legacy checkpoint loading in its child process.
 

@@ -20,7 +20,7 @@ Use separate output directories for independently reported experiments. Verified
 
 For a uv-managed core environment, use `uv sync --locked` with the required extras. For every independent evaluator environment, save `python --version`, `python -m pip freeze`, and `python -m pip check` output. The dimension-specific VBench Motion environment intentionally differs from the full VBench dependency metadata; record that discrepancy rather than treating it as a fully validated general VBench installation.
 
-Pin external weights and source trees as specified in [third-party notices](third-party-notices.md) and [weight provenance](weights.json). Optional dependency groups do not by themselves reproduce external evaluator environments.
+Pin external weights and source trees as specified in [third-party notices](third-party-notices.md) and [checkpoint preparation](metrics.md#checkpoint-preparation). Optional dependency groups do not by themselves reproduce external evaluator environments.
 
 ## Validation stages
 
