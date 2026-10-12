@@ -129,3 +129,32 @@ CLIP-IQA+ additionally records frame sampling, resizing, device, and MemoBench r
 Use the short command selector `clipiqa` even though its output metric identifier is `clipiqa+`.
 
 Other upstream wrappers remain separate preparation tools listed in the [catalog](metrics/README.md). Their result schemas and validation stages are documented individually.
+
+## Multi-GPU manifest annotation
+
+A JSONL manifest supplies one absolute `video_path` and a unique relative
+`job_id` per line. Optional `expected_sha256` binds an input to a known version.
+Each job writes normal annotation results under `<output>/<job_id>/`.
+
+```bash
+percept annotate --manifest corpus.jsonl --template embodied_action_captioning \
+  --cv sam31 --cv-devices 0,1,2,3 --workers-per-gpu 2 \
+  --request-concurrency 9 --output outputs/annotations
+```
+
+One spawned SAM process stays loaded per GPU. Independent CPU threads own VLM
+clients and serialize CV requests to their GPU. The per-process VLM limit ramps
+from two healthy calls, up to `--request-concurrency`, and halves on observed
+HTTP 429; ordinary backend transport retries remain enabled. Multiple hosts can
+use the same manifest and output root with distinct `--shard-index` values and
+one common `--shard-count`. SHA-256 of `job_id` assigns each job to exactly one
+shard. All hosts must see the input and output paths.
+
+Shard status files record worker PIDs, active jobs, accepted results, failures,
+and observed request concurrency. Missing SAM evidence or a missing full review
+is not accepted as a successful manifest job. Existing conservative CV resume
+rules remain: whole-result skipping is disabled for unverifiable CV execution;
+validated request and CV-artifact caches can still be reused. To retry a subset,
+create a manifest of failed/pending jobs after checking the prior worker is no
+longer running. Do not restart a live shard just because an observation timed
+out. Size CV-cache byte/file budgets and temporary storage for the full corpus.
