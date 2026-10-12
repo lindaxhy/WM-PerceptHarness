@@ -10,7 +10,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-import aggregate_videophy_joint as joint  # noqa: E402
+from percept_harness.video_metrics import videophy_joint as joint
 import build_reference_manifest as references  # noqa: E402
 from validate_metric_manifest import load_manifest, validate_manifest  # noqa: E402
 

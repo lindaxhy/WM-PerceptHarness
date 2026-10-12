@@ -1,5 +1,4 @@
 """Offline contracts for the pinned, single-video VBench wrapper."""
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -11,10 +10,9 @@ import unittest
 import uuid
 from unittest import mock
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts/score_vbench_official.py"
-spec = importlib.util.spec_from_file_location("vbench_official_test_module", SCRIPT)
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
+from percept_harness.video_metrics import vbench as module
+
+SCRIPT = Path(module.__file__)
 
 
 class VBenchOfficialTests(unittest.TestCase):

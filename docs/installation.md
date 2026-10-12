@@ -38,7 +38,16 @@ source .venv-clipiqa/bin/activate
 python -m pip install -e .
 ```
 
-Then follow [metric runtime installation](metrics/usage.md). Install a hardware-compatible Torch/TorchVision build before the metric requirements. `requirements/metrics-*.txt` are runtime dependency lists, not complete environment locks. Do not install all of them into the core environment.
+All dependency declarations live in `pyproject.toml`; there are no separate requirements files. Install a hardware-compatible Torch/TorchVision build first, then select the extra for this environment:
+
+```bash
+python -m pip install -e '.[clipiqa]'
+# Or, in a separate CUDA environment:
+python -m pip install -e '.[motion]'
+python -m pip install --only-binary=:all: --no-deps vbench==0.1.5
+```
+
+Follow [metric runtime installation](metrics/usage.md) for checkpoint setup and the reason VBench uses `--no-deps`. These extras retain the recorded direct dependency versions; they are not proof of a validated GPU environment. External evaluators such as DOVER still use their upstream-compatible runtime.
 
 A unified CLI does not activate another environment automatically: `percept score motion` uses the currently active Python environment. Use that environment's full `bin/percept` path when orchestrating several environments.
 
@@ -51,4 +60,4 @@ uv run --locked percept --help
 
 Use `--extra fidelity` as well when reproducing semantic evaluation. `pyproject.toml` defines dependencies; `uv.lock` fixes their resolved versions for uv users. Pip installation remains supported but does not consume `uv.lock`.
 
-External evaluators and checkpoints require their own version records; the core lockfile does not reproduce their environments. See [reproduction](reproduction.md).
+The lockfile also resolves optional extras, but does not select a hardware-specific CUDA wheel or lock separately installed VBench/upstream source trees and checkpoints. Record those independently. See [reproduction](reproduction.md).

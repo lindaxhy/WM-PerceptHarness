@@ -7,7 +7,7 @@ OpenAI-compatible endpoint (`doubao-seed-2-1-pro-260915`, thinking disabled via
 extra_body): one synthetic video completed on both the new and the legacy
 backend with the same output schema and consistent content. Step 4 removed
 `ark.py`, `qwen3_vl.py`, their tests, the `[gpu]` extra, and the GPU scripts;
-`reverify_semantic_stages.py` was ported to the new backend (`--base-url`).
+The fixed `reverify_semantic_stages.py` experiment was ported to the new backend (`--base-url`) and later retired; see its [historical source](https://github.com/lindaxhy/WM-PerceptHarness/blob/a201286f2b5b4deb55b2e99aaff0303e588f2295/scripts/reverify_semantic_stages.py).
 The package rename to `percept_harness` is complete.
 Replaces: `models/ark.py` (Doubao/ARK Responses adapter), `models/qwen3_vl.py`
 (local GPU inference).

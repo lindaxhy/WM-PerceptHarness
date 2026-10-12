@@ -1,8 +1,0 @@
-# Starting point for the lightweight preparation/validation tools.
-# Install a hardware-compatible torch/torchvision separately on Ali02.
-pyiqa==0.1.16
-Pillow>=10
-opencv-python-headless>=4.8
-# The official VBench source/wheel and its dimension-specific dependencies
-# must be installed according to the pinned source and the target GPU image;
-# this file intentionally does not force a conflicting torch/numpy stack.

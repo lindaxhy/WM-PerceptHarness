@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from importlib import import_module
 import os
 import sys
 from collections.abc import Sequence
@@ -19,6 +20,16 @@ from .runner import (
 )
 
 _BACKENDS = ("openai", "fake")
+_SCORE_MODULES = {
+    "fidelity": ".evaluation.fidelity_cli",
+    "clipiqa": ".video_metrics.clipiqa",
+    "motion": ".video_metrics.motion",
+    "vbench": ".video_metrics.vbench",
+    "vbench-clip": ".video_metrics.vbench_clip",
+    "dover": ".video_metrics.dover",
+    "external": ".video_metrics.external",
+    "videophy-joint": ".video_metrics.videophy_joint",
+}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -28,15 +39,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             prog="percept score",
             description="Score annotations or videos in the active metric environment.",
         )
-        score_parser.add_argument("metric", choices=("fidelity", "clipiqa", "motion"))
+        score_parser.add_argument("metric", choices=tuple(_SCORE_MODULES))
         # Parse only the selector; each evaluator owns its remaining arguments/help.
         selected = score_parser.parse_args(argv[1:2])
-        if selected.metric == "fidelity":
-            from .evaluation.fidelity_cli import main as score_main
-        elif selected.metric == "clipiqa":
-            from .video_metrics.clipiqa import main as score_main
-        else:
-            from .video_metrics.motion import main as score_main
+        score_main = import_module(_SCORE_MODULES[selected.metric], __package__).main
         return score_main(argv[2:]) or 0
     arguments = _parser().parse_args(argv)
     if arguments.command == "annotate":
@@ -52,7 +58,7 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
 
     commands.add_parser(
-        "score", help="score {fidelity,clipiqa,motion} in the corresponding environment",
+        "score", help="score annotations or videos (use percept score --help for evaluators)",
     )
     evaluate = commands.add_parser(
         "annotate",

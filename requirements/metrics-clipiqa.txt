@@ -1,7 +1,0 @@
-# CLIP-IQA+ one-video script runtime.
-# Install a hardware-compatible torch/torchvision build separately before this file.
-# These versions come from the validated Ali02 environment; this is not a full lock file.
-pyiqa==0.1.16
-numpy==2.2.6
-Pillow==11.3.0
-opencv-python-headless==4.11.0.86

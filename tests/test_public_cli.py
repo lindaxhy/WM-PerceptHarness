@@ -17,28 +17,13 @@ def test_annotate_defaults_to_openai(tmp_path, monkeypatch, capsys):
     assert 'PERCEPT_OPENAI_API_KEY' in capsys.readouterr().err
 
 
-@pytest.mark.parametrize('metric', ['fidelity', 'clipiqa', 'motion'])
+@pytest.mark.parametrize('metric', ['fidelity', 'clipiqa', 'motion', 'vbench', 'vbench-clip', 'dover', 'external', 'videophy-joint'])
 def test_score_help_without_optional_models(metric):
     result = subprocess.run([sys.executable, '-m', 'percept_harness.cli',
                              'score', metric, '--help'], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
-    assert '--reference' in result.stdout if metric == 'fidelity' else '--video' in result.stdout
-
-
-def test_fidelity_command_scores_matching_timelines(tmp_path):
-    for group in ('reference', 'generated'):
-        folder = tmp_path / group / 'sample'
-        folder.mkdir(parents=True)
-        (folder / 'sample.json').write_text(json.dumps({'data': {
-            'duration': 2, 'segments': [{'start': 0, 'end': 2}],
-            'semantic_events': [{'event_type': 'move', 'start': 0, 'end': 2}],
-        }}))
-    output = tmp_path / 'report.json'
-    assert main(['score', 'fidelity', '--reference', str(tmp_path / 'reference'),
-                 '--system', f'demo={tmp_path / "generated"}', '--out', str(output)]) == 0
-    report = json.loads(output.read_text())
-    assert report['systems']['demo']['paired_samples'] == 1
-    assert report['systems']['demo']['frame_miou_micro'] == 1
+    expected = {'fidelity': '--reference', 'external': '--source-dir', 'videophy-joint': '--pc'}.get(metric, '--video')
+    assert expected in result.stdout
 
 
 def test_unknown_score_metric_is_rejected():
@@ -47,7 +32,8 @@ def test_unknown_score_metric_is_rejected():
     assert exc.value.code == 2
 
 
-def test_metric_help_does_not_load_optional_dependencies():
+@pytest.mark.parametrize('metric', ['clipiqa', 'motion', 'vbench', 'vbench-clip', 'dover', 'external', 'videophy-joint'])
+def test_metric_help_does_not_load_optional_dependencies(metric):
     # Reject even installed optional packages, so this checks laziness on GPU hosts too.
     code = '''
 import sys
@@ -57,14 +43,14 @@ class BlockOptional:
             raise RuntimeError('unexpected optional import: ' + fullname)
 sys.meta_path.insert(0, BlockOptional())
 from percept_harness.cli import main
-main(['score', 'clipiqa', '--help'])
+main(['score', sys.argv[1], '--help'])
 '''
-    result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True)
+    result = subprocess.run([sys.executable, '-c', code, metric], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
-    assert '--sample-step' in result.stdout
+    assert 'usage:' in result.stdout
 
 
-def test_fidelity_scoring_is_independent_of_retired_las_experiment(tmp_path):
+def test_fidelity_scores_matching_timelines_outside_checkout(tmp_path):
     for group in ('reference', 'generated'):
         folder = tmp_path / group / 'sample'
         folder.mkdir(parents=True)
@@ -76,14 +62,6 @@ def test_fidelity_scoring_is_independent_of_retired_las_experiment(tmp_path):
     output = tmp_path / 'report.json'
     code = '''
 import sys
-class BlockLegacyExperiment:
-    def find_spec(self, fullname, path=None, target=None):
-        if fullname in {
-            'percept_harness.evaluation.las_alignment',
-            'percept_harness.evaluation.viewer_projection',
-        }:
-            raise RuntimeError('fidelity still depends on the retired LAS experiment')
-sys.meta_path.insert(0, BlockLegacyExperiment())
 from percept_harness.cli import main
 raise SystemExit(main(sys.argv[1:]))
 '''
@@ -97,3 +75,20 @@ raise SystemExit(main(sys.argv[1:]))
     report = json.loads(output.read_text())
     assert report['systems']['demo']['paired_samples'] == 1
     assert report['systems']['demo']['frame_miou_micro'] == 1
+
+
+def test_videophy_joint_command_scores_csv_outside_checkout(tmp_path):
+    pc = tmp_path / 'pc.csv'
+    sa = tmp_path / 'sa.csv'
+    pc.write_text('videopath,pc\n/data/a.mp4,4\n/data/b.mp4,3\n')
+    sa.write_text('videopath,sa\n/data/a.mp4,5\n/data/b.mp4,5\n')
+    output = tmp_path / 'joint.json'
+    result = subprocess.run(
+        [sys.executable, '-m', 'percept_harness.cli', 'score', 'videophy-joint',
+         '--pc', str(pc), '--sa', str(sa), '--output', str(output)],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    report = json.loads(output.read_text())
+    assert report['joint_rate'] == 0.5
+    assert [row['joint_pass'] for row in report['rows']] == [True, False]

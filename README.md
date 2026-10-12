@@ -56,8 +56,6 @@ The default backend is OpenAI-compatible; `--backend openai` remains an explicit
 
 Results use `<video_stem>.json`, with a source-path suffix when that name belongs to another video. `results.jsonl` records the exact result filenames. Verified built-in runs resume only when input bytes, model, prompts, configuration and code/runtime fingerprints match. Use `--force` for an independent repeat; displaced results and run manifests are retained under `.percept/`. See [input/output conventions](docs/evaluation.md) for conservative custom/CV behavior.
 
-For a local check without API credentials or weights, run the [synthetic smoke example](examples/README.md). Its fake annotations test the software, not model quality.
-
 ## Compare real and generated videos
 
 Prepare matching annotations under `reference/<id>/<id>.json` and `generated/<id>/<id>.json`:
@@ -112,22 +110,23 @@ The suite uses synthetic media, fake models and mocked external evaluators to ch
 | `src/percept_harness/` | Installable Python package and the public `percept` CLI |
 | `src/percept_harness/pipelines/` | Annotation stages and output validation |
 | `src/percept_harness/evaluation/` | Event-fidelity scoring and shared temporal event matching |
-| `src/percept_harness/video_metrics/` | Optional CLIP-IQA+ and Motion Smoothness implementations |
-| `scripts/` | Repository utilities: input preparation, external evaluator wrappers and semantic diagnostics |
+| `src/percept_harness/video_metrics/` | Video scorers, official evaluator wrappers and VideoPhy aggregation |
+| `scripts/` | Input preparation and manifest validation |
 | `tests/` | Python regression tests and small fixtures; retained in source control, excluded from the wheel |
-| `requirements/` | Dependency lists for separate optional metric environments |
+| `pyproject.toml` | Core dependencies and optional `dev`, `fidelity`, `clipiqa`, `motion` extras |
 | `docs/` | User guides, metric protocols and architecture notes; dated historical material belongs in `docs/archive/` |
-| `examples/` | Small, reproducible usage examples |
 
-Keep reusable application logic under `src/percept_harness/`. Repository scripts may import the package; the package must not depend on `scripts/` or a repository checkout. Run scripts from the repository root after installing the package. Existing standalone evaluator wrappers may require the separate environments documented in the [metric catalog](docs/metrics/README.md).
+Reusable logic lives in the package; `scripts/` contains only input preparation tools. Model interfaces and endpoint adapters live in `src/percept_harness/models/`; configure the provider/model through environment variables, not source constants.
 
-`scripts/` is not currently limited to thin entry points: `reverify_semantic_stages.py` also contains substantial diagnostic logic. When that logic becomes part of a public command or is reused by the package, move it into a focused package module and retain the script as a compatibility entry point.
+All scorers use `percept score`: `fidelity`, `clipiqa`, `motion`, `vbench`, `vbench-clip`, `dover`, `external`, and `videophy-joint`. The former `scripts/score_*.py`, `run_official_external.py`, and `aggregate_videophy_joint.py` entry points have been replaced by these commands; their evaluator arguments are unchanged. See the [metric catalog](docs/metrics/README.md) for environment requirements and validation status.
 
 Keep regression tests for scoring, timestamp boundaries, model-output validation, resume identity and command behavior. Add real-model validation separately with its environment and evidence, rather than making ordinary tests require API credentials or GPU checkpoints.
 
 Local agent state (`.superpowers/`, `.claude/`, `docs/superpowers/`), caches, generated outputs and model weights are ignored. Keep useful long-lived design decisions in `docs/architecture/`; do not commit agent task transcripts. Existing files must also be removed from Git tracking before ignore rules take effect.
 
 ## Project history and license
+
+The fixed two-sample Doubao semantic re-verification operator and its experiment-only tests were removed from active development. Their [last pre-cleanup version](https://github.com/lindaxhy/WM-PerceptHarness/tree/a201286f2b5b4deb55b2e99aaff0303e588f2295) remains available for historical reproduction. Current annotation uses the configurable OpenAI-compatible backend.
 
 The old five-video LAS comparison viewer, machine-generated references, dated SAM3.1 evaluation results, LAS-specific evaluator and server-specific smoke script are preserved together on [`archive/las-comparison-viewer`](https://github.com/lindaxhy/WM-PerceptHarness/tree/archive/las-comparison-viewer). They are historical diagnostics, not inputs required by current annotation or fidelity scoring. To inspect them without changing your checkout:
 

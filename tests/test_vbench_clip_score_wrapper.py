@@ -1,5 +1,4 @@
 """Offline contract tests for the official VBench competition CLIP wrapper."""
-import importlib.util
 import json
 from pathlib import Path
 import subprocess
@@ -8,10 +7,9 @@ import unittest
 import uuid
 from unittest import mock
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts/score_vbench_clip_score.py"
-spec = importlib.util.spec_from_file_location("clip_score_wrapper", SCRIPT)
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
+from percept_harness.video_metrics import vbench_clip as module
+
+SCRIPT = Path(module.__file__)
 
 
 class ClipScoreWrapperTests(unittest.TestCase):

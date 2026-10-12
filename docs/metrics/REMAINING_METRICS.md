@@ -1,13 +1,13 @@
 # Remaining metrics preparation package
 
-These repository tools prepare additional metrics beyond the packaged
-CLIP-IQA+ and Motion Smoothness commands. They keep the official evaluators as the
-source of scores and adds only orchestration, input validation, and an
+These commands integrate additional official metrics alongside
+CLIP-IQA+ and Motion Smoothness. They keep the official evaluators as the
+source of scores and add only orchestration, input validation, and an
 analysis-only VideoPhy-2 Joint aggregation.
 
 ## What is included
 
-`scripts/score_vbench_official.py` runs the pinned VBench `evaluate.py` for
+`percept score vbench` runs the pinned VBench `evaluate.py` for
 `imaging_quality`, `aesthetic_quality`, `temporal_flickering`,
 `dynamic_degree`, `subject_consistency`, `background_consistency`, and
 `overall_consistency`. Motion Smoothness uses `percept score motion`
@@ -17,7 +17,7 @@ VBench sampling, preprocessing, models, or formulas.  `overall_consistency`
 requires a frozen prompt or video-to-prompt JSON. `temporal_flickering`
 requires an explicit static/near-static-subset acknowledgement.
 
-`scripts/score_vbench_clip_score.py` calls the official competition
+`percept score vbench-clip` calls the official competition
 `competitions/clip_score.py` implementation.  It creates only the official
 one-video metadata JSON and checks the official OpenAI CLIP ViT-B/32 cache;
 frame sampling and similarity calculation remain in the upstream file.
@@ -33,7 +33,7 @@ by identical relative filenames.  It reports unmatched files and refuses to
 make copies or synthetic references.  This is preparation for PSNR/SSIM/LPIPS,
 not a claim that the 75 videos already have valid future ground truth.
 
-`scripts/aggregate_videophy_joint.py` joins the two official VideoPhy-2 CSV
+`percept score videophy-joint` joins the two official VideoPhy-2 CSV
 outputs and computes the documented analysis field `SA >= 4 and PC >= 4`.
 Joint is not a new model or an independent metric.
 
@@ -44,11 +44,11 @@ local `video_map` when an upstream metadata file intentionally has no video
 path. See `docs/metrics/OFFICIAL_INPUT_ADAPTERS.md`; this helper does not
 replace any upstream evaluator or make missing checkpoints available.
 
-`scripts/run_official_external.py` provides preflight and command forwarding for
+`percept score external` provides preflight and command forwarding for
 the external evaluator families. It checks required source revisions and local
 resource paths, then runs the caller-supplied command after `--`. It does not
 download models, infer the correct evaluator arguments, or compute scores itself.
-Use `python scripts/run_official_external.py --help` for metric identifiers and
+Use `percept score external --help` for metric identifiers and
 required resource options; `--check-only` performs preflight without inference.
 
 ## Current state by family
@@ -95,7 +95,7 @@ From the WM-PerceptHarness repository root, after verifying the cache and a fres
 output directory. Pass the separate pinned VBench source checkout through `--vbench-root`:
 
 ```bash
-python scripts/score_vbench_official.py \
+percept score vbench \
   --vbench-root /path/to/official-metrics/sources/VBench \
   --videos-path /path/to/video.mp4 \
   --dimension imaging_quality \
@@ -115,7 +115,7 @@ For CLIP Score, the official competition code hard-codes OpenAI CLIP
 `<clip-home>/.cache/clip/ViT-B-32.pt`, then run:
 
 ```bash
-python scripts/score_vbench_clip_score.py \
+percept score vbench-clip \
   --vbench-root /path/to/official-metrics/sources/VBench \
   --videos-path /path/to/video.mp4 \
   --prompt 'the original frozen generation instruction' \

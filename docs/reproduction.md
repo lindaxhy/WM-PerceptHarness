@@ -1,6 +1,6 @@
 # Reproduction and validation
 
-The repository currently provides annotation, event-fidelity scoring, two standalone video metric entry points, and preparation tools for additional official evaluators. It does not yet ship a complete reproduction command for every metric in the frozen benchmark selection.
+The repository currently provides annotation, event-fidelity scoring, packaged video scorers, official evaluator wrappers, and input preparation tools. It does not yet ship a complete reproduction command for every metric in the frozen benchmark selection.
 
 ## Record the experiment
 
@@ -20,7 +20,7 @@ Use separate output directories for independently reported experiments. Verified
 
 For a uv-managed core environment, use `uv sync --locked` with the required extras. For every independent evaluator environment, save `python --version`, `python -m pip freeze`, and `python -m pip check` output. The dimension-specific VBench Motion environment intentionally differs from the full VBench dependency metadata; record that discrepancy rather than treating it as a fully validated general VBench installation.
 
-Pin external weights and source trees as specified in [third-party notices](metrics/THIRD_PARTY_NOTICES.md) and [weight provenance](metrics/weights.json). A runtime requirements file is not a complete environment lock.
+Pin external weights and source trees as specified in [third-party notices](metrics/THIRD_PARTY_NOTICES.md) and [weight provenance](metrics/weights.json). Optional dependency groups do not by themselves reproduce external evaluator environments.
 
 ## Validation stages
 
