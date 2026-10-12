@@ -14,6 +14,9 @@ import multiprocessing as mp
 import os
 from pathlib import Path
 import queue
+import shutil
+import tempfile
+import uuid
 import threading
 from dataclasses import replace
 import time
@@ -104,7 +107,14 @@ def _cv_worker(connection, cv_settings, gpu):
         from .cli import _cv_executor
         settings = Settings(**cv_settings)
         with _cv_executor(settings.cv_provider, SimpleNamespace(cv_device=gpu), settings) as execute:
-            connection.send(("ready", os.getpid()))
+            import importlib.metadata
+            identity = {"pid": os.getpid(), "provider": settings.cv_provider,
+                        "checkpoint_sha256": getattr(execute.provider, "checkpoint_sha256", None),
+                        "repository_revision": getattr(execute.provider, "repository_revision", None)}
+            if settings.cv_provider == "sam31":
+                import torch
+                identity.update(torch_version=torch.__version__, device_name=torch.cuda.get_device_name(0))
+            connection.send(("ready", identity))
             while True:
                 payload = connection.recv()
                 if payload is None:
@@ -145,9 +155,10 @@ class GpuSlot:
         return kind, value
 
     def wait_ready(self):
-        kind, _ = self.receive()
+        kind, identity = self.receive()
         if kind != "ready":
             raise RuntimeError("invalid SAM worker startup response")
+        self.identity = identity
         self.ready = True
 
     def __call__(self, payload):
@@ -166,6 +177,54 @@ class GpuSlot:
             self.process.terminate()
             self.process.join()
         self.connection.close()
+
+
+def archive_cv_evidence(data, cache_root: Path, archive_root: Path) -> Path:
+    """Retain authenticated SAM files outside the bounded local runtime cache."""
+    from .cv.artifacts import CvArtifactStore, CvArtifactHandle
+    handle = CvArtifactHandle(data["cv_evidence"]["artifact_key"], data["cv_evidence"]["manifest_sha256"])
+    destination = archive_root / handle.key[:2] / (handle.key + "-" + handle.manifest_sha256)
+    if not destination.exists():
+        with CvArtifactStore(cache_root) as store:
+            store.load(handle)  # Authenticate the complete immutable entry before exporting.
+        source = cache_root / handle.key[:2] / handle.key
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = Path(tempfile.mkdtemp(prefix=".cv-copy-", dir=destination.parent))
+        try:
+            shutil.copytree(source, temporary, dirs_exist_ok=True)
+            _verify_cv_archive(temporary, handle.manifest_sha256)
+            try:
+                os.replace(temporary, destination)
+            except OSError:
+                if not destination.exists():
+                    raise
+                _verify_cv_archive(destination, handle.manifest_sha256)
+        finally:
+            if temporary.exists():
+                shutil.rmtree(temporary)
+    _verify_cv_archive(destination, handle.manifest_sha256)
+    return destination
+
+
+def _verify_cv_archive(root: Path, expected_manifest: str):
+    manifest = root / "manifest.json"
+    if manifest.is_symlink():
+        raise ValueError("CV archive manifest must be a regular file")
+    content = manifest.read_bytes()
+    if hashlib.sha256(content).hexdigest() != expected_manifest:
+        raise ValueError("CV archive manifest SHA-256 mismatch")
+    artifact = json.loads(content)["artifact"]
+    for record in artifact["files"]:
+        relative = Path(record["path"])
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("CV archive file path escapes archive")
+        path = root / relative
+        if path.is_symlink() or path.resolve().is_relative_to(root.resolve()) is False:
+            raise ValueError("CV archive contains a foreign file")
+        with path.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        if path.stat().st_size != record["size_bytes"] or digest != record["sha256"]:
+            raise ValueError("CV archive file SHA-256 mismatch")
 
 
 class ReviewRequiredRunner(SyncRunner):
@@ -210,6 +269,9 @@ def run_manifest(arguments) -> int:
     provider_logger = logging.getLogger("percept_harness.models.openai_compat")
     provider_logger.addHandler(throttle_handler)
     slots = []
+    live_keys = {}
+    archived_keys = {}
+    archive_lock = threading.Lock()
     start = time.time()
 
     def status(phase):
@@ -224,7 +286,8 @@ def run_manifest(arguments) -> int:
             "request_concurrency": arguments.request_concurrency,
             "vlm_requests": request_gate.snapshot(),
             "sam_workers": [{"gpu": s.gpu, "pid": s.process.pid,
-                             "alive": s.process.is_alive(), "ready": s.ready} for s in slots],
+                             "alive": s.process.is_alive(), "ready": s.ready,
+                             "identity": getattr(s, "identity", None)} for s in slots],
             "jobs": snapshot})
 
     def reporter():
@@ -239,7 +302,16 @@ def run_manifest(arguments) -> int:
             with request_gate:
                 return original_generate(request)
         model.generate = generate
-        runner = ReviewRequiredRunner(model, lane_settings, model_alias=alias, cv_executor=cv_execute)
+        pending_keys = set()
+        def protected_cv(payload):
+            from .cv.artifacts import cv_cache_key
+            from .cv.contracts import CvEvidenceRequest
+            key = cv_cache_key(CvEvidenceRequest.model_validate(payload, strict=True))
+            with mutex:
+                live_keys[key] = live_keys.get(key, 0) + 1
+                pending_keys.add(key)
+            return cv_execute(payload)
+        runner = ReviewRequiredRunner(model, lane_settings, model_alias=alias, cv_executor=protected_cv)
         try:
             while True:
                 try:
@@ -273,13 +345,40 @@ def run_manifest(arguments) -> int:
                     scene_events = data["annotation_branches"]["scene_facts"]["events"]
                     if any(e["model_stage"] != "occlusion_semantics" for e in scene_events):
                         raise RuntimeError("scene draft was not replaced by the review")
+                    with archive_lock:
+                        archived = archive_cv_evidence(data, lane_settings.cv_cache_root, root / ".cv-archive")
+                        archived_keys[data["cv_evidence"]["artifact_key"]] = archived
+                    write_json(job_root / ".percept" / "cv-artifact.json", {
+                        "archive_path": str(archived),
+                        "manifest_sha256": data["cv_evidence"]["manifest_sha256"],
+                        "host": os.uname().nodename, "gpu": gpu})
                     with mutex:
                         states[jid].update(status="completed", finished_unix=time.time(),
-                            result_file=str(job_root / outcome.result_file), resumed=outcome.status == "skipped")
+                            result_file=str(job_root / outcome.result_file), cv_archive=str(archived), resumed=outcome.status == "skipped")
                 except Exception as error:
                     with mutex:
                         states[jid].update(status="failed", finished_unix=time.time(), error=str(error))
                 finally:
+                    with mutex:
+                        for key in pending_keys:
+                            live_keys[key] -= 1
+                        pending_keys.clear()
+                    # Evict only verified, durably archived, unused cache copies.
+                    # Atomic detachment under the same lock as CV registration
+                    # keeps active source entries intact. The evidence remains
+                    # recoverable in the archive; never evict unexported entries.
+                    with archive_lock:
+                        for key in list(archived_keys):
+                            if shutil.disk_usage(lane_settings.cv_cache_root).free >= 12 * 1024**3:
+                                break
+                            source = lane_settings.cv_cache_root / key[:2] / key
+                            retired = lane_settings.cv_cache_root / (".retired-" + uuid.uuid4().hex)
+                            with mutex:
+                                if live_keys.get(key, 0) or not source.exists():
+                                    continue
+                                os.replace(source, retired)
+                            shutil.rmtree(retired)
+                            del archived_keys[key]
                     tasks.task_done()
         finally:
             closer()

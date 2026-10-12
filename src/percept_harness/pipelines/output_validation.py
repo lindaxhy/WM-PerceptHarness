@@ -1737,15 +1737,15 @@ def _validate_scene_revision(result, validation_context):
         if binding is None:
             continue
         candidate = candidates[decision["candidate_id"]]
-        missing = [o for o in candidate["allowed_event_intervals"] if o["event_type"] == "occluded"]
+        windows = candidate["allowed_event_intervals"]
         for event in scene["semantic_events"]:
             if event["target_object_id"] != binding["object_id"]:
                 continue
-            if not any(event["start"] < o["end"] and o["start"] < event["end"] for o in missing):
+            if not any(event["start"] < o["end"] and o["start"] < event["end"] for o in windows):
                 continue
             kind, classification = event["event_type"], decision["classification"]
             physical = kind in {"occlusion_enter", "occluded", "occlusion_exit"}
-            outside = kind == "out_of_frame"
+            outside = kind in {"out_of_frame", "enter_frame"}
             if ((physical and classification != "occlusion")
                     or (outside and classification != "out_of_frame")):
                 raise DeclaredSchemaOutputError(("SCENE_REVISION_VISIBILITY_CONFLICT",))
