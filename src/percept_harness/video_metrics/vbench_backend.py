@@ -380,4 +380,3 @@ def metric_main(dimension: str, argv: list[str] | None = None) -> int:
     except Exception as error:
         print(f"{name} failed: {error}", file=sys.stderr)
         return 1
-
