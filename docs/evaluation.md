@@ -41,6 +41,31 @@ A writer lock prevents overlapping batches from using the same output directory.
 
 For wrist/main-camera annotation, first run `embodied_active_object_detection` on the wrist video, then pass confirmed object names to the main-video action annotation using `--prompt-context`. This is naming guidance, not a prescribed action sequence.
 
+## Scene visibility labels
+
+Scene events (`data.semantic_events` and `annotation_branches.scene_facts.events`)
+support `out_of_frame` for an absence interval following visible departure
+through a frame edge, and `enter_frame` for a visible entry or re-entry
+transition. These labels do not imply motion relative to the world; camera
+movement can also produce frame exit and entry. Physical covering/uncovering
+uses `occlusion_enter`, `occluded`, and `occlusion_exit`. Missing detection alone
+does not establish either cause; use `unknown` without supporting evidence.
+
+The visibility labels extend the scene vocabulary only, not fine action skills.
+When SAM evidence is available, the review VLM receives the complete scene draft,
+video frames, spatial choices and tracking/candidate evidence. A single call
+returns a complete revised scene and visibility decisions. The revised scene
+replaces the draft in all final scene-event fields; draft responses remain in
+the request cache when enabled. Review also runs with an empty candidate list.
+SAM itself provides tracking, not semantic classifications. Contradictory
+visibility labels, dropped draft objects and invalid scene/candidate references
+trigger bounded repair; exhausted review fails annotation rather than publishing
+an unreviewed draft as success. Without usable SAM evidence the original scene
+path remains, with explicit CV status. Review scope is scene facts and events;
+coarse task description and fine action segments remain separate outputs.
+Current action fidelity excludes frame visibility labels, as it excludes
+occlusion and other types outside its action families.
+
 ## Event-timeline fidelity
 
 The scorer expects matching IDs in a nested layout:

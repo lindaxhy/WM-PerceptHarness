@@ -1712,6 +1712,55 @@ DEFAULT_OUTPUT_SCHEMAS.register(
     generic_issue_code="ENRICHMENT_RESULT_SCHEMA_INVALID",
     preserve_issue_code_order=True,
 )
+def _validate_scene_revision(result, validation_context):
+    """Validate a full VLM revision and reject cross-output contradictions."""
+    from .scene_choices import authenticate_scene_context
+    from .scene_provenance import scene_object_bindings
+    from ..cv.summary import CvEvidenceSummary
+
+    context = _exact_context(validation_context, {"scene_context", "draft", "occlusion_context"})
+    trusted = authenticate_scene_context(context["scene_context"])
+    preflight_plain(result, max_bytes=4 * 1024 * 1024, max_nodes=100_000, max_depth=32)
+    if type(result) is not dict or set(result) != {"scene", "decisions"}:
+        raise DeclaredSchemaOutputError(("SCENE_REVISION_SCHEMA_INVALID",))
+    scene = validate_scene_choices(result["scene"], trusted)
+    decisions = _validate_occlusion_decision_output(
+        {"decisions": result["decisions"]}, context["occlusion_context"])
+    original_ids = {o["object_id"] for o in context["draft"]["objects"]}
+    if not original_ids <= {o["object_id"] for o in scene["objects"]}:
+        raise DeclaredSchemaOutputError(("SCENE_REVISION_OBJECT_DROPPED",))
+    summary = CvEvidenceSummary.model_validate(trusted["evidence_summary"])
+    bindings = scene_object_bindings(summary, trusted["segments"])
+    candidates = {c["candidate_id"]: c for c in context["occlusion_context"]["candidates"]}
+    for decision in decisions["decisions"]:
+        binding = bindings.get(decision["target_entity_id"])
+        if binding is None:
+            continue
+        candidate = candidates[decision["candidate_id"]]
+        missing = [o for o in candidate["allowed_event_intervals"] if o["event_type"] == "occluded"]
+        for event in scene["semantic_events"]:
+            if event["target_object_id"] != binding["object_id"]:
+                continue
+            if not any(event["start"] < o["end"] and o["start"] < event["end"] for o in missing):
+                continue
+            kind, classification = event["event_type"], decision["classification"]
+            physical = kind in {"occlusion_enter", "occluded", "occlusion_exit"}
+            outside = kind == "out_of_frame"
+            if ((physical and classification != "occlusion")
+                    or (outside and classification != "out_of_frame")):
+                raise DeclaredSchemaOutputError(("SCENE_REVISION_VISIBILITY_CONFLICT",))
+    return {"scene": scene, "decisions": decisions["decisions"]}
+
+
+DEFAULT_OUTPUT_SCHEMAS.register(
+    "SceneRevision", _validate_scene_revision,
+    allowed_issue_codes=("SCENE_REVISION_SCHEMA_INVALID", "SCENE_REVISION_OBJECT_DROPPED",
+                         "SCENE_REVISION_VISIBILITY_CONFLICT")
+        + _schema_codes("SCENE_SEMANTICS_CHOICES") + _SCENE_CHOICE_ENUM_CODES
+        + CHOICE_CODES + _schema_codes("SCENE_SEMANTICS") + _SCENE_TEMPORAL_CODES
+        + _schema_codes("OCCLUSION_DECISION_SET") + _OCCLUSION_TEMPORAL_CODES,
+    generic_issue_code="SCENE_REVISION_SCHEMA_INVALID",
+)
 DEFAULT_OUTPUT_SCHEMAS.register(
     "SceneSemantics",
     _validate_scene_semantics_output,

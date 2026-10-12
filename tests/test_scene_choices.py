@@ -39,6 +39,27 @@ def test_legacy_contacting_has_closed_enum_code():
     assert failure['_schema_validation']['issue_codes'] == ['SCENE_SEMANTICS_ENUM_VALUE']
 
 
+@pytest.mark.parametrize('event_type', ['out_of_frame', 'enter_frame'])
+def test_frame_visibility_survives_model_validation_and_public_projection(event_type):
+    from percept_harness.pipelines.scene_choices import project_scene_choices
+    from percept_harness.pipelines.scene_semantics import SceneSemantics
+    from percept_harness.pipelines.validators import Skill
+
+    draft, ctx = fixture()
+    draft['semantic_events'][0].update(
+        event_type=event_type,
+        description='item crosses the visible frame edge',
+    )
+    accepted = registry.sanitize('SceneSemanticsChoices', draft, ctx)
+    assert accepted == draft
+    public = project_scene_choices(accepted, ctx)
+    assert public['semantic_events'] == draft['semantic_events']
+    assert SceneSemantics.model_validate(public).model_dump(mode='json')['semantic_events'] == draft['semantic_events']
+    # A scene visibility observation must not expand the fine-action taxonomy.
+    with pytest.raises(ValueError):
+        Skill(event_type)
+
+
 def test_projection_preserves_nonspatial_and_exact_sources_and_direction():
     from percept_harness.pipelines.scene_choices import project_scene_choices
     draft, ctx = fixture()

@@ -38,7 +38,7 @@ STAGE_MAX_OUTPUT_TOKENS = {
     "embodied_pass_b": 8_192,
     "embodied_enrichment": 4_096,
     "scene_semantics": 8_192,
-    "occlusion_semantics": 4_096,
+    "occlusion_semantics": 12_288,
 }
 RESPONSE_FORMAT_MODES = ("json_schema", "json_object", "none")
 # Provider statuses worth one more attempt: throttling, and transient

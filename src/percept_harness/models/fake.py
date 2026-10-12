@@ -165,6 +165,11 @@ class FakeVideoModel(VideoModel):
                     }
                 ],
             }
+        if request.stage == "occlusion_semantics" and request.schema_name == "SceneRevision":
+            from dataclasses import replace
+            scene = self._fixture(replace(request, stage="scene_semantics"))
+            decisions = self._fixture(replace(request, schema_name="OcclusionDecisionSet"))["decisions"]
+            return {"scene": scene, "decisions": decisions}
         if request.stage == "occlusion_semantics":
             return {
                 "decisions": [

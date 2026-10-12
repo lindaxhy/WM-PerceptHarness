@@ -23,8 +23,19 @@ ObjectId = Annotated[
 ]
 
 
-SceneEventType = Skill
-"""Scene events and fine skills share the official LAS vocabulary."""
+SceneEventType = StrEnum(
+    "SceneEventType",
+    {
+        **{skill.name: skill.value for skill in Skill},
+        "OUT_OF_FRAME": "out_of_frame",
+        "ENTER_FRAME": "enter_frame",
+    },
+)
+"""Scene vocabulary extends LAS skills with frame visibility events.
+
+Visibility is a scene observation, not a fine action skill. Keep existing LAS
+values compatible without allowing these labels in action enrichment.
+"""
 
 
 class OutcomeStatus(StrEnum):
@@ -86,7 +97,7 @@ class SceneLocation(_SceneModel):
     source_track_ids: list[str]
     source_keyframe_ids: list[str]
     branch: Literal["scene"]
-    model_stage: Literal["scene_semantics"]
+    model_stage: Literal["scene_semantics", "occlusion_semantics"]
     source_segment_indices: list[Index]
     repair_history: list[Literal["initial", "repair"]]
     review_status: Literal["not_required"]
@@ -106,7 +117,7 @@ class SceneRelation(_SceneModel):
     source_track_ids: list[str]
     source_keyframe_ids: list[str]
     branch: Literal["scene"]
-    model_stage: Literal["scene_semantics"]
+    model_stage: Literal["scene_semantics", "occlusion_semantics"]
     source_segment_indices: list[Index]
     repair_history: list[Literal["initial", "repair"]]
     review_status: Literal["not_required"]
