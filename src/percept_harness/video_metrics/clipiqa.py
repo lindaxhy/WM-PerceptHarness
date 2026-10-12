@@ -3,7 +3,7 @@
 
 Video decoding and frame scoring are adapted from MemoBench, revision
 f4edb0c4f9f1820bac837ee30d4957811cf275ff (MIT, Copyright 2026 Haoyu Chen).
-See docs/metrics/THIRD_PARTY_NOTICES.md for sources and modifications.
+See docs/third-party-notices.md for sources and modifications.
 The CLIP-IQA+ model itself is supplied by PyIQA, not implemented here.
 """
 

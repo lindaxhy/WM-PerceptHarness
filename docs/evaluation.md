@@ -128,7 +128,7 @@ CLIP-IQA+ additionally records frame sampling, resizing, device, and MemoBench r
 
 Use the short command selector `clipiqa` even though its output metric identifier is `clipiqa+`.
 
-Other upstream wrappers remain separate preparation tools listed in the [catalog](metrics/README.md). Their result schemas and validation stages are documented individually.
+Other upstream evaluators use `percept score` commands listed in the [catalog](metrics.md). Their result schemas and validation stages are documented individually.
 
 ## Multi-GPU manifest annotation
 

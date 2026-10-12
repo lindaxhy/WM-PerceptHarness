@@ -2,7 +2,7 @@
 
 更新时间：2026-09-20
 
-本文件与同目录 `FINAL_METRICS.json` 完整记录 2026-09-20 冻结的指标选择。下方清单是公开的选择依据，不需要访问内部资料。选择范围不等于已实现范围；当前入口及验证证据见 [指标目录](README.md)。
+本文件与同目录 `benchmark.json` 完整记录 2026-09-20 冻结的指标选择。下方清单是公开的选择依据，不需要访问内部资料。选择范围不等于已实现范围；当前入口及验证证据见 [指标目录](metrics.md)。
 
 ## 最终交付范围
 
@@ -30,7 +30,7 @@
 20. Subject Consistency
 21. Background Consistency
 
-Mechanics、Thermotics、Material 仍属于最终保留的物理专项，但按第 10 节约定只做专项报告，不并入统一主榜总分。
+Mechanics、Thermotics、Material 仍属于最终保留的物理专项，但只做专项报告，不并入统一主榜总分。
 
 ### 5 项固定附表
 
@@ -53,7 +53,7 @@ Mechanics、Thermotics、Material 仍属于最终保留的物理专项，但按�
 
 ## 实现状态
 
-名单冻结不等于每项代码已经完成。现有 PR 中已提交并完成单视频验证的只有 Motion Smoothness / AMT；其余 20 项主榜和 5 项附表属于最终范围，仍需按各自官方仓库、权重、环境和输入格式补齐。`FINAL_METRICS.json` 的 `implementation_status` 记录这一点，不能把 `to_complete` 误读成“已实现”。
+名单冻结不等于每项代码已经完成。2026-09-20 冻结时，记录为已提交并完成单视频验证的只有 Motion Smoothness / AMT；其余 20 项主榜和 5 项附表属于最终范围，仍需按各自官方仓库、权重、环境和输入格式补齐。`benchmark.json` 的 `implementation_status` 记录这一点，不能把 `to_complete` 误读成“已实现”。
 
 ## 官方来源固定版本
 

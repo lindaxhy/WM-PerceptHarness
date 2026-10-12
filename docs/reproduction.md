@@ -20,7 +20,7 @@ Use separate output directories for independently reported experiments. Verified
 
 For a uv-managed core environment, use `uv sync --locked` with the required extras. For every independent evaluator environment, save `python --version`, `python -m pip freeze`, and `python -m pip check` output. The dimension-specific VBench Motion environment intentionally differs from the full VBench dependency metadata; record that discrepancy rather than treating it as a fully validated general VBench installation.
 
-Pin external weights and source trees as specified in [third-party notices](metrics/THIRD_PARTY_NOTICES.md) and [weight provenance](metrics/weights.json). Optional dependency groups do not by themselves reproduce external evaluator environments.
+Pin external weights and source trees as specified in [third-party notices](third-party-notices.md) and [weight provenance](weights.json). Optional dependency groups do not by themselves reproduce external evaluator environments.
 
 ## Validation stages
 
@@ -30,9 +30,9 @@ Pin external weights and source trees as specified in [third-party notices](metr
 | Real single-video inference | The evaluator produced a score in a recorded environment |
 | Batch validation | A frozen dataset completed with documented coverage and exclusions |
 
-A passing preflight is not a model score. A single-video result does not establish full benchmark reproduction. The [2026-09-20 validation record](metrics/VALIDATION_20260920.md) records historical offline checks and explicitly limits its inference claims.
+A passing preflight is not a model score. A single-video result does not establish full benchmark reproduction.
 
-The [metric catalog](metrics/README.md) is the public navigation point. [FINAL_METRICS.json](metrics/FINAL_METRICS.json) records benchmark selection; its status fields and [STATUS_REMAINING.json](metrics/STATUS_REMAINING.json) are dated snapshots, not automatic detection of installed capabilities.
+The [metric catalog](metrics.md) is the public navigation point. [benchmark.json](benchmark.json) records the frozen selection and its original status fields. Current entry points and validation limits are documented in the catalog; implementation status is not detected automatically.
 
 ## Reporting
 

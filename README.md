@@ -10,7 +10,7 @@ The repository provides three complementary workflows:
 | Event-timeline fidelity | Real/generated video annotations → temporal and semantic comparisons | `percept score fidelity` |
 | Video quality | Video → CLIP-IQA+ or VBench Motion Smoothness score | `percept score clipiqa` / `motion` |
 
-Annotation uses sampled visual frames through an OpenAI-compatible VLM endpoint; it does not use audio. Direct quality metrics use their own model checkpoints and do not require VLM API credentials. The [metric catalog](docs/metrics/README.md) distinguishes implemented entry points, validation evidence, and planned integrations.
+Annotation uses sampled visual frames through an OpenAI-compatible VLM endpoint; it does not use audio. Direct quality metrics use their own model checkpoints and do not require VLM API credentials. The [metric catalog](docs/metrics.md) distinguishes implemented entry points, validation evidence, and planned integrations.
 
 ```text
 Real video ────── annotate ── reference timeline ─┐
@@ -46,7 +46,7 @@ percept annotate --videos ./my_videos \
   --template embodied_action_captioning --output outputs/actions
 ```
 
-The default backend is OpenAI-compatible; `--backend openai` remains an explicit option. Alternative providers and optional SAM3.1 evidence are described in [advanced configuration](docs/advanced.md).
+The default backend is OpenAI-compatible; `--backend openai` remains an explicit option. Alternative providers and optional SAM3.1 evidence are described in [advanced configuration](docs/installation.md#annotation-configuration).
 
 | Template | Output |
 |---|---|
@@ -71,7 +71,7 @@ Temporal scoring works with the core installation. For semantic similarity and s
 
 ## Score video quality
 
-After installing the corresponding [metric environment](docs/metrics/usage.md):
+After installing the corresponding [metric environment](docs/metrics.md):
 
 ```bash
 percept score clipiqa --video example.mp4 --output outputs/example.clipiqa.json
@@ -83,14 +83,16 @@ percept score motion --video example.mp4 \
 
 CLIP-IQA+ measures sampled-frame image quality; Motion Smoothness measures local interpolation smoothness. Neither establishes action correctness. Both preserve their existing scoring protocols and output fields.
 
-## Research use
+## Documentation
 
-- [Metric catalog and readiness](docs/metrics/README.md)
-- [Frozen benchmark selection](docs/metrics/FINAL_METRICS.md) — selection is separate from implementation status; CLIP-IQA+ is a backup metric.
-- [Reproduction guide](docs/reproduction.md) — versions, inputs, environments, and evidence to retain.
-- [Third-party sources and notices](docs/metrics/THIRD_PARTY_NOTICES.md)
+- [Installation and configuration](docs/installation.md)
+- [Evaluation workflows and outputs](docs/evaluation.md)
+- [Metric commands and protocols](docs/metrics.md)
+- [Reproduction and validation](docs/reproduction.md)
+- [Frozen benchmark selection](docs/benchmark.md)
+- [Third-party notices and license](docs/third-party-notices.md)
 
-The current release does not provide an end-to-end reproduction of every metric in the frozen selection. Per-metric limitations are listed in the catalog.
+The current release does not provide an end-to-end reproduction of every metric in the frozen selection. Per-metric limitations are listed in the metric guide.
 
 ## Development
 
@@ -114,15 +116,15 @@ The suite uses synthetic media, fake models and mocked external evaluators to ch
 | `scripts/` | Input preparation and manifest validation |
 | `tests/` | Python regression tests and small fixtures; retained in source control, excluded from the wheel |
 | `pyproject.toml` | Core dependencies and optional `dev`, `fidelity`, `clipiqa`, `motion` extras |
-| `docs/` | User guides, metric protocols and architecture notes; dated historical material belongs in `docs/archive/` |
+| `docs/` | Current user guides, metric protocols and reproduction instructions |
 
 Reusable logic lives in the package; `scripts/` contains only input preparation tools. Model interfaces and endpoint adapters live in `src/percept_harness/models/`; configure the provider/model through environment variables, not source constants.
 
-All scorers use `percept score`: `fidelity`, `clipiqa`, `motion`, `vbench`, `vbench-clip`, `dover`, `external`, and `videophy-joint`. The former `scripts/score_*.py`, `run_official_external.py`, and `aggregate_videophy_joint.py` entry points have been replaced by these commands; their evaluator arguments are unchanged. See the [metric catalog](docs/metrics/README.md) for environment requirements and validation status.
+All scorers use `percept score`: `fidelity`, `clipiqa`, `motion`, `vbench`, `vbench-clip`, `dover`, `external`, and `videophy-joint`. The former `scripts/score_*.py`, `run_official_external.py`, and `aggregate_videophy_joint.py` entry points have been replaced by these commands; their evaluator arguments are unchanged. See the [metric catalog](docs/metrics.md) for environment requirements and validation status.
 
 Keep regression tests for scoring, timestamp boundaries, model-output validation, resume identity and command behavior. Add real-model validation separately with its environment and evidence, rather than making ordinary tests require API credentials or GPU checkpoints.
 
-Local agent state (`.superpowers/`, `.claude/`, `docs/superpowers/`), caches, generated outputs and model weights are ignored. Keep useful long-lived design decisions in `docs/architecture/`; do not commit agent task transcripts. Existing files must also be removed from Git tracking before ignore rules take effect.
+Local agent state (`.superpowers/`, `.claude/`, `docs/superpowers/`), caches, generated outputs and model weights are ignored. Keep current usage and design guidance in `docs/`; historical implementation notes remain available in Git history. Do not commit agent task transcripts. Existing files must also be removed from Git tracking before ignore rules take effect.
 
 ## Project history and license
 
