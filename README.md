@@ -27,12 +27,10 @@ python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e .
 
-percept --help
-ffmpeg -version
-ffprobe -version
+python scripts/verify_install.py
 ```
 
-This installs the annotation client and temporal fidelity scorer. GPU metrics have separate [runtime requirements](docs/installation.md#optional-metric-environments). `pip install` installs code and dependencies; it does not download model weights.
+This installs the annotation client and temporal fidelity scorer. GPU metrics have separate [runtime requirements](docs/usage.md#optional-metric-environments). `pip install` installs code and dependencies; it does not download model weights.
 
 ### 2. Configure the annotation model
 
@@ -44,7 +42,7 @@ export PERCEPT_OPENAI_MODEL="your-vision-model-id"
 export PERCEPT_OPENAI_API_KEY="your-api-key"
 ```
 
-Choose a model that accepts image inputs through the chat completions API. More options, including multiple model aliases and optional SAM3.1 evidence, are documented in [configuration](docs/installation.md#annotation-configuration). `.env` files are not loaded automatically.
+Choose a model that accepts image inputs through the chat completions API. More options, including multiple model aliases and optional SAM3.1 evidence, are documented in [configuration](docs/usage.md#annotation-configuration). `.env` files are not loaded automatically.
 
 ### 3. Annotate your video
 
@@ -75,7 +73,7 @@ outputs/actions/
 
 Read `status` and `error` to check success, then `data` for the annotation. Timestamps are seconds on the original video. The directory also contains `.percept/` run records used for resume and history. If video filenames collide, use the `result_file` recorded in `results.jsonl` to locate the correct JSON.
 
-Matching completed built-in runs can resume. Add `--force` for an independent repeat. See [outputs and resume](docs/evaluation.md#result-identity-and-resume) for the exact reuse rules.
+Matching completed built-in runs can resume. Add `--force` for an independent repeat. See [outputs and resume](docs/usage.md#result-identity-and-resume) for the exact reuse rules.
 
 ## Compare real and generated videos
 
@@ -104,7 +102,7 @@ outputs/
 
 Repeat the annotation steps for each pair. A flat folder of annotation JSON files is not accepted. The output reports temporal event-family overlap, event F1 and outcome agreement. Check `paired_samples` against the number of pairs you intended to evaluate.
 
-Temporal scoring needs no API calls or local model weights. For semantic similarity, install `python -m pip install -e '.[fidelity]'` and add `--semantic`; its embedding model is downloaded/cached separately. See [fidelity evaluation](docs/evaluation.md#event-timeline-fidelity) for input exclusions, actionless-case limitations and repeated-reference evaluation.
+Temporal scoring needs no API calls or local model weights. For semantic similarity, install `python -m pip install -e '.[fidelity]'` and add `--semantic`; its embedding model is downloaded/cached separately. See [fidelity evaluation](docs/usage.md#event-timeline-fidelity) for input exclusions, actionless-case limitations and repeated-reference evaluation.
 
 ## Evaluate video quality
 
@@ -120,6 +118,7 @@ source .venv-clipiqa/bin/activate
 # Install the appropriate PyTorch/TorchVision build before the next step.
 python -m pip install -e '.[clipiqa]'
 percept download clipiqa --cache-dir ./weights
+python scripts/verify_install.py --metric clipiqa --cache-dir ./weights
 percept score clipiqa --video ./videos/sample_001.mp4 \
   --cache-dir ./weights --output outputs/sample_001.clipiqa.json
 ```
@@ -137,6 +136,7 @@ source .venv-motion/bin/activate
 python -m pip install -e '.[motion]'
 python -m pip install --only-binary=:all: --no-deps vbench==0.1.5
 percept download motion --cache-dir ./weights
+python scripts/verify_install.py --metric motion --cache-dir ./weights
 percept score motion --video ./videos/sample_001.mp4 \
   --cache-dir ./weights --gpu 0 --output outputs/sample_001.motion.json
 ```
@@ -178,13 +178,10 @@ CLIPScore, DOVER and other external evaluators have separate entries in the [met
 
 | Guide | Contents |
 |---|---|
-| [Installation](docs/installation.md) | Environments, API configuration and optional SAM3.1 |
-| [Evaluation](docs/evaluation.md) | Annotation schema, fidelity inputs, outputs and resume |
-| [Metrics](docs/metrics.md) | Metric protocols, weights and external evaluator setup |
-| [Reproduction](docs/reproduction.md) | Validation evidence, contributor tests and historical versions |
-| [Benchmark selection](docs/benchmark.md) | Frozen metric selection and reporting scope |
+| [Usage](docs/usage.md) | Installation checks, configuration, annotation/fidelity workflows and outputs |
+| [Metrics](docs/metrics.md) | Metric protocols, weights, input examples and reporting scope |
 | [Third-party notices](docs/third-party-notices.md) | Upstream sources and component licenses |
 
-For development, see the [test instructions](docs/reproduction.md#development). Tests are not required to use the package.
+`python scripts/verify_install.py` checks the local installation and a few basic behaviors. It does not call APIs, run model inference or establish benchmark validity. See [verification](docs/usage.md#verify-the-installation) for optional metric profiles.
 
 No project-wide open-source license has been granted yet. Third-party components retain their own license terms.

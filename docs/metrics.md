@@ -2,23 +2,23 @@
 
 Use this page to find an evaluator and understand its validation level. Benchmark selection, implemented code, and successful inference are different facts.
 
-Use the sections below for [CLIP-IQA+](#clip-iqa), [Motion Smoothness](#motion-smoothness), [VBench and external evaluators](#vbench-and-external-evaluators), [DOVER](#dover), and [input preparation](#input-preparation). The [benchmark selection](benchmark.md), and [third-party notices](third-party-notices.md) are separate reference files.
+Use the sections below for [CLIP-IQA+](#clip-iqa), [Motion Smoothness](#motion-smoothness), [VBench and external evaluators](#vbench-and-external-evaluators), [DOVER](#dover), and [input preparation](#input-preparation). The [reporting scope](#benchmark-reporting) records the benchmark selection; [third-party notices](third-party-notices.md) cover component licenses.
 
 ## Public scoring entry points
 
 | Evaluator | Command | Environment | Evidence and scope |
 |---|---|---|---|
-| Event-timeline fidelity | `percept score fidelity` | Core; optional `fidelity` extra for semantic scoring | Existing hand-calculated regression examples; compares paired annotations |
-| CLIP-IQA+ | `percept score clipiqa` | PyIQA 0.1.16; CPU or CUDA | Implemented sampled-frame scorer and protocol tests; a fresh full dependency installation is not validated by the historical record |
+| Event-timeline fidelity | `percept score fidelity` | Core; optional `fidelity` extra for semantic scoring | Deterministic local smoke check; compares paired annotations |
+| CLIP-IQA+ | `percept score clipiqa` | PyIQA 0.1.16; CPU or CUDA | Implemented sampled-frame scorer; a fresh full dependency installation is not validated by the historical record |
 | VBench Motion Smoothness / AMT-S | `percept score motion` | VBench 0.1.5, CUDA, AMT-S weights | Existing record marks single-video smoke completed; this is not a full-dataset validation |
 
-See [installation](installation.md) and the metric protocols below, [input/output conventions](evaluation.md), and [checkpoint preparation](#checkpoint-preparation). The packaged commands use the active environment; they do not merge the different dependency stacks. Use the `percept score` commands above for these public workflows. The evaluator integrations below use the same CLI; input preparation remains in `scripts/`. Removed script paths are not compatibility entry points. JSON provenance retains the existing wrapper identifiers for compatibility.
+See [installation](usage.md) and the metric protocols below, [input/output conventions](usage.md), and [checkpoint preparation](#checkpoint-preparation). The packaged commands use the active environment; they do not merge the different dependency stacks. Use the `percept score` commands above for these public workflows. The evaluator integrations below use the same CLI; input preparation remains in `scripts/`. Removed script paths are not compatibility entry points. JSON provenance retains the existing wrapper identifiers for compatibility.
 
 CLIP-IQA+ is a **backup**, excluded from the current frozen main selection. Motion Smoothness is selected. Event fidelity is the repository's annotation-based workflow and is not silently inserted into the separate frozen 21-item list.
 
 ## Additional integration tools
 
-The following code is preparation/integration support. Offline tests do not establish successful real-model inference.
+The following code is preparation/integration support. Local checks do not establish successful real-model inference.
 
 | Scope | Existing tool | Remaining validation/resources |
 |---|---|---|
@@ -258,7 +258,7 @@ The first run should be one short, decodable video.  Inspect the official
 
 ## DOVER
 
-`percept score dover` validates the pinned upstream source, runtime and checkpoint paths, then invokes the official evaluator. Offline wrapper tests exist; this release does not establish successful DOVER model inference.
+`percept score dover` validates the pinned upstream source, runtime and checkpoint paths, then invokes the official evaluator. Source/cache preflight is available; this release does not establish successful DOVER model inference.
 
 Pinned source: `VQAssessment/DOVER` at `f1ddc96215bc7fbcf8f315c65d47905f339c3419`. The evaluator requires both `pretrained_weights/DOVER.pth` under the source root and `hub/checkpoints/convnext_tiny_1k_224_ema.pth` under `TORCH_HOME`. Record source URLs and full hashes; an observed hash alone is not verification against a trusted expected value.
 
@@ -286,7 +286,7 @@ percept score dover \
 
 A successful check is `preflight_passed_not_scored`. Omit `--check-only` and use a new output directory only when ready for actual model inference. Preserve the command, environment, hashes, `dover.log` and `result.json`. An unparsed official result is not a score.
 
-See the [catalog](#public-scoring-entry-points) for overall readiness and the [reproduction guide](reproduction.md) for validation stages.
+See the [catalog](#public-scoring-entry-points) for overall readiness and the [reproducibility notes](usage.md#reproducibility) for validation stages.
 
 If the original evaluator requires Python older than the harness's Python 3.12 minimum, run the dependency-free wrapper file directly with that environment's Python:
 
@@ -384,4 +384,83 @@ and incomplete VBench-2.0 auxiliary questions. For PhyGenEval question files,
 the adapter deliberately does not invent a schema: use the files shipped by
 PhyGenBench or the exact schema accepted by the pinned upstream revision.
 
-[official-input-examples.json](official-input-examples.json) contains sample inputs grouped by adapter; select the relevant array and replace example paths and task fields before running.
+### Adapter input examples
+
+Select the array for your adapter below, save it as your input JSON, and replace the example paths and task fields.
+
+```json
+{
+  "worldmodelbench": [
+    {
+      "video_id": "sample-0001",
+      "video": "/data/videos/sample-0001.mp4",
+      "domain": "human",
+      "subdomain": "hands",
+      "text_first_frame": "A person sits at a table with both hands visible.",
+      "text_instruction": "The person waves with one hand.",
+      "first_frame": "images/sample-0001.jpg"
+    }
+  ],
+  "action_binding": [
+    {
+      "video_id": "sample-0001",
+      "video": "/data/videos/sample-0001.mp4",
+      "prompt": "A dog runs through a field while a cat climbs a tree.",
+      "phrase_0": ["a dog?", "a dog runs through a field?"],
+      "phrase_1": ["a cat?", "a cat climbs a tree?"]
+    }
+  ],
+  "motion_binding": [
+    {
+      "video_id": "sample-0001",
+      "video": "/data/videos/sample-0001.mp4",
+      "prompt": "A cat walks to the left.",
+      "object_1": "cat",
+      "d_1": "left",
+      "object_2": "",
+      "d_2": ""
+    }
+  ],
+  "object_interactions": [
+    {
+      "video_id": "sample-0001",
+      "video": "/data/videos/sample-0001.mp4",
+      "prompt": "A child pushes a toy car."
+    }
+  ],
+  "vbench2": [
+    {
+      "video_id": "sample-0001",
+      "video": "/data/videos/sample-0001.mp4",
+      "prompt_en": "A person sits, then gets up and sweeps the floor.",
+      "dimension": "Motion_Order_Understanding",
+      "auxiliary_info": ["sitting", "get up and sweeping"]
+    }
+  ],
+  "videophy_pc": [
+    {"videopath": "/data/videos/sample-0001.mp4"}
+  ],
+  "videophy_sa": [
+    {"caption": "A person sits, then gets up and sweeps the floor.", "videopath": "/data/videos/sample-0001.mp4"}
+  ]
+}
+```
+
+
+## Benchmark reporting
+
+The frozen selection from 2026-09-20 contains 21 main/specialist metrics and five reference/distribution appendix metrics. Selection is not evidence that every evaluator is provisioned or validated; use the current entry-point tables above for implementation scope.
+
+| Group | Selected metrics |
+|---|---|
+| Image/video quality | MUSIQ, DOVER, Motion Smoothness, Temporal Flickering, Dynamic Degree |
+| Text alignment | CLIPScore, ViCLIP / Overall Consistency |
+| Instruction/action | Instruction Following, Action Binding, Motion Binding, Motion Order Understanding, Motion Rationality, Object Interactions |
+| Physics | PhyGenEval PCA, VideoPhy-2 PC, VideoPhy-2 SA |
+| Specialist physics | Mechanics, Thermotics, Material |
+| Consistency | Subject Consistency, Background Consistency |
+| Appendix | PSNR, SSIM, LPIPS, FVD, FID |
+
+Mechanics, Thermotics and Material are separate specialist reports, excluded from a unified main score. PSNR/SSIM/LPIPS need aligned real future frames; FVD/FID need a matching real collection or statistics. Without those references, report `N/A`.
+
+Aesthetic Quality and long-video consistency variants are diagnostics; CLIP-IQA+ is a backup. Physical Adherence is outside the frozen selection. VideoPhy-2 Joint is an analysis of paired PC/SA scores (`PC >= 4` and `SA >= 4`), not an additional model or metric. Event fidelity is the separate annotation-based workflow. Report scores, coverage and exclusions separately rather than averaging incompatible metrics.
