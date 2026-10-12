@@ -39,3 +39,36 @@ The [metric catalog](metrics.md) is the public navigation point. [benchmark.json
 Report event fidelity, image quality, and motion smoothness separately. Include sample counts and missing-data policy. Report PSNR/SSIM/LPIPS only with aligned real future frames, and FVD/FID only with an appropriate matching real distribution. Keep CLIP-IQA+ marked as a backup under the current frozen selection. Mechanics, Thermotics, and Material are selected specialist reports excluded from a unified main score; the five reference/distribution metrics are separate appendix reports.
 
 Paper-specific configs, citation metadata, and published result tables should be added when those artifacts are finalized; no paper configuration or scientific result is invented by this release.
+
+
+## Development
+
+Tests are for contributors; running annotation or evaluation does not require them. With Python 3.12+ and FFmpeg/FFprobe installed:
+
+```bash
+python -m pip install -e '.[dev]'
+python -m pytest -q
+```
+
+The suite uses synthetic media, fake model responses and local evaluator fixtures. It covers annotation schemas, timestamp boundaries, result identity and resume, CV evidence, metric inputs, CLI dispatch and checkpoint integrity. Optional runtime tests skip when their dependencies are unavailable; passing these tests does not establish real-model quality.
+
+Tests are grouped by behavior rather than implementation stage: model/backend contracts, runner/batch behavior, scene review, action contracts, CV evidence, fidelity and external metrics. To run a focused check, for example:
+
+```bash
+python -m pytest tests/test_cli.py tests/test_weights.py -q
+```
+
+Reusable runtime logic belongs in `src/percept_harness/`; `scripts/` holds input preparation tools. Generated outputs, local agent state and model weights are ignored and must stay outside commits. `uv.lock` supports the reproducible core workflow described in [installation](installation.md#reproducible-core-environment-optional-uv).
+
+## Historical versions
+
+The fixed two-sample Doubao re-verification experiment and its dedicated fixtures are available in the [last pre-cleanup commit](https://github.com/lindaxhy/WM-PerceptHarness/tree/a201286f2b5b4deb55b2e99aaff0303e588f2295). Current annotation uses the configurable OpenAI-compatible backend.
+
+The five-video LAS viewer, generated references, dated SAM3.1 results and server-specific smoke scripts are preserved on [archive/las-comparison-viewer](https://github.com/lindaxhy/WM-PerceptHarness/tree/archive/las-comparison-viewer). To inspect that archive independently:
+
+```bash
+git fetch origin
+git worktree add ../WM-PerceptHarness-viewer origin/archive/las-comparison-viewer
+```
+
+Follow `evaluation/viewer/README.md` there; the ignored video files must be supplied locally. The earlier LAS-compatible service is preserved by the [legacy-las-service tag](https://github.com/lindaxhy/WM-PerceptHarness/tree/legacy-las-service). These archives are not prerequisites for the current workflows.

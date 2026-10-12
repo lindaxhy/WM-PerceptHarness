@@ -1,5 +1,7 @@
 """Public commands exercise real parsers and lightweight scoring, without models."""
 import json
+import re
+from pathlib import Path
 import subprocess
 import sys
 
@@ -105,3 +107,36 @@ def test_direct_video_metric_help_has_no_dimension_selector(metric):
     assert result.returncode == 0, result.stderr
     assert '--videos-path' in result.stdout
     assert '--dimension' not in result.stdout
+
+
+_ACCESS_TOKEN_PATTERN = re.compile(
+    rb"(?:hf_[A-Za-z0-9]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|"
+    rb"github_pat_[A-Za-z0-9_]{20,}|"
+    rb"sk-(?:(?:proj|svcacct)-)?[A-Za-z0-9_-]{20,})"
+)
+
+
+def _tracked_text_files(repository_root: Path) -> list[Path]:
+    completed = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=repository_root,
+        capture_output=True,
+        check=True,
+    )
+    return [
+        repository_root / Path(raw.decode("utf-8"))
+        for raw in completed.stdout.split(b"\0")
+        if raw and (repository_root / Path(raw.decode("utf-8"))).is_file()
+    ]
+
+
+def test_repository_contains_no_committed_access_token_values() -> None:
+    repository_root = Path(__file__).resolve().parents[1]
+
+    offenders = [
+        path.relative_to(repository_root).as_posix()
+        for path in _tracked_text_files(repository_root)
+        if _ACCESS_TOKEN_PATTERN.search(path.read_bytes()) is not None
+    ]
+
+    assert offenders == []

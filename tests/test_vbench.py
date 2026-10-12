@@ -240,7 +240,7 @@ class VBenchOfficialTests(unittest.TestCase):
             self.output.mkdir(exist_ok=True)  # exactly what official VBench does
             (self.output / "results_test_eval_results.json").write_text(json.dumps(self.result()))
             return subprocess.CompletedProcess(command, 0)
-        with mock.patch.dict(os.environ, {"WORLD_SIZE": "8", "TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD": "1"}), \
+        with mock.patch.dict(os.environ, {"WORLD_SIZE": "8", "TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD": "1"}),\
              mock.patch.object(module.subprocess, "run", side_effect=fake_run):
             result = module.run_official(**self.args(gpu="2"))
         self.assertEqual(result["status"], "complete")
@@ -291,7 +291,7 @@ class VBenchOfficialTests(unittest.TestCase):
             (self.output / "results_test_eval_results.json").write_text(json.dumps(
                 self.result("overall_consistency", -.2, -.2)))
             return subprocess.CompletedProcess(command, 0)
-        with mock.patch.dict(os.environ, {"TORCH_FORCE_WEIGHTS_ONLY_LOAD": "1"}), \
+        with mock.patch.dict(os.environ, {"TORCH_FORCE_WEIGHTS_ONLY_LOAD": "1"}),\
              mock.patch.object(module.subprocess, "run", side_effect=fake_run):
             result = module.run_official(**self.args(dimensions=["overall_consistency"],
                         weights_manifest=manifest, prompt_file=prompt_file, allow_trusted_pickle=True))

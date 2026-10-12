@@ -70,9 +70,9 @@ class MotionWrapperTests(unittest.TestCase):
                         video.write_bytes(b"changed")
                     return subprocess.CompletedProcess(command, 1 if case == "cli_error" else 0)
                 from percept_harness.weights import WEIGHTS, Weight
-                with mock.patch.dict(WEIGHTS, {"motion": (Weight("amt_model/amt-s.pth", "https://unused.test", expected_hash),)}), \
-                     mock.patch.object(module.sysconfig, "get_path", return_value=str(root)), \
-                     mock.patch.object(module.importlib.metadata, "version", return_value="0.1.5"), \
+                with mock.patch.dict(WEIGHTS, {"motion": (Weight("amt_model/amt-s.pth", "https://unused.test", expected_hash),)}),\
+                     mock.patch.object(module.sysconfig, "get_path", return_value=str(root)),\
+                     mock.patch.object(module.importlib.metadata, "version", return_value="0.1.5"),\
                      mock.patch.object(module.subprocess, "run", side_effect=fake_run) as runner:
                     if case == "success":
                         payload = module.score_video(video, cache, output, "2")
