@@ -1,6 +1,7 @@
 """Persistent GPU slots, manifest safety, resume, and request throttling."""
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -27,8 +28,12 @@ def test_request_gate_ramps_and_backs_off_without_waiting_in_logger():
     assert gate.snapshot()["rate_limits"] == 1
 
 
-def test_two_gpu_batch_keeps_conservative_cv_resume_and_reuses_artifacts(tmp_path, silent_video, monkeypatch):
+@pytest.mark.parametrize('free_gib', [1, 20])
+def test_two_gpu_batch_keeps_cv_evidence_and_respects_cache_pressure(tmp_path, silent_video, monkeypatch, free_gib):
     from percept_harness.cli import main
+    # Exercise both cache policies regardless of the test host's free disk space.
+    monkeypatch.setattr('percept_harness.batch.shutil.disk_usage',
+                        lambda path: SimpleNamespace(free=free_gib * 1024**3))
     p = tmp_path / "manifest.jsonl"
     p.write_text("".join(json.dumps({"job_id": f"model/sample_{i}", "video_path": str(silent_video)}) + "\n" for i in range(3)))
     monkeypatch.setenv("PERCEPT_WORK_ROOT", str(tmp_path / "work"))
@@ -45,7 +50,17 @@ def test_two_gpu_batch_keeps_conservative_cv_resume_and_reuses_artifacts(tmp_pat
     assert main(args) == 0
     status = json.loads((root / "shard-00.status.json").read_text())
     assert not any(value["resumed"] for value in status["jobs"].values())
-    assert all(json.loads(Path(value["result_file"]).read_text())["data"]["cv_evidence"]["cache_hit"] for value in status["jobs"].values())
+    cache_hits = [json.loads(Path(value["result_file"]).read_text())["data"]["cv_evidence"]["cache_hit"]
+                  for value in status["jobs"].values()]
+    if free_gib >= 12:
+        assert all(cache_hits)
+    else:
+        assert not all(cache_hits)
+        assert not list((tmp_path / "cv-cache").rglob("manifest.json"))
+    from percept_harness.batch import _verify_cv_archive
+    for value in status["jobs"].values():
+        evidence = json.loads(Path(value["result_file"]).read_text())["data"]["cv_evidence"]
+        _verify_cv_archive(Path(value["cv_archive"]), evidence["manifest_sha256"])
 
 
 def test_shards_partition_every_job_once():

@@ -430,9 +430,8 @@ def test_identity_wire_shape_cannot_smuggle_claims_or_noncanonical_rows(mutation
         sm.OcclusionCandidate.model_validate(payload)
 
 
-def test_registry_and_operator_authenticate_same_retained_cues():
+def test_registry_authenticates_retained_cues():
     from percept_harness.pipelines.output_validation import _validate_occlusion_decision_output
-    from scripts.reverify_semantic_stages import _validate_occlusion_alignment, OperatorError
     from test_cv_summary import _reseal_candidate_payload
     other=_track('item_2','item',tuple(_observation(i) for i in (1,2,3)))
     bundle=gap_bundle(extras=(other,))
@@ -442,19 +441,13 @@ def test_registry_and_operator_authenticate_same_retained_cues():
     candidate=bundle.candidates[0]
     context={'duration':.4,'candidates':[candidate.model_dump(mode='json')],
              'evidence_summary':bundle.summary.model_dump(mode='json')}
-    values={'OCCLUSION_CANDIDATES_JSON':[candidate.prompt_record()],
-            'VIDEO_DURATION_SECONDS_JSON':.4,'CV_EVIDENCE_SUMMARY_JSON':bundle.summary.prompt_record()}
     positive=decisions(candidate,[candidate.allowed_event_intervals[0].model_dump()]).model_dump(mode='json')
     assert _validate_occlusion_decision_output(positive,context)==positive
-    _validate_occlusion_alignment(values,None,context)
     context['candidates'][0]['identity_evidence']['continuation_cues'][0]['bbox_iou']=.2
     _reseal_candidate_payload(context['candidates'][0])
-    values['OCCLUSION_CANDIDATES_JSON']=copy.deepcopy(context['candidates'])
     positive['decisions'][0]['candidate_id']=context['candidates'][0]['candidate_id']
     with pytest.raises(ValueError):
         _validate_occlusion_decision_output(positive,context)
-    with pytest.raises(OperatorError,match='OCCLUSION_CONTEXT_INVALID'):
-        _validate_occlusion_alignment(values,None,context)
 
 
 def test_registry_requires_source_for_supplied_identity_cues():

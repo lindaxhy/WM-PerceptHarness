@@ -2,7 +2,7 @@
 """Score one MP4 through the unmodified VBench 0.1.5 Motion Smoothness CLI.
 
 This wrapper performs no frame sampling, resizing, interpolation or rounding.
-CUDA and the trusted AMT-S checkpoint documented in docs/metrics are required.
+CUDA and the trusted AMT-S checkpoint documented in docs/metrics.md are required.
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ import sysconfig
 import tempfile
 
 VBENCH_VERSION = "0.1.5"
-AMT_SHA256 = "07e7e03405c213fe4405678db9b42d05671e48c56faf6a441b99bb0047d3cf77"
 
 
 def sha256(path: Path) -> str:
@@ -60,9 +59,9 @@ def score_video(video: Path, cache: Path, output: Path, gpu: str | None = None) 
     if version != VBENCH_VERSION:
         raise RuntimeError(f"Expected vbench=={VBENCH_VERSION}; found {version}")
     checkpoint = cache / "amt_model" / "amt-s.pth"
+    from percept_harness.weights import verify_weights
+    verify_weights("motion", cache)
     checkpoint_hash = sha256(checkpoint)
-    if checkpoint_hash != AMT_SHA256:
-        raise ValueError("AMT-S SHA-256 does not match docs/metrics/weights.json")
     executable = Path(sysconfig.get_path("scripts")) / ("vbench.exe" if os.name == "nt" else "vbench")
     if not executable.is_file():
         raise FileNotFoundError(f"Official VBench CLI not found: {executable}")

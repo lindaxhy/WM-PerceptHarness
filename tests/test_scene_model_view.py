@@ -1,8 +1,6 @@
 """Compact hints must retain exact authenticated sources without changing offers."""
-import copy
 import hashlib
 import json
-from importlib import resources
 
 import pytest
 from test_cv_summary import _artifact, _observation, _track
@@ -22,11 +20,17 @@ def context_for(summary, segments):
 
 
 def values_for(summary, segments):
-    from scripts.reverify_semantic_stages import _extract_prompt_data
     prompt = PromptRenderer().scene_semantics(segments, video_duration=segments[-1]['end'],
                                             evidence_summary=summary)
-    template = resources.files('percept_harness.prompts').joinpath('scene_semantics.txt').read_text()
-    values, _, suffix = _extract_prompt_data(prompt, template, 'scene_semantics')
+    decoder = json.JSONDecoder()
+    values = {
+        'SCENE_MODEL_VIEW_JSON': decoder.raw_decode(prompt.split('[SCENE_MODEL_VIEW_JSON]\n', 1)[1])[0],
+    }
+    # The renderer appends the immutable segment JSON after this instruction.
+    segment_section = prompt.split('[immutable validated fine segment data]\n', 1)[1]
+    values['SEGMENTS_JSON'] = decoder.raw_decode(segment_section.split('\n', 1)[1])[0]
+    suffix = (decoder.raw_decode(prompt.split('\n\n[CV_EVIDENCE_SUMMARY_JSON]\n', 1)[1])[0]
+              if '\n\n[CV_EVIDENCE_SUMMARY_JSON]\n' in prompt else None)
     return prompt, values, suffix
 
 
@@ -123,22 +127,12 @@ def test_utf8_size_fallback_retains_full_text_same_mode_on_repair():
     assert '字' * 18000 in initial
 
 
-def test_compact_prompt_and_repair_fit_ceiling_and_operator_rejects_view_tampering():
-    from scripts.reverify_semantic_stages import _validate_scene_alignment, OperatorError
+def test_compact_prompt_fits_ceiling_without_duplicate_evidence():
     summary, segments = source()
     prompt, values, suffix = values_for(summary, segments)
     assert len(prompt.encode()) <= 65536
     assert suffix is None
     assert values['SCENE_MODEL_VIEW_JSON']['metadata']['mode'] == 'compact'
-    context = context_for(summary, segments)
-    _validate_scene_alignment(values, suffix, context)
-    bad = copy.deepcopy(values)
-    bad['SCENE_MODEL_VIEW_JSON']['evidence']['observations'][0]['time'] += 0.01
-    with pytest.raises(OperatorError):
-        _validate_scene_alignment(bad, suffix, context)
-    context['segments'][0]['target'] = 'tampered'
-    with pytest.raises(OperatorError):
-        _validate_scene_alignment(values, suffix, context)
 
 
 def test_available_track_cap_falls_back_without_truncating_source():
@@ -220,26 +214,3 @@ def test_all_registered_repair_codes_fit_reserved_space_and_keep_identical_view(
     meta = json.JSONDecoder().raw_decode(repair.split('[SCENE_MODEL_VIEW_JSON]\n', 1)[1])[0]
     assert meta == values['SCENE_MODEL_VIEW_JSON']
     assert len(repair.encode()) <= 65536
-
-
-def test_operator_direct_stage_rejects_tampered_compact_view_before_output(tmp_path):
-    from test_semantic_reverification import _scene_stage, _Model, _valid_scene
-    from scripts.reverify_semantic_stages import run_stage, OperatorError
-    stage = _scene_stage(tmp_path)
-    context = stage['payload']['schema_context']
-    prompt = PromptRenderer().scene_semantics(context['segments'], video_duration=context['duration'])
-    stage['original_template'] = resources.files('percept_harness.prompts').joinpath('scene_semantics.txt').read_text()
-    stage['payload']['prompt'] = prompt.replace('"representative_subset"', '"tampered"')
-    output = tmp_path / 'output'; output.mkdir(mode=0o700)
-    with pytest.raises(OperatorError, match='SCENE_PROMPT_CONTEXT_MISMATCH'):
-        run_stage(stage, output_dir=output, model=_Model([_valid_scene()]))
-    assert list(output.iterdir()) == []
-
-
-def test_operator_cannot_bypass_compact_repair_text_ceiling():
-    from scripts.reverify_semantic_stages import rebuild_prompt, OperatorError
-    summary, segments = source()
-    prompt, _, _ = values_for(summary, segments)
-    template = resources.files('percept_harness.prompts').joinpath('scene_semantics.txt').read_text()
-    with pytest.raises(OperatorError, match='REPAIR_INVALID'):
-        rebuild_prompt(prompt, template, 'scene_semantics', repair={'issue_codes': ['x' * 65536]})

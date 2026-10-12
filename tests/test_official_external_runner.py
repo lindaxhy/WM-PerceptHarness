@@ -6,10 +6,7 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
-
-from run_official_external import SPECS, preflight, run_official  # noqa: E402
+from percept_harness.video_metrics.external import SPECS, preflight, run_official
 
 
 EXTERNAL = {

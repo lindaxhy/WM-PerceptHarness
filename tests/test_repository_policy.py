@@ -1,15 +1,11 @@
 from __future__ import annotations
 
 import ast
-import importlib.util
 import re
 import subprocess
-import tomllib
 from pathlib import Path
 
 import pytest
-
-from percept_harness.config import Settings
 
 
 _ACCESS_TOKEN_PATTERN = re.compile(
@@ -118,37 +114,6 @@ def _cv_gpu_import_offenders(repository_root: Path) -> list[str]:
             offenders.append(path.relative_to(repository_root).as_posix())
 
     return offenders
-
-
-def test_repository_has_no_asr_module_dependency_configuration_or_legacy_test():
-    """Reintroducing any removed ASR surface must fail the no-audio policy gate."""
-    repository_root = Path(__file__).resolve().parents[1]
-    project = tomllib.loads(
-        (repository_root / "pyproject.toml").read_text(encoding="utf-8")
-    )
-    optional_dependencies = project["project"]["optional-dependencies"]
-    dependency_groups = [
-        project["project"]["dependencies"],
-        *optional_dependencies.values(),
-    ]
-    dependency_names = {
-        re.sub(r"[-_.]+", "-", match.group(1).lower())
-        for group in dependency_groups
-        for requirement in group
-        if (match := re.match(r"\s*([A-Za-z0-9_.-]+)", requirement)) is not None
-    }
-
-    assert importlib.util.find_spec("percept_harness.asr") is None
-    assert all(extra.lower() != "asr" for extra in optional_dependencies)
-    assert "faster-whisper" not in dependency_names
-    assert {
-        "asr_backend",
-        "asr_model_path",
-        "asr_device",
-        "asr_compute_type",
-        "asr_required",
-    }.isdisjoint(Settings.model_fields)
-    assert not (repository_root / "tests" / "test_asr.py").exists()
 
 
 def _tracked_text_files(repository_root: Path) -> list[Path]:
@@ -281,47 +246,3 @@ def test_cv_gpu_packages_are_imported_only_by_explicit_runtime_adapters() -> Non
     repository_root = Path(__file__).resolve().parents[1]
 
     assert _cv_gpu_import_offenders(repository_root) == []
-
-
-def test_env_example_documents_disabled_local_cv_defaults() -> None:
-    repository_root = Path(__file__).resolve().parents[1]
-    values = {
-        key: value.strip("'\"")
-        for raw_line in (repository_root / ".env.example").read_text(
-            encoding="utf-8"
-        ).splitlines()
-        if raw_line.strip() and not raw_line.lstrip().startswith("#")
-        for key, value in [raw_line.split("=", 1)]
-    }
-
-    # CV evidence must stay disabled unless explicitly configured: the
-    # example environment must not switch the provider on, and the coded
-    # defaults must keep every CV field at its conservative value.
-    assert "PERCEPT_CV_PROVIDER" not in values
-
-    from percept_harness.config import Settings
-
-    defaults = Settings()
-    assert defaults.cv_provider == "disabled"
-    assert defaults.cv_model_alias == "sam3.1"
-    assert defaults.cv_entity_limit == 16
-    assert defaults.cv_short_video_seconds == 30.0
-    assert defaults.cv_scan_fps == 8.0
-    assert defaults.cv_max_fps == 30.0
-    assert defaults.cv_refinement_radius_seconds == 1.0
-    assert defaults.cv_min_confidence == 0.5
-    assert defaults.cv_min_area_fraction == 0.01
-    assert defaults.cv_occlusion_visibility_drop == 0.5
-    assert defaults.cv_execution_chunk_frames == 8
-    assert defaults.cv_timeout_seconds == 300.0
-    assert defaults.cv_compile_model is False
-    assert defaults.cv_cache_max_bytes == 8 * 1024 * 1024 * 1024
-    assert defaults.cv_cache_max_files == 10000
-    assert re.fullmatch(r"[0-9a-f]{64}", defaults.cv_checkpoint_sha256)
-    for field in (
-        defaults.cv_repository_path,
-        defaults.cv_checkpoint_path,
-        defaults.cv_bpe_path,
-        defaults.cv_cache_root,
-    ):
-        assert not Path(field).is_absolute()

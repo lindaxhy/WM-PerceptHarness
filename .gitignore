@@ -27,3 +27,5 @@ outputs/
 *.wav
 *.safetensors
 *.bin
+
+/weights/

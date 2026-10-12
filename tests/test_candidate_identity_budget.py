@@ -128,12 +128,11 @@ def test_resealed_identity_subset_still_requires_exact_source_rows(field,value):
         sm.validate_candidate_identity_evidence(full.summary,(forged,*bounded.candidates[1:]))
 
 
-def test_budget_subset_roundtrips_registry_renderer_and_operator():
+def test_budget_subset_roundtrips_registry_and_renderer():
     from percept_harness.pipelines.output_validation import _validate_occlusion_decision_output
     from percept_harness.pipelines.embodied import PromptRenderer
     from percept_harness.cv.entities import NormalizedEntities
     from percept_harness.cv.contracts import EntityPrompt
-    from scripts.reverify_semantic_stages import _validate_occlusion_alignment
     full, bounded = _partial_complete_source()
     result = {'decisions':[{
         'candidate_id':c.candidate_id,'classification':'unknown','target_entity_id':c.target_entity_id,
@@ -142,9 +141,6 @@ def test_budget_subset_roundtrips_registry_renderer_and_operator():
     context = {'duration':.2,'candidates':[c.model_dump(mode='json') for c in bounded.candidates],
                'evidence_summary':full.summary.model_dump(mode='json')}
     assert _validate_occlusion_decision_output(result,context) == result
-    values = {'OCCLUSION_CANDIDATES_JSON':[c.prompt_record() for c in bounded.candidates],
-              'VIDEO_DURATION_SECONDS_JSON':.2,'CV_EVIDENCE_SUMMARY_JSON':full.summary.prompt_record()}
-    _validate_occlusion_alignment(values,None,context)
     entities = NormalizedEntities(entities=tuple(EntityPrompt.model_validate(e.model_dump(mode='json'))
                                                for e in full.summary.entities), omitted_count=0)
     prompt = PromptRenderer().occlusion_semantics(bounded.candidates,entities,full.summary,

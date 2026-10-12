@@ -16,6 +16,25 @@ dev = ["pytest>=8.4,<9", "pytest-cov>=6.2,<7"]
 # optional columns of `percept score fidelity`: description similarity and paired tests
 fidelity = ["sentence-transformers>=3,<7", "scipy>=1.13,<2"]
 
+# Provision a hardware-compatible torch/torchvision pair before installing these
+# extras. Upstream VBench itself is installed separately with --no-deps.
+clipiqa = [
+  "pyiqa==0.1.16",
+  "numpy==2.2.6",
+  "Pillow==11.3.0",
+  "opencv-python-headless==4.11.0.86",
+]
+motion = [
+  "numpy==2.2.6",
+  "Pillow==11.3.0",
+  "opencv-python-headless==4.11.0.86",
+  "tqdm==4.69.0",
+  "omegaconf==2.3.0",
+  "decord==0.6.0",
+  "imageio==2.37.4",
+  "scipy==1.17.1",
+]
+
 [build-system]
 requires = ["hatchling>=1.27,<2"]
 build-backend = "hatchling.build"

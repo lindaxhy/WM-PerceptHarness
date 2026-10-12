@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "frozen_at": "2026-09-20",
   "authority": {
-    "document": "docs/metrics/FINAL_METRICS.md",
+    "document": "docs/benchmark.md",
     "section": "最终交付范围; 单独标记、但不计入上述 26 项",
     "rule": "本清单为 2026-09-20 冻结的当前选择；旧版 28 项说明不再作为名单依据。"
   },
@@ -44,7 +44,7 @@
         {"id":"aesthetic_quality","name":"Aesthetic Quality","decision":"VBench 诊断项，不进入主榜；不与 DOVER 并列计总分。"},
         {"id":"long_subject_consistency","name":"Long Subject Consistency","decision":"长视频诊断/附加报告，不进入21项主榜，也不计入5项固定附表。"},
         {"id":"long_background_consistency","name":"Long Background Consistency","decision":"长视频诊断/附加报告，不进入21项主榜，也不计入5项固定附表。"},
-        {"id":"clip_iqa_plus","name":"CLIP-IQA+","decision":"图像帧级备用；已有提交代码，但按第10节去重结果不进入最终主榜。"},
+        {"id":"clip_iqa_plus","name":"CLIP-IQA+","decision":"图像帧级备用；已有提交代码，但按去重结果不进入最终主榜。"},
         {"id":"physical_adherence","name":"Physical Adherence","decision":"删除主榜，保留 WorldModelBench 数据/代码作为复核备用；不进入最终主榜。"}
       ],
       "derived": [

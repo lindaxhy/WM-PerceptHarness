@@ -13,8 +13,7 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import score_dover_official as dover
+from percept_harness.video_metrics import dover
 
 
 class DoverWrapperTests(unittest.TestCase):
