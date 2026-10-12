@@ -144,7 +144,7 @@ def test_budget_subset_roundtrips_registry_and_renderer():
     entities = NormalizedEntities(entities=tuple(EntityPrompt.model_validate(e.model_dump(mode='json'))
                                                for e in full.summary.entities), omitted_count=0)
     prompt = PromptRenderer().occlusion_semantics(bounded.candidates,entities,full.summary,
-                                                 video_duration=.2,frame_pts=[0.,.1,.2])
+                                                 video_duration=.2)
     assert '"complete":false' in prompt
 
 

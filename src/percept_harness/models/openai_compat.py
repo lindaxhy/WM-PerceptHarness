@@ -70,7 +70,7 @@ class OpenAICompatVideoModel:
                  response_format: str = "json_object",
                  extra_body: Mapping[str, Any] | None = None,
                  extra_headers: Mapping[str, str] | None = None,
-                 timeout_seconds: float = 180.0, max_frames: int = 128,
+                 timeout_seconds: float = 180.0, max_frames: int = 64,
                  timeout_seconds_per_video_second: float = 0.0,
                  max_timeout_seconds: float = 1_800.0,
                  transport_retries: int = 3,
@@ -275,6 +275,7 @@ class OpenAICompatVideoModel:
                     else:
                         raise OpenAICompatBackendError(
                             f"service request failed with status {response.status_code}"
+                            + _bounded_error_detail(response)
                         )
             except (OpenAICompatBackendError, ModelOutputError):
                 raise
@@ -374,3 +375,12 @@ class OpenAICompatVideoModel:
         self._metrics = {}
         if self._owns_client:
             self._client.close()
+
+
+def _bounded_error_detail(response: httpx.Response) -> str:
+    """Return a bounded response-body snippet so error statuses are diagnosable."""
+    try:
+        chunk = response.read(2048).decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+    return f": {chunk[:800]}"

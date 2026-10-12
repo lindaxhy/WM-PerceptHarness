@@ -134,7 +134,7 @@ def test_effective_backend_identity_and_secrets(tmp_path,video,monkeypatch):
         assert batch(r,[video],output)[0].status=='skipped'
         model._registry['judge']='model-b'
         assert batch(r,[video],output)[0].status=='completed'
-        model.max_frames=64
+        model.max_frames=96
         assert batch(r,[video],output)[0].status=='completed'
         for path in output.rglob('*'):
             if path.is_file(): assert secret not in path.read_text()

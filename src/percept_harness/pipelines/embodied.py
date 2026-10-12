@@ -358,8 +358,7 @@ class EmbodiedActionPipeline:
                     scene_input=scene_input, repair=repair)
                 visibility = self._renderer.occlusion_semantics(
                     tuple(bundle.candidates), normalized_entities, summary,
-                    video_duration=span.end,
-                    frame_pts=[f.timestamp_seconds for f in timeline.frames], repair=repair)
+                    video_duration=span.end, repair=repair)
                 return base + "\n\n" + visibility + "\n\n" + self._renderer.render(
                     "scene_revision", {"DRAFT_SCENE_JSON": scene.model_dump(mode="json")})
             reviewed, review_job, _ = self._run_validated_stage(
@@ -889,7 +888,6 @@ class PromptRenderer:
         evidence_summary: CvEvidenceSummary,
         *,
         video_duration: Any,
-        frame_pts: Sequence[float],
         repair: Mapping[str, Any] | None = None,
     ) -> str:
         """Render trusted occlusion skeletons and bounded CV evidence as data."""
@@ -921,22 +919,12 @@ class PromptRenderer:
         if type(evidence_summary) is not CvEvidenceSummary:
             raise PromptRenderError("evidence summary must be a bounded CV summary")
         summary_data = evidence_summary.prompt_record()
-        if isinstance(frame_pts, (str, bytes, bytearray)) or not isinstance(
-            frame_pts, Sequence
-        ):
-            raise PromptRenderError("frame_pts must be a sequence")
-        pts = list(frame_pts)
-        if any(not _finite_nonnegative(value) for value in pts) or pts != sorted(
-            set(pts)
-        ):
-            raise PromptRenderError("frame_pts must be unique ordered finite timestamps")
         if repair is not None and set(repair) != {"issue_codes"}:
             raise PromptRenderError("occlusion repair data may contain only issue codes")
         return self.render(
             "occlusion_semantics",
             {
                 "VIDEO_DURATION_SECONDS_JSON": _prompt_video_duration(video_duration),
-                "FRAME_PTS_JSON": pts,
                 "OCCLUSION_CANDIDATES_JSON": candidate_data,
                 "NORMALIZED_ENTITIES_JSON": entity_data,
                 "CV_EVIDENCE_SUMMARY_JSON": summary_data,
@@ -1067,15 +1055,6 @@ def _naming_hint_data(prompt_context: str | None) -> dict[str, str] | None:
 
 def _prompt_video_duration(value: Any) -> float:
     return _prompt_positive_finite(value, "video_duration")
-
-
-def _finite_nonnegative(value: Any) -> bool:
-    return (
-        not isinstance(value, bool)
-        and isinstance(value, Real)
-        and math.isfinite(float(value))
-        and float(value) >= 0
-    )
 
 
 def _prompt_positive_finite(value: Any, name: str) -> float:

@@ -109,7 +109,7 @@ class Settings(BaseSettings):
     # Extra attempts for transient transport/service failures (timeouts, 429, 5xx).
     openai_transport_retries: NonnegativeInteger = 3
     openai_retry_backoff_seconds: PositiveFinite = 5.0
-    openai_max_frames: PositiveInteger = 128
+    openai_max_frames: PositiveInteger = 64
     # Replay validated per-request results for byte-identical inputs across
     # repair-loop retries and task reruns (openai backend only).
     semantic_result_cache: StrictEnvironmentBool = True
