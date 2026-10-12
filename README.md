@@ -130,7 +130,9 @@ The suite uses synthetic media, fake models and mocked external evaluators to ch
 
 Reusable logic lives in the package; `scripts/` contains only input preparation tools. Model interfaces and endpoint adapters live in `src/percept_harness/models/`; configure the provider/model through environment variables, not source constants.
 
-All scorers use `percept score`: `fidelity`, `clipiqa`, `motion`, `vbench`, `vbench-clip`, `dover`, `external`, and `videophy-joint`. The former `scripts/score_*.py`, `run_official_external.py`, and `aggregate_videophy_joint.py` entry points have been replaced by these commands; their evaluator arguments are unchanged. See the [metric catalog](docs/metrics.md) for environment requirements and validation status.
+The VBench-backed metrics have direct commands: `percept imaging-quality`, `percept aesthetic-quality`, `percept temporal-flickering`, `percept dynamic-degree`, `percept subject-consistency`, `percept background-consistency`, and `percept overall-consistency`. Each selects one metric without `--dimension`; VBench is the shared implementation, not an additional metric or total score. See the [metric commands](docs/metrics.md#individual-metric-commands) for required source and weight paths.
+
+Other scorers use `percept score`: `fidelity`, `clipiqa`, `motion`, `vbench-clip`, `dover`, `external`, and `videophy-joint`. The former scorer scripts and `percept score vbench --dimension ...` entry point have been replaced by the documented commands.
 
 Keep regression tests for scoring, timestamp boundaries, model-output validation, resume identity and command behavior. Add real-model validation separately with its environment and evidence, rather than making ordinary tests require API credentials or GPU checkpoints.
 

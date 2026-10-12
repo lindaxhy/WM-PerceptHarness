@@ -17,7 +17,7 @@ def test_annotate_defaults_to_openai(tmp_path, monkeypatch, capsys):
     assert 'PERCEPT_OPENAI_API_KEY' in capsys.readouterr().err
 
 
-@pytest.mark.parametrize('metric', ['fidelity', 'clipiqa', 'motion', 'vbench', 'vbench-clip', 'dover', 'external', 'videophy-joint'])
+@pytest.mark.parametrize('metric', ['fidelity', 'clipiqa', 'motion', 'vbench-clip', 'dover', 'external', 'videophy-joint'])
 def test_score_help_without_optional_models(metric):
     result = subprocess.run([sys.executable, '-m', 'percept_harness.cli',
                              'score', metric, '--help'], capture_output=True, text=True)
@@ -32,7 +32,7 @@ def test_unknown_score_metric_is_rejected():
     assert exc.value.code == 2
 
 
-@pytest.mark.parametrize('metric', ['clipiqa', 'motion', 'vbench', 'vbench-clip', 'dover', 'external', 'videophy-joint'])
+@pytest.mark.parametrize('metric', ['clipiqa', 'motion', 'vbench-clip', 'dover', 'external', 'videophy-joint'])
 def test_metric_help_does_not_load_optional_dependencies(metric):
     # Reject even installed optional packages, so this checks laziness on GPU hosts too.
     code = '''
@@ -92,3 +92,16 @@ def test_videophy_joint_command_scores_csv_outside_checkout(tmp_path):
     report = json.loads(output.read_text())
     assert report['joint_rate'] == 0.5
     assert [row['joint_pass'] for row in report['rows']] == [True, False]
+
+
+@pytest.mark.parametrize('metric', [
+    'imaging-quality', 'aesthetic-quality', 'temporal-flickering',
+    'dynamic-degree', 'subject-consistency', 'background-consistency',
+    'overall-consistency',
+])
+def test_direct_video_metric_help_has_no_dimension_selector(metric):
+    result = subprocess.run([sys.executable, '-m', 'percept_harness.cli',
+                             metric, '--help'], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert '--videos-path' in result.stdout
+    assert '--dimension' not in result.stdout

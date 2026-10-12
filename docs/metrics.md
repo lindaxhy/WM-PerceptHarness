@@ -22,7 +22,7 @@ The following code is preparation/integration support. Offline tests do not esta
 
 | Scope | Existing tool | Remaining validation/resources |
 |---|---|---|
-| MUSIQ, temporal flickering, dynamic degree, subject/background consistency, ViCLIP; aesthetic diagnostic | `percept score vbench` | Per-dimension weights and real smoke runs; frozen prompt mapping for ViCLIP; static subset for flickering |
+| MUSIQ, temporal flickering, dynamic degree, subject/background consistency, ViCLIP; aesthetic diagnostic | Independent commands below | Per-dimension weights and real smoke runs; frozen prompt mapping for ViCLIP; static subset for flickering |
 | CLIPScore | `percept score vbench-clip` | CLIP weights, original prompts, real inference validation |
 | DOVER | `percept score dover` | Independent compatible runtime, weights, real inference validation; see [DOVER](#dover) |
 | WorldModelBench, T2V-CompBench, VBench-2.0, PhyGenBench, VideoPhy-2 inputs | `scripts/official_input_adapters.py` | Official evaluators, environments, weights and task metadata; adapters do not run the models |
@@ -159,15 +159,19 @@ Use a lowercase `.mp4` filename and at least three decodable frames. Keep the so
 
 ## VBench and external evaluators
 
-`percept score vbench` runs the pinned VBench `evaluate.py` for
-`imaging_quality`, `aesthetic_quality`, `temporal_flickering`,
-`dynamic_degree`, `subject_consistency`, `background_consistency`, and
-`overall_consistency`. Motion Smoothness uses `percept score motion`
-and is deliberately rejected here. The wrapper records the exact
-command, environment choices, source root, cache, and log.  It does not alter
-VBench sampling, preprocessing, models, or formulas.  `overall_consistency`
-requires a frozen prompt or video-to-prompt JSON. `temporal_flickering`
-requires an explicit static/near-static-subset acknowledgement.
+These independent commands use the pinned official VBench implementation internally:
+
+| Command | Metric |
+|---|---|
+| `percept imaging-quality` | MUSIQ image quality |
+| `percept aesthetic-quality` | Aesthetic quality |
+| `percept temporal-flickering` | Temporal flickering |
+| `percept dynamic-degree` | Dynamic degree |
+| `percept subject-consistency` | Subject consistency |
+| `percept background-consistency` | Background consistency |
+| `percept overall-consistency` | Video-text consistency (ViCLIP) |
+
+Each command selects one metric; there is no public `--dimension` selector or VBench total score. Shared source/cache checks and official invocation live in `video_metrics/vbench_backend.py`. Motion Smoothness uses `percept score motion`. The backend records the exact command, environment choices, source root, cache, and log. It does not alter VBench sampling, preprocessing, models, or formulas. `overall-consistency` requires a frozen prompt or video-to-prompt JSON. `temporal-flickering` requires an explicit static/near-static-subset acknowledgement. Result JSON keeps the official underscore-separated metric identifiers.
 
 `percept score vbench-clip` calls the official competition
 `competitions/clip_score.py` implementation.  It creates only the official
@@ -213,24 +217,23 @@ not faked by this package:
 - PSNR/SSIM/LPIPS need aligned future reference frames; FVD/FID need matched
   real collections.  The generated videos themselves are not valid GT.
 
-### VBench commands
+### Individual metric commands
 
 After installing the harness, verify the cache and choose a fresh output directory. Pass the separate pinned VBench source checkout through `--vbench-root`:
 
 ```bash
-percept score vbench \
+percept imaging-quality \
   --vbench-root /path/to/official-metrics/sources/VBench \
   --videos-path /path/to/video.mp4 \
-  --dimension imaging_quality \
   --cache-dir /path/to/vbench-cache \
   --weights-manifest /path/to/official-metrics/manifests/imaging_quality.weights.json \
   --gpu 0 \
   --output-dir /path/to/official-metrics/results/imaging_quality_one
 ```
 
-For `overall_consistency`, add `--prompt` for a single video or
+For `percept overall-consistency`, add `--prompt` for a single video or
 `--prompt-file /path/to/official-metrics/manifests/video_to_prompt.json`.
-For `temporal_flickering`, add `--static-subset-ack` only after the subset
+For `percept temporal-flickering`, add `--static-subset-ack` only after the subset
 rule and excluded count have been recorded.
 
 For CLIP Score, the official competition code hard-codes OpenAI CLIP

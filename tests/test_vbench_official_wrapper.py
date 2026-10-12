@@ -1,5 +1,7 @@
 """Offline contracts for the pinned, single-video VBench wrapper."""
 import json
+import io
+from contextlib import redirect_stdout
 import os
 from pathlib import Path
 import subprocess
@@ -10,9 +12,7 @@ import unittest
 import uuid
 from unittest import mock
 
-from percept_harness.video_metrics import vbench as module
-
-SCRIPT = Path(module.__file__)
+from percept_harness.video_metrics import vbench_backend as module
 
 
 class VBenchOfficialTests(unittest.TestCase):
@@ -87,15 +87,43 @@ class VBenchOfficialTests(unittest.TestCase):
         return path
 
     def test_help_and_main_check_only_without_model_runtime(self):
-        result = subprocess.run([sys.executable, "-S", str(SCRIPT), "--help"], capture_output=True, text=True)
+        result = subprocess.run([sys.executable, "-m", "percept_harness.cli", "temporal-flickering", "--help"], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         with mock.patch.object(module.subprocess, "run") as runner:
-            code = module.main(["--vbench-root", str(self.source), "--videos-path", str(self.video),
-                                "--dimension", "temporal_flickering", "--cache-dir", str(self.cache),
+            from percept_harness.cli import main
+            code = main(["temporal-flickering","--vbench-root", str(self.source), "--videos-path", str(self.video),
+                                "--cache-dir", str(self.cache),
                                 "--output-dir", str(self.output), "--static-subset-ack", "--check-only"])
         self.assertEqual(code, 0)
         runner.assert_not_called()
         self.assertFalse(self.output.exists())
+
+    def test_direct_commands_select_exactly_the_requested_metric(self):
+        from percept_harness.cli import main
+        for name in (
+            "imaging-quality", "aesthetic-quality", "temporal-flickering",
+            "dynamic-degree", "subject-consistency", "background-consistency",
+            "overall-consistency",
+        ):
+            with self.subTest(metric=name):
+                dimension = name.replace("-", "_")
+                manifest = self.provision([dimension])
+                output = io.StringIO()
+                with mock.patch.dict(module.KNOWN_SHA256, {}, clear=True), redirect_stdout(output):
+                    code = main([name, "--vbench-root", str(self.source),
+                                 "--videos-path", str(self.video),
+                                 "--cache-dir", str(self.cache),
+                                 "--weights-manifest", str(manifest),
+                                 "--output-dir", str(self.output),
+                                 "--prompt", "A person moves a box",
+                                 "--static-subset-ack", "--check-only"])
+                self.assertEqual(code, 0)
+                metadata = json.loads(output.getvalue())
+                self.assertEqual(metadata["dimensions"], [dimension])
+                command = metadata["command"]
+                offset = command.index("--dimension")
+                self.assertEqual(command[offset + 1:offset + 3], [dimension, "--mode"])
+                self.assertFalse(self.output.exists())
 
     def test_source_pin_rejects_changed_extra_missing_files(self):
         module.verify_source(self.source)

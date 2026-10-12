@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Score one MP4 with the unchanged, pinned VBench source entry point.
+"""Shared backend for individual metrics using the pinned VBench implementation.
 
 No video preprocessing or score formulas are implemented here. Run inference
 inside tmux. --check-only checks inputs, source and pre-provisioned model files
@@ -349,11 +349,17 @@ def run_official(*, vbench_root: Path, videos_path: Path, dimensions: list[str],
     return metadata
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+def metric_main(dimension: str, argv: list[str] | None = None) -> int:
+    if dimension not in DIRECT_DIMENSIONS:
+        raise ValueError(f"Unsupported metric: {dimension}")
+    name = dimension.replace("_", "-")
+    parser = argparse.ArgumentParser(
+        prog=f"percept {name}",
+        description=f"Score {name} using the pinned official VBench implementation.",
+    )
+    parser.set_defaults(dimensions=[dimension])
     parser.add_argument("--vbench-root", type=Path, required=True)
     parser.add_argument("--videos-path", type=Path, required=True, help="One lowercase .mp4 file")
-    parser.add_argument("--dimension", dest="dimensions", nargs="+", required=True, choices=sorted(DIRECT_DIMENSIONS))
     parser.add_argument("--mode", choices=("custom_input",), default="custom_input")
     parser.add_argument("--prompt")
     parser.add_argument("--prompt-file", type=Path)
@@ -372,9 +378,6 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(run_official(**vars(args)), ensure_ascii=False, indent=2, allow_nan=False))
         return 0
     except Exception as error:
-        print(f"VBench wrapper failed: {error}", file=sys.stderr)
+        print(f"{name} failed: {error}", file=sys.stderr)
         return 1
 
-
-if __name__ == "__main__":
-    raise SystemExit(main())

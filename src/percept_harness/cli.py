@@ -24,16 +24,28 @@ _SCORE_MODULES = {
     "fidelity": ".evaluation.fidelity_cli",
     "clipiqa": ".video_metrics.clipiqa",
     "motion": ".video_metrics.motion",
-    "vbench": ".video_metrics.vbench",
     "vbench-clip": ".video_metrics.vbench_clip",
     "dover": ".video_metrics.dover",
     "external": ".video_metrics.external",
     "videophy-joint": ".video_metrics.videophy_joint",
 }
 
+_DIRECT_METRICS = {
+    "imaging-quality": "MUSIQ image quality",
+    "aesthetic-quality": "aesthetic quality",
+    "temporal-flickering": "temporal flickering",
+    "dynamic-degree": "dynamic degree",
+    "subject-consistency": "subject consistency",
+    "background-consistency": "background consistency",
+    "overall-consistency": "video-text consistency (ViCLIP)",
+}
+
 
 def main(argv: Sequence[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in _DIRECT_METRICS:
+        from .video_metrics.vbench_backend import metric_main
+        return metric_main(argv[0].replace("-", "_"), argv[1:])
     if argv and argv[0] == "download":
         from .weights import main as download_main
         return download_main(argv[1:])
@@ -63,6 +75,8 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser(
         "score", help="score annotations or videos (use percept score --help for evaluators)",
     )
+    for name, description in _DIRECT_METRICS.items():
+        commands.add_parser(name, help=description)
     commands.add_parser("download", help="download and verify metric checkpoints")
     evaluate = commands.add_parser(
         "annotate",
