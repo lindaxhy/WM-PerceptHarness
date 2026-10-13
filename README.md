@@ -30,7 +30,7 @@ python -m pip install -e .
 python scripts/verify_install.py
 ```
 
-This installs the annotation client and event scorer. Grounded annotation also requires local SAM3.1 assets and a compatible GPU runtime; see [setup](docs/usage.md#mandatory-sam31-grounding). Other GPU metrics have separate [runtime requirements](docs/usage.md#optional-metric-environments). `pip install` installs code and dependencies; it does not download model weights.
+This installs the annotation client and event scorer. Grounded annotation also requires local SAM3.1 assets and a compatible GPU runtime; see [setup](docs/usage.md#targeted-sam31-grounding). Other GPU metrics have separate [runtime requirements](docs/usage.md#optional-metric-environments). `pip install` installs code and dependencies; it does not download model weights.
 
 ### 2. Configure the annotation model
 
@@ -42,7 +42,7 @@ export PERCEPT_OPENAI_MODEL="your-vision-model-id"
 export PERCEPT_OPENAI_API_KEY="your-api-key"
 ```
 
-Choose a model that accepts image inputs through the chat completions API. Configure mandatory local SAM3.1 grounding before annotation; see [configuration](docs/usage.md#annotation-configuration). `.env` files are not loaded automatically.
+Choose a model that accepts image inputs through the chat completions API. Configure local SAM3.1 for targeted checks before annotation; see [configuration](docs/usage.md#annotation-configuration). `.env` files are not loaded automatically.
 
 ### 3. Annotate your video
 
@@ -58,7 +58,7 @@ Pass a directory to `--videos` to process its videos recursively. Annotation use
 event descriptions and bounds on the original video clock. You can omit `--template`; existing
 commands that specify it explicitly remain valid.
 
-The pipeline nominates visible entities, gathers baseline SAM evidence, drafts events, independently reviews the original video and overlays, performs bounded local SAM rechecks, and revises the result. Tracking supports visual review but does not prove an action, outcome or boundary.
+The VLM drafts events and independently reviews the original video. Only concrete object identity, location, occlusion or trajectory questions trigger SAM: a text + candidate box prompt is checked on one reference frame before tracking that object within the relevant window. There is no unconditional baseline SAM pass. Camera-motion doubts and editorial changes stay in the existing visual review. Tracking supports review but does not prove an action, outcome or boundary.
 
 ### 4. Read the results
 
@@ -66,17 +66,18 @@ For the example above, a fresh output directory contains:
 
 ```text
 outputs/actions/
-├── sample_001.json    # Annotation and per-video metadata
+├── sample_001.json        # Only duration and events
+├── sample_001.audit.json  # Execution state, review and evidence references
 └── results.jsonl      # Batch summary, status and result filenames
 ```
 
-Read `status` and `error` to check success, then `data` for the annotation. Timestamps are seconds on the original video. The directory also contains `.percept/` run records used for resume and history. If video filenames collide, use the `result_file` recorded in `results.jsonl` to locate the correct JSON.
+Read `sample_001.json` directly for the annotation; execution `status`, `error`, provenance and intermediate review live in `sample_001.audit.json`. Failed runs have an audit file and no successful annotation file. Timestamps are seconds on the original video. The directory also contains `.percept/` run records used for resume and history. If video filenames collide, use the `result_file` recorded in `results.jsonl` to locate the correct JSON.
 
 Grounded runs currently rerun because CV execution identity is not yet reusable. Add `--force` for an independent repeat that also disables the request cache. See [outputs and resume](docs/usage.md#result-identity-and-resume) for the exact rules.
 
 ## Compare real and generated videos
 
-Annotate each side with the mandatory SAM setup above. Name paired videos with the same sample ID and use matching sample directories:
+Annotate each side with the SAM setup above. Name paired videos with the same sample ID and use matching sample directories:
 
 ```bash
 percept annotate --videos ./videos/real/sample_001.mp4 --output outputs/reference/sample_001
@@ -88,7 +89,7 @@ percept score events --reference outputs/reference \
   --system model=outputs/generated --out outputs/event_scores
 ```
 
-`--out` names a directory containing `events.json`. The scorer also accepts flat result directories; it identifies samples from an explicit ID or `video_path`. A missing, failed or invalid annotation makes the system aggregate null and the command exits nonzero. A successful empty `events` list is valid. Old categorical `segments`/`semantic_events` JSON is incompatible and must be regenerated. The scoring formula and adaptation limits are in [event evaluation](docs/usage.md#grounded-event-scoring).
+`--out` names a directory containing `events.json`. The scorer also accepts flat result directories; it identifies samples from audit metadata or the annotation filename. Plain human-authored `{duration, events}` ground truth and legacy result envelopes are also accepted. A missing, failed or invalid annotation makes the system aggregate null and the command exits nonzero. A successful empty `events` list is valid. Old categorical `segments`/`semantic_events` JSON is incompatible and must be regenerated. The scoring formula and adaptation limits are in [event evaluation](docs/usage.md#grounded-event-scoring).
 
 ## Evaluate video quality
 

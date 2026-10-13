@@ -90,6 +90,7 @@ class SyncRunner:
         """Evaluate one video end-to-end and return its terminal outcome."""
         started = time.monotonic()
         video_path = Path(video_path)
+        context = None
         try:
             if not self.custom_registry:
                 from .models.fake import FakeVideoModel
@@ -136,6 +137,7 @@ class SyncRunner:
                 video_path=video_path,
                 template=template,
                 status="failed",
+                metadata=dict(context.metadata) if context is not None else None,
                 error=str(error),
                 elapsed_seconds=time.monotonic() - started,
             )
@@ -144,6 +146,7 @@ class SyncRunner:
                 video_path=video_path,
                 template=template,
                 status="failed",
+                metadata=dict(context.metadata) if context is not None else None,
                 error=f"{type(error).__name__}: {error}",
                 elapsed_seconds=time.monotonic() - started,
             )
@@ -261,7 +264,7 @@ def _run_batch(
             outcomes.append(outcome)
             run_record["results"].append({"video_path": str(video), "result_file": path.name,
                                           "status": outcome.status, "input": identity["input"] if identity else None,
-                                          "record_sha256": result_store.file_digest(path)})
+                                          "record_sha256": result_store.file_digest(path if path.exists() else result_store.audit_path(path))})
             result_store.write_json(manifest, run_record)
         _write_aggregate(output_dir / "results.jsonl", outcomes)
         run_record["status"] = "completed" if all(o.status != "failed" for o in outcomes) else "failed"
@@ -325,7 +328,7 @@ def _write_result(result_path: Path, outcome: EvalOutcome) -> None:
         "data_sha256": result_store.json_digest(outcome.data),
         "result_file": outcome.result_file,
     }
-    result_store.write_json(result_path, record)
+    result_store.write_annotation(result_path, record)
 
 
 def _write_aggregate(jsonl_path: Path, outcomes: list[EvalOutcome]) -> None:

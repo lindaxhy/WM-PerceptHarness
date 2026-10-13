@@ -47,10 +47,11 @@ class ActionAnnotationTests(unittest.TestCase):
             second = list(run_batch(runner, [video], 'embodied_action_captioning', root / 'out', log=lambda message: None))
             # CV execution identity is not yet reusable; rerun honestly, with CV cache.
             self.assertEqual(second[0].status, 'completed')
-            self.assertTrue(second[0].metadata['evidence'][0]['cache_hit'])
+            self.assertFalse(second[0].metadata['evidence'])
             stored = json.loads((root / 'out' / 'clip.json').read_text())
-            self.assertEqual(stored['data']['events'], data['events'])
-            self.assertTrue(stored['metadata']['synthetic'])
+            self.assertEqual(stored['events'], data['events'])
+            audit = json.loads((root / 'out' / 'clip.audit.json').read_text())
+            self.assertTrue(audit['metadata']['synthetic'])
 
 
 if __name__ == '__main__':

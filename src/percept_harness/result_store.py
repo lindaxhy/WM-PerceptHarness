@@ -106,12 +106,73 @@ def provenance(video: Path, run: dict[str, Any]) -> dict[str, Any]:
             "run": run, "run_fingerprint": json_digest(run)}
 
 
+def _unique_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
 def read_record(path: Path) -> dict[str, Any] | None:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_pairs)
+        json_digest(value)  # Reject non-finite JSON numbers in any metadata or data field.
+    except (OSError, ValueError, RecursionError):
         return None
     return value if isinstance(value, dict) else None
+
+
+def audit_path(path: Path) -> Path:
+    return path.with_name(path.stem + ".audit.json")
+
+
+def is_annotation_record(record: dict[str, Any] | None) -> bool:
+    """Distinguish public/legacy payloads from execution-only sidecars by structure."""
+    return isinstance(record, dict) and bool({"duration", "events", "data"} & record.keys())
+
+
+def annotation_record(path: Path) -> dict[str, Any] | None:
+    """Normalize public+audit or legacy envelopes; never trust an unbound sidecar."""
+    data = read_record(path)
+    sidecar = audit_path(path)
+    if sidecar.exists():
+        audit = read_record(sidecar)
+        if audit is None:
+            raise ValueError(f"malformed annotation audit: {sidecar}")
+        if is_annotation_record(audit):
+            return data  # A literal *.audit.json annotation is not this file's sidecar.
+        record = {**audit, "data": data}
+        if audit.get("status") == "completed":
+            if data is None or audit.get("data_sha256") != json_digest(data):
+                record.update(status="failed", error="annotation data missing or SHA-256 mismatch")
+        return record
+    return data
+
+
+def write_annotation(path: Path, record: dict[str, Any]) -> None:
+    """Audit acts as commit marker across the two atomic file replacements."""
+    if is_annotation_record(read_record(audit_path(path))):
+        raise ValueError(f"Audit path is occupied by an annotation: {audit_path(path)}")
+    data = record["data"]
+    audit = {key: value for key, value in record.items() if key != "data"}
+    try:
+        if record["status"] == "completed":
+            from .pipelines.event_schemas import GroundedEvents
+            GroundedEvents.model_validate(data)
+            audit["data_sha256"] = json_digest(data)
+            write_json(audit_path(path), {**audit, "status": "writing"})
+            write_json(path, data)
+            write_json(audit_path(path), audit)
+        else:
+            audit["data_sha256"] = None
+            write_json(audit_path(path), audit)
+            path.unlink(missing_ok=True)
+    except BaseException:
+        # A partially persisted run must never expose the preceding success.
+        path.unlink(missing_ok=True)
+        raise
 
 
 def result_path(output: Path, video: Path) -> Path:
@@ -121,19 +182,26 @@ def result_path(output: Path, video: Path) -> Path:
     alternate = output / f"{video.stem[:32]}--{suffix}.json"
     primary = output / f"{video.stem}.json"
     # An existing disambiguated result keeps its path even if a later batch is smaller.
-    for candidate in (alternate, primary):
-        record = read_record(candidate)
+    candidates = (alternate,) if primary.name.endswith(".audit.json") else (alternate, primary)
+    for candidate in candidates:
+        sidecar = read_record(audit_path(candidate))
+        record = sidecar if sidecar and not is_annotation_record(sidecar) else read_record(candidate)
         if record and record.get("video_path") == resolved:
+            if is_annotation_record(sidecar):
+                raise ValueError("Result audit path is occupied by another annotation; use a fresh output directory")
             return candidate
-    if not primary.exists():
+    if primary in candidates and not primary.exists() and not audit_path(primary).exists():
         return primary
-    if not alternate.exists():
+    if not alternate.exists() and not audit_path(alternate).exists():
         return alternate
     raise ValueError("Result paths are occupied by other or unreadable records; use a fresh output directory")
 
 
 def completed_result(path: Path, expected: dict[str, Any]) -> dict[str, Any] | None:
-    record = read_record(path)
+    try:
+        record = annotation_record(path)
+    except (ValueError, TypeError):
+        return None
     if (not expected["run"]["reusable"] or not record
             or record.get("status") != "completed"
             or record.get("template") != expected["run"]["template"]
@@ -172,6 +240,11 @@ def write_json(path: Path, value: Any) -> None:
 
 
 def archive_result(path: Path, output: Path) -> None:
+    for source in (path, audit_path(path)):
+        _archive_file(source, output)
+
+
+def _archive_file(path: Path, output: Path) -> None:
     if not path.exists():
         return
     payload = path.read_bytes()

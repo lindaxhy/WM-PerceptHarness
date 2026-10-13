@@ -1,9 +1,9 @@
-"""Mandatory SAM evidence and bounded original-clock local rechecks."""
+"""Targeted SAM probes and tracks on the original playback clock."""
 from dataclasses import dataclass
 import hashlib
 from pathlib import Path
 from ..cv.artifacts import CvArtifactStore, CvArtifactHandle, cv_cache_key
-from ..cv.contracts import CvEvidenceRequest, SamplingPolicy, EvidenceThresholds, FrameTimeline
+from ..cv.contracts import CvEvidenceRequest, SamplingPolicy, EvidenceThresholds, FrameTimeline, SpatialPrompt
 from ..cv.entities import EntityCandidate, normalize_entities
 from ..cv.timeline import probe_frame_timeline
 from ..domain import InferenceJobSpec
@@ -22,23 +22,20 @@ class Evidence:
     images: tuple[VisualEvidence, ...]
 
 
-def merged_windows(review, duration):
-    """Contextualize and merge requests before applying a bounded work budget."""
-    windows = []
-    for concern in sorted(review.concerns, key=lambda c: c.start):
-        start, end = max(0.0, concern.start - CONTEXT_SECONDS), min(duration, concern.end + CONTEXT_SECONDS)
-        if windows and start <= windows[-1]['end']:
-            windows[-1]['end'] = max(windows[-1]['end'], end)
-            windows[-1]['new_entities'].extend(concern.new_entities)
-        else:
-            windows.append({'start': start, 'end': end, 'new_entities': list(concern.new_entities)})
+def targeted_windows(review, duration):
+    """Budget only actionable object questions, never editorial/camera issues."""
     selected, unresolved, spent = [], [], 0.0
-    for window in windows:
-        if len(selected) >= MAX_RECHECKS or spent + window['end'] - window['start'] > MAX_RECHECK_SECONDS:
-            unresolved.append(f"Recheck budget exhausted for [{window['start']}, {window['end']}] seconds")
+    for index, concern in enumerate(review.concerns):
+        if concern.target is None:
             continue
-        selected.append(window)
-        spent += window['end'] - window['start']
+        start = max(0.0, concern.start - CONTEXT_SECONDS)
+        end = min(duration, concern.end + CONTEXT_SECONDS)
+        if len(selected) >= MAX_RECHECKS or spent + end - start > MAX_RECHECK_SECONDS:
+            unresolved.append(f'SAM budget exhausted for concern {index}: {concern.reason}')
+            continue
+        selected.append({'start': start, 'end': end, 'concern_index': index,
+                         'question': concern.reason, 'target': concern.target.model_dump(mode='json')})
+        spent += end - start
     return selected, unresolved
 
 
@@ -49,24 +46,22 @@ class EvidenceOrchestrator:
         with media_path.open('rb') as stream:
             self.video_sha = hashlib.file_digest(stream, 'sha256').hexdigest()
 
-    def run(self, candidates, *, ordinal=0, window=None):
+    def run(self, candidates, *, ordinal, window, target, mode):
         settings = self.context.settings
         normalized = normalize_entities(candidates, limit=settings.cv_entity_limit)
-        empty = not normalized.entities
-        if empty:
-            # A broad visual probe actually runs the provider even when nomination
-            # found nothing. This label is provenance, never a semantic assertion.
-            normalized = normalize_entities([EntityCandidate(name='visible objects', aliases=(), role='other')], limit=settings.cv_entity_limit)
-        selected = self.timeline
-        if window is not None:
-            points = tuple(p for p in self.timeline.frames if window['start'] <= p.timestamp_seconds <= window['end'])
-            if not points:
-                raise SafePipelineError('Local SAM window contains no original frames')
-            selected = FrameTimeline(frames=points)
+        if len(normalized.entities) != 1:
+            raise SafePipelineError('Targeted SAM requires exactly one object')
+        points = tuple(p for p in self.timeline.frames if window['start'] <= p.timestamp_seconds <= window['end'])
+        if not points:
+            raise SafePipelineError('Local SAM window contains no original frames')
+        reference = min(points, key=lambda p: abs(p.timestamp_seconds - target.reference_time))
+        selected = FrameTimeline(frames=(reference,) if mode == 'probe' else points)
+        spatial = SpatialPrompt(entity_id=normalized.entities[0].entity_id,
+                                frame_index=reference.frame_index, bbox_xyxy=target.bbox_xyxy)
         request = CvEvidenceRequest(schema_version='cv_request_v1', provider=settings.cv_provider,
             model_identity=settings.cv_model_alias, video_path=self.media_path, video_sha256=self.video_sha,
             duration_seconds=self.duration, frame_count=len(self.timeline.frames), checkpoint_sha256=settings.cv_checkpoint_sha256,
-            timeline=selected, entities=normalized.entities,
+            timeline=selected, entities=normalized.entities, mode=mode, spatial_prompts=(spatial,),
             sampling=SamplingPolicy(short_video_seconds=settings.cv_short_video_seconds,
                 scan_fps=settings.cv_max_fps if window else settings.cv_scan_fps, max_fps=settings.cv_max_fps,
                 refinement_radius_seconds=settings.cv_refinement_radius_seconds),
@@ -76,9 +71,9 @@ class EvidenceOrchestrator:
             stage='cv_evidence', ordinal=ordinal, payload=request.model_dump(mode='json'), model_name=settings.cv_model_alias)])
         [result] = self.wait_jobs(self.context.store, self.task.task_id, [job.job_id], settings.cv_timeout_seconds)
         if result.get('status') != 'available' or result.get('artifact_key') != cv_cache_key(request):
-            raise SafePipelineError('Mandatory SAM evidence unavailable or mismatched')
+            raise SafePipelineError('Targeted SAM evidence unavailable or mismatched')
         handle = CvArtifactHandle(result['artifact_key'], result['manifest_sha256'])
-        scope = 'baseline' if ordinal == 0 else f'local_{ordinal}'
+        scope = f'{mode}_{ordinal}'
         with CvArtifactStore(settings.cv_cache_root, max_files=settings.cv_cache_max_files, max_bytes=settings.cv_cache_max_bytes) as store:
             artifact = store.load(handle)
             if artifact.video_sha256 != self.video_sha or artifact.entities != request.entities or artifact.provider != request.provider:
@@ -103,7 +98,9 @@ class EvidenceOrchestrator:
         audit = {**result, 'scope': scope, 'provider': artifact.provider, 'video_sha256': self.video_sha,
                  'time_basis': 'container-relative playback seconds; original decoder frame indices',
                  'window': [window['start'], window['end']] if window else [0.0, self.duration],
-                 'empty_nomination_scene_probe': empty, 'no_tracks': not bool(artifact.tracks),
+                 'mode': mode, 'question': window['question'],
+                 'spatial_prompt': spatial.model_dump(mode='json'),
+                 'reference_time': reference.timestamp_seconds, 'no_tracks': not bool(artifact.tracks),
                  'entities': [e.model_dump(mode='json') for e in artifact.entities],
                  'entity_mapping': {e.entity_id: e.canonical_label for e in artifact.entities},
                  'frame_mapping': [{'provider_frame_index': p.frame_index, 'original_frame_index': p.frame_index,
@@ -118,5 +115,5 @@ class EvidenceOrchestrator:
                          for t in artifact.tracks]
         return Evidence(audit, {'scope': scope, 'window': audit['window'], 'entities': audit['entities'],
                         'tracks': prompt_tracks, 'no_tracks': audit['no_tracks'],
-                        'empty_nomination_scene_probe': empty,
+                        'mode': mode, 'reference_time': reference.timestamp_seconds,
                         'warning': 'Track geometry is supporting evidence only; absence, cause, and semantic boundaries require visual review.'}, tuple(images))

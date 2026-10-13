@@ -57,16 +57,27 @@ class FakeCvEvidenceProvider:
         try:
             staging = Path(staging_dir)
             staging.mkdir(mode=0o700, parents=True, exist_ok=True)
+            prompts = {prompt.entity_id: prompt for prompt in request.spatial_prompts}
+            references = {prompt.frame_index for prompt in request.spatial_prompts}
+            processed_frames = tuple(
+                frame for frame in request.timeline.frames
+                if request.mode != "probe" or frame.frame_index in references
+            )
             tracks: list[CvTrack] = []
             files: list[ArtifactFile] = []
             for entity_index, entity in enumerate(request.entities):
+                spatial = prompts.get(entity.entity_id)
+                entity_frames = tuple(
+                    frame for frame in processed_frames
+                    if request.mode != "probe" or frame.frame_index == spatial.frame_index
+                )
                 observations: list[TrackObservation] = []
                 mask_ref = f"masks/{entity.entity_id}.mask"
                 payload = (
                     f"fake-cv-mask-v1\n{entity.entity_id}\n"
                     + "\n".join(
                         f"{frame.frame_index}:{frame.timestamp_seconds:.9f}"
-                        for frame in request.timeline.frames
+                        for frame in entity_frames
                     )
                     + "\n"
                 ).encode("ascii")
@@ -79,25 +90,29 @@ class FakeCvEvidenceProvider:
                         size_bytes=len(payload),
                     )
                 )
-                for observation_index, frame in enumerate(request.timeline.frames):
+                for observation_index, frame in enumerate(entity_frames):
                     visible = (
-                        len(request.timeline.frames) == 1
-                        or observation_index < len(request.timeline.frames) - 1
+                        len(entity_frames) == 1
+                        or observation_index < len(entity_frames) - 1
                     )
                     left = 0.1 + 0.1 * (entity_index % 5)
                     top = 0.1 + 0.05 * (entity_index % 5)
+                    box = (
+                        spatial.bbox_xyxy if spatial is not None
+                        else (left, top, left + 0.08, top + 0.08)
+                    )
                     observations.append(
                         TrackObservation(
                             frame_index=frame.frame_index,
                             timestamp_seconds=frame.timestamp_seconds,
-                            bbox_xyxy=(left, top, left + 0.08, top + 0.08),
+                            bbox_xyxy=box,
                             mask_ref=mask_ref if visible else None,
                             visible=visible,
                             confidence=max(request.thresholds.min_confidence, 0.9),
                             area_fraction=max(
                                 request.thresholds.min_area_fraction, 0.01
                             ),
-                            center_xy=(left + 0.04, top + 0.04),
+                            center_xy=((box[0] + box[2]) / 2, (box[1] + box[3]) / 2),
                         )
                     )
                 tracks.append(
@@ -129,14 +144,14 @@ class FakeCvEvidenceProvider:
                 model_identity=request.model_identity,
                 video_sha256=request.video_sha256,
                 checkpoint_sha256=request.checkpoint_sha256,
-                processed_timeline=FrameTimeline(frames=request.timeline.frames),
+                processed_timeline=FrameTimeline(frames=processed_frames),
                 entities=request.entities,
                 tracks=tuple(tracks),
                 files=tuple(files),
                 overlay_records=tuple(overlays),
             )
             self._metrics = {
-                "processed_frames": len(request.timeline.frames),
+                "processed_frames": len(processed_frames),
                 "execution_chunk_frames": self.execution_chunk_frames,
                 "entity_prompts": len(request.entities),
                 "track_count": len(tracks),

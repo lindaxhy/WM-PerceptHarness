@@ -79,11 +79,11 @@ Set retries to `0` to disable transport retries. A positive per-video-second val
 
 For repeatability and the separate request-level cache, see [result identity and resume](usage.md#result-identity-and-resume).
 
-The client limits each encoded JSON request to 32 MiB by default. Full-resolution SAM PNG overlays (including baseline and local evidence together) can exceed that limit. If a result reports `request exceeds configured size limit`, inspect the evidence sizes and set `PERCEPT_OPENAI_MAX_REQUEST_BYTES` to a budget supported by your endpoint; for example, `134217728` permits 128 MiB locally. This does not change the provider's limits. The client preserves all authenticated overlays and fails if they cannot fit.
+The client limits each encoded JSON request to 32 MiB by default. Full-resolution SAM PNG overlays (from targeted checks) can exceed that limit. If a result reports `request exceeds configured size limit`, inspect the evidence sizes and set `PERCEPT_OPENAI_MAX_REQUEST_BYTES` to a budget supported by your endpoint; for example, `134217728` permits 128 MiB locally. This does not change the provider's limits. The client preserves all authenticated overlays and fails if they cannot fit.
 
-### Mandatory SAM3.1 grounding
+### Targeted SAM3.1 grounding
 
-Use the pinned SAM source revision `660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7`, its checkpoint and `sam3/assets/bpe_simple_vocab_16e6.txt.gz` tokenizer, a compatible GPU runtime, and FFmpeg 5.1+. The provider verifies the source revision. Annotation defaults to `--cv sam31` and fails if SAM cannot run. Point these settings at actual local assets:
+Use the pinned SAM source revision `660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7`, its checkpoint and `sam3/assets/bpe_simple_vocab_16e6.txt.gz` tokenizer, a compatible GPU runtime, and FFmpeg 5.1+. The provider verifies the source revision. Annotation defaults to `--cv sam31`. SAM assets and the GPU are loaded only when the visual reviewer requests a targeted check. Configure them for production coverage; a failed check is recorded as unresolved and the final revision must remain conservative. Point these settings at actual local assets:
 
 | Environment variable | Value |
 |---|---|
@@ -94,7 +94,7 @@ Use the pinned SAM source revision `660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7`, i
 | `PERCEPT_CV_DEVICE` | GPU device index |
 | `PERCEPT_CV_CACHE_ROOT` | Writable evidence cache |
 
-The core install neither installs this runtime nor validates a live GPU run. Run a small production annotation and inspect `status`, `error`, `metadata.evidence`, overlay counts and archived CV manifests before scaling up. `--backend fake --model fake --cv fake` is a synthetic offline test path; fake CV cannot be paired with a production model. A successful zero-detection SAM result may have `no_tracks: true` and no overlays; the reviewer still sees the original video, and missing tracks do not prove absence.
+The core install neither installs this runtime nor validates a live GPU run. Run a small production annotation and inspect the `.audit.json` sidecar (`status`, `error`, `metadata.evidence`), overlay counts and archived CV manifests before scaling up. `--backend fake --model fake --cv fake` is a synthetic offline test path; fake CV cannot be paired with a production model. A successful zero-detection SAM result may have `no_tracks: true` and no overlays; the reviewer still sees the original video, and missing tracks do not prove absence.
 
 ## Annotation
 
@@ -105,11 +105,20 @@ percept annotate --videos video.mp4 \
   --template embodied_action_captioning --output outputs/actions
 ```
 
-One successful record contains `video_path`, `template`, `status`, `data`, `error`, `elapsed_seconds`, `result_file`, `provenance`, and `data_sha256`. `data` holds the template-specific output; action times are seconds on the original video timeline. `results.jsonl` aggregates the batch but does not include every per-video metadata field.
+Each successful `<video_stem>.json` is exactly `{ "duration": number, "events": [{ "start": number, "end": number, "description": string }] }`. The sibling `<video_stem>.audit.json` contains execution status, errors, metadata, provenance and the annotation digest. A failure writes its audit without a public annotation; an empty successful event list remains a valid annotation. `results.jsonl` summarizes the batch.
 
-A successful `data` object is exactly `{ "duration": number, "events": [{ "start": number, "end": number, "description": string }] }`. Times are finite seconds relative to the original container playback start and lie within the video endpoint. Initial video-stream delays are preserved; trailing audio does not extend an available video-stream duration. SAM uses decoded frame PTS on this clock and preserves original decoder indices. Each event is an independently describable visible process or change, bounded by meaningful completion, interruption or a different activity. Long events, gaps, overlaps, empty lists and visibly failed or unfinished actions are valid. The older categorical `segments`, `semantic_events`, actor and skill fields are incompatible; regenerate old annotations for this scorer.
+The validator canonicalizes model duration rounding within one microsecond to authoritative media metadata (including an endpoint overshoot within that tolerance); larger duration discrepancies still fail. Times are finite seconds relative to the original container playback start and lie within the video endpoint. Initial video-stream delays are preserved; trailing audio does not extend an available video-stream duration. SAM uses decoded frame PTS on this clock and preserves original decoder indices. Each event is an independently describable visible process or change, bounded by meaningful completion, interruption or a different activity. Long events, gaps, overlaps and unfinished actions are valid. A continuous manipulation is not split at every minor hand movement; static descriptions need not fill gaps. There are no event categories or fixed event-length limits.
 
-The pipeline nominates entities, runs baseline SAM, drafts events, independently reviews original video frames and real SAM overlays, makes up to three contextual local SAM rechecks within a 30-second budget, then revises conservatively. A recheck can add entities; track IDs are scoped to each evidence call. `metadata.phases`, `metadata.evidence`, `metadata.review`, `metadata.recheck_budget` and `metadata.unresolved_concerns` expose the audit. SAM geometry never proves semantic cause, disappearance, completion or event boundaries. If SAM baseline fails, annotation fails; a local recheck failure is recorded as unresolved. The review and budget do not certify that every concern was resolved.
+The `grounded-events-v2` workflow is:
+
+1. `grounded_draft`: VLM observes original frames and drafts events.
+2. `evidence_review`: a separate call of the same VLM checks the draft against original frames. It distinguishes editorial/boundary/camera concerns from concrete object identity, location, occlusion and trajectory questions.
+3. For at most three actionable object requests (sum of contextual windows ≤30 seconds), SAM segments a proposed reference frame using text and a normalized XYXY candidate box. `sam_prompt_review` checks the real mask overlay against the target. Only an accepted prompt proceeds to bidirectional video tracking. One corrected prompt retry is permitted; rejected masks never support the final annotation.
+4. `grounded_revision`: VLM revises events using original frames, review concerns and accepted tracking evidence. If there are no object questions, SAM is never loaded or called.
+
+The review records a short `motion_evidence` explanation naming a support/background reference or stating that the evidence is insufficient. `metadata.phases` lists completed VLM stages; `stage_timings`, `sam_checks`, `evidence`, `review`, `recheck_budget` and `unresolved_concerns` are audit information. Each SAM request records its question, object, reference frame, spatial prompt and time window. Detailed masks/tracks remain in content-addressed CV artifacts, not the public annotation. Internal SAM sampling remains up to 30 fps for short/local clips; no per-frame positions are added to event JSON. Cache identities bind selected original frames/times, source duration/count, probe/track mode and spatial prompts, so one window cannot reuse another window's evidence.
+
+The camera check is a short instruction inside `evidence_review`: compare apparent object displacement with its support/background. It adds no optical flow, pose estimation, model or extra camera call. Uncertain motion is described conservatively. SAM image-coordinate geometry alone cannot establish world motion, cause, disappearance, completion or semantic boundaries. Successful execution and a revised description do not certify semantic correctness; unresolved concerns remain auditable.
 
 ### Result identity and resume
 
@@ -131,7 +140,7 @@ percept annotate --videos video.mp4 \
   --template embodied_action_captioning --output outputs/actions --force
 ```
 
-`--force` reruns even a matching result, for independent repeats or changed remote model behavior. Before replacing a current result, its exact bytes are archived in `.percept/history/<record-sha256>.json`. `.percept/runs/<run-id>.json` records the run settings, timestamps, input/result mapping, status, and result-file digest; that digest also identifies a later archived record. Per-video and aggregate files are replaced atomically. Inputs or configuration that change during evaluation produce a failed record, not a reusable success.
+`--force` reruns even a matching result, for independent repeats or changed remote model behavior. Before replacing a current annotation and audit, their exact bytes are archived in `.percept/history/<record-sha256>.json`. `.percept/runs/<run-id>.json` records the run settings, timestamps, input/result mapping, status, and result-file digest; that digest also identifies a later archived record. Each file is replaced atomically. The audit is the commit marker: its digest must match the public annotation; interrupted or mismatched pairs cannot resume or score as successful. Inputs or configuration that change during evaluation produce a failed record, not a reusable success.
 
 There is also a separate request-level cache for the OpenAI-compatible backend, enabled by `PERCEPT_SEMANTIC_RESULT_CACHE=true`. It lives under `<PERCEPT_WORK_ROOT>/semantic-cache` (default `work/semantic-cache`) and can reuse validated model responses during reruns. Replayed responses pass through the current sanitizer and validator; rejected or malformed responses are not published as successful cache entries. `--force` disables this cache as well as whole-result skipping. Merely choosing a different output directory does not guarantee fresh model calls; use `--force` for independent annotation repeats, including self-agreement runs.
 

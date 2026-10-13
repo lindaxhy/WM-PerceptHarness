@@ -7,7 +7,7 @@ from importlib import import_module
 import os
 import sys
 from collections.abc import Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from .result_store import OutputBusyError
@@ -268,23 +268,40 @@ def _single_alias(registry: dict, name: str) -> str:
     return next(iter(registry))
 
 
-def annotation_cv_preflight(provider_name, backend, settings):
+def annotation_cv_preflight(provider_name, backend, settings, *, check_assets=True):
     if provider_name == 'disabled':
         raise ValueError('Annotation requires SAM; disabled CV is not supported')
     if provider_name == 'fake' and backend != 'fake':
         raise ValueError('Fake CV requires an explicit fake model backend')
-    if provider_name == 'sam31':
+    if provider_name not in {'sam31', 'fake'}:
+        raise ValueError('Unsupported annotation CV provider')
+    if provider_name == 'sam31' and check_assets:
         for name, kind in (('cv_repository_path', 'directory'), ('cv_checkpoint_path', 'file'), ('cv_bpe_path', 'file')):
             path = getattr(settings, name)
             if not (path.is_dir() if kind == 'directory' else path.is_file()):
                 raise ValueError(f'{name} must be an existing local {kind}')
-    elif provider_name != 'fake':
-        raise ValueError('Unsupported annotation CV provider')
 
 
 @contextmanager
 def _cv_executor(provider_name: str, arguments: argparse.Namespace, settings: Settings):
-    """Load mandatory annotation CV; scoring never enters this GPU preflight."""
+    """Acquire SAM assets only when annotation requests CV evidence."""
+    annotation_cv_preflight(provider_name, arguments.backend, settings, check_assets=False)
+    executor = None
+    with ExitStack() as resources:
+        def execute(payload):
+            nonlocal executor
+            if executor is None:
+                executor = resources.enter_context(
+                    _loaded_cv_executor(provider_name, arguments, settings)
+                )
+            return executor(payload)
+
+        yield execute
+
+
+@contextmanager
+def _loaded_cv_executor(provider_name: str, arguments: argparse.Namespace, settings: Settings):
+    """Own provider and artifact lifetimes for synchronous CV execution."""
     annotation_cv_preflight(provider_name, arguments.backend, settings)
 
     from .cv.artifacts import CvArtifactStore

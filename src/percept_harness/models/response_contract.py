@@ -64,7 +64,7 @@ def compile_local_schema(source: dict[str, Any]) -> dict[str, Any]:
     preflight_plain(source, max_bytes=MAX_SCHEMA_BYTES, max_nodes=MAX_SCHEMA_NODES, max_depth=MAX_SCHEMA_DEPTH)
     definitions = source.get('$defs', {})
     allowed = {'type', 'properties', 'items', 'required', 'additionalProperties',
-               'enum', 'minimum', 'maximum', 'maxItems', 'minItems', 'pattern'}
+               'enum', 'minimum', 'maximum', 'maxItems', 'minItems', 'pattern', 'anyOf'}
     # Only known generated local refs are resolved. Expansion is bounded as it
     # happens, so a compact recursively referenced schema cannot expand freely.
     count = 0
@@ -86,6 +86,11 @@ def compile_local_schema(source: dict[str, Any]) -> dict[str, Any]:
         for key, value in node.items():
             if key == 'properties':
                 result[key] = {k: expand(v, depth + 1) for k, v in value.items()}
+            elif key == 'prefixItems':
+                compiled = [expand(v, depth + 1) for v in value]
+                if not compiled or any(v != compiled[0] for v in compiled[1:]):
+                    raise ValueError('heterogeneous tuple response schema is unsupported')
+                result['items'] = compiled[0]
             elif key in allowed:
                 result[key] = expand(value, depth + 1)
         return result
@@ -99,7 +104,7 @@ class ModelResponseContract:
     schema_sha256: str
 
     def __post_init__(self) -> None:
-        if (type(self.name) is not str or self.name not in ('EntityNomination', 'GroundedEvents', 'EvidenceReview')
+        if (type(self.name) is not str or self.name not in ('EntityNomination', 'GroundedEvents', 'EvidenceReview', 'SamPromptReview')
                 or type(self.schema_json) is not str
                 or len(self.schema_json) > MAX_SCHEMA_BYTES
                 or len(self.schema_json.encode()) > MAX_SCHEMA_BYTES):

@@ -1,89 +1,122 @@
-"""Natural event annotation with mandatory SAM grounding and separate review."""
-from ..cv.entities import EntityCandidate, normalize_entities
+"""Natural events with independent visual review and targeted SAM verification."""
+import time
+
+from ..cv.entities import EntityCandidate
 from ..domain import InferenceJobSpec
-from ..execution import wait_for_jobs
 from ..media import probe_video
+from ..execution import wait_for_jobs
 from .base import SafePipelineError
-from .event_evidence import EvidenceOrchestrator, merged_windows
+from .event_evidence import EvidenceOrchestrator, targeted_windows
 from .event_prompts import VERSION, prompt
-from .event_schemas import EntityNomination, EvidenceReview, validate_stage, GroundedEvents
+from .event_schemas import EvidenceReview, SamPromptReview, SpatialTarget, validate_stage, GroundedEvents
 from .output_validation import DEFAULT_OUTPUT_SCHEMAS
 
 EMBODIED_PROMPT_VERSION = VERSION
 
 
 class EmbodiedActionPipeline:
-    """Keep the historical template name, expose only duration and events."""
     def __init__(self, *, probe=probe_video, wait_jobs=wait_for_jobs, wait_timeout=300.0):
         self._probe, self._wait_jobs, self._wait_timeout = probe, wait_jobs, wait_timeout
 
     def run(self, task, context):
         if context.settings.cv_provider == 'disabled':
-            raise SafePipelineError('Annotation requires SAM; disabled CV is not supported')
+            raise SafePipelineError('Annotation requires SAM capability; disabled CV is not supported')
         media_path = context.media_path
         if media_path is None:
             raise SafePipelineError('Annotation requires a local original video')
         duration = self._probe(media_path).duration
         context.metadata.update({'annotation_version': VERSION, 'synthetic': context.settings.cv_provider == 'fake',
-                                 'phases': [], 'evidence': [], 'unresolved_concerns': []})
+                                 'phases': [], 'evidence': [], 'unresolved_concerns': [],
+                                 'sam_checks': [], 'stage_timings': []})
         audit = context.metadata
         evidence = []
         user_context = task.payload.get('task_context', {}).get('prompt_context')
 
-        def stage(name, schema, *, draft=None, review=None):
+        def stage(name, schema, *, draft=None, review=None, target=None, ordinal=0, visuals=None):
+            supplied = evidence if visuals is None else visuals
             ctx = {'duration': duration, 'event_count': len(draft['events']) if draft else 0}
+            if target is not None:
+                ctx.update(window_start=target['start'], window_end=target['end'])
             payload = {'video_path': str(media_path), 'span': {'start': 0.0, 'end': duration}, 'fps': 2.0,
                 'schema_name': schema.__name__, 'schema_context': ctx,
                 'prompt': prompt(name, duration=duration, context=user_context,
-                    evidence=[e.prompt_record for e in evidence], draft=draft, review=review,
-                    unresolved=audit['unresolved_concerns']),
-                'visual_evidence': [image.payload() for e in evidence for image in e.images]}
-            [job] = context.store.create_inference_jobs(task.task_id, [InferenceJobSpec(
-                stage=name, ordinal=0, payload=payload, model_name=task.payload.get('model_name'))])
-            [data] = self._wait_jobs(context.store, task.task_id, [job.job_id], self._wait_timeout)
-            if DEFAULT_OUTPUT_SCHEMAS.failure_codes(schema.__name__, data) is not None:
-                raise SafePipelineError(f'Invalid structured output from {name}')
-            result = validate_stage(schema, data, ctx)
-            audit['phases'].append(name)
-            return result
+                    evidence=[e.prompt_record for e in supplied], draft=draft, review=review,
+                    target=target, unresolved=audit['unresolved_concerns']),
+                'visual_evidence': [image.payload() for e in supplied for image in e.images]}
+            started = time.monotonic()
+            try:
+                [job] = context.store.create_inference_jobs(task.task_id, [InferenceJobSpec(
+                    stage=name, ordinal=ordinal, payload=payload, model_name=task.payload.get('model_name'))])
+                [data] = self._wait_jobs(context.store, task.task_id, [job.job_id], self._wait_timeout)
+                if DEFAULT_OUTPUT_SCHEMAS.failure_codes(schema.__name__, data) is not None:
+                    raise SafePipelineError(f'Invalid structured output from {name}')
+                result = validate_stage(schema, data, ctx)
+                audit['phases'].append(name)
+                return result
+            finally:
+                audit['stage_timings'].append({'stage': name, 'ordinal': ordinal, 'seconds': time.monotonic() - started})
 
-        nomination = EntityNomination.model_validate(stage('entity_nomination', EntityNomination))
-        candidates = list(nomination.entities)
-        orchestrator = EvidenceOrchestrator(task, context, media_path, duration, self._wait_jobs)
-        baseline = orchestrator.run(candidates)
-        evidence.append(baseline)
-        audit['evidence'].append(baseline.audit)
-        audit['phases'].append('baseline_sam')
         draft = stage('grounded_draft', GroundedEvents)
+        audit['draft'] = draft
         review_data = stage('evidence_review', EvidenceReview, draft=draft)
         review = EvidenceReview.model_validate(review_data)
         audit['review'] = review_data
-        windows, omitted = merged_windows(review, duration)
+        windows, omitted = targeted_windows(review, duration)
         audit['unresolved_concerns'].extend(review.unresolved)
         audit['unresolved_concerns'].extend(omitted)
-        # There is deliberately no second reviewer: these remain audit concerns,
-        # not assertions that another generation has proven them resolved.
+        # A revised generation is not an independent certification of resolution.
         audit['unresolved_concerns'].extend(c.reason for c in review.concerns)
-        for ordinal, window in enumerate(windows, 1):
-            labels = list(dict.fromkeys(window['new_entities']))
-            additions = [EntityCandidate(name=label, aliases=(), role='other') for label in labels[:64]]
-            limit = context.settings.cv_entity_limit
-            new = normalize_entities(additions, limit=limit)
-            existing = normalize_entities(candidates, limit=limit)
-            new_ids = {e.canonical_label for e in new.entities}
-            combined = list(new.entities) + [e for e in existing.entities if e.canonical_label not in new_ids]
-            if len(labels) > 64 or new.omitted_count or len(combined) > limit:
-                audit['unresolved_concerns'].append(f'Local SAM recheck {ordinal}: entity budget limited coverage; new labels prioritized')
-            local_candidates = [EntityCandidate(name=e.canonical_label, aliases=e.aliases, role=e.role) for e in combined[:limit]]
+        orchestrator = None
+        calls, completed = 0, 0
+        for index, window in enumerate(windows):
+            target = SpatialTarget.model_validate(window['target'])
+            check_record = {'concern_index': window['concern_index'], 'question': window['question'],
+                            'window': [window['start'], window['end']], 'attempts': [], 'tracked': False}
+            audit['sam_checks'].append(check_record)
             try:
-                local = orchestrator.run(local_candidates, ordinal=ordinal, window=window)
-                evidence.append(local)
-                audit['evidence'].append(local.audit)
+                if orchestrator is None:
+                    orchestrator = EvidenceOrchestrator(task, context, media_path, duration, self._wait_jobs)
+                for attempt in range(2):
+                    candidates = [EntityCandidate(name=target.description, aliases=(), role='other')]
+                    ordinal = index * 3 + attempt + 1
+                    started = time.monotonic()
+                    calls += 1
+                    try:
+                        probe = orchestrator.run(candidates, ordinal=ordinal, window=window, target=target, mode='probe')
+                    finally:
+                        audit['stage_timings'].append({'stage': 'sam_probe', 'ordinal': ordinal, 'seconds': time.monotonic() - started})
+                    audit['evidence'].append(probe.audit)
+                    if not probe.images:
+                        decision = {'accepted': False, 'reason': 'No visible target mask; tracking skipped.', 'correction': None}
+                    else:
+                        decision = stage('sam_prompt_review', SamPromptReview, draft=draft,
+                                         target={**window, 'target': target.model_dump(mode='json'),
+                                                 'actual_reference_time': probe.audit['reference_time']},
+                                         ordinal=ordinal, visuals=[probe])
+                    check_record['attempts'].append({'target': target.model_dump(mode='json'),
+                                                     'probe_scope': probe.audit['scope'], **decision})
+                    if decision['accepted']:
+                        started = time.monotonic()
+                        calls += 1
+                        try:
+                            tracked = orchestrator.run(candidates, ordinal=index * 3 + 3,
+                                                       window=window, target=target, mode='track')
+                        finally:
+                            audit['stage_timings'].append({'stage': 'sam_track', 'ordinal': index * 3 + 3,
+                                                         'seconds': time.monotonic() - started})
+                        audit['evidence'].append(tracked.audit)
+                        evidence.append(tracked)
+                        check_record['tracked'] = True
+                        completed += 1
+                        break
+                    if attempt == 0 and decision['correction'] is not None:
+                        target = SpatialTarget.model_validate(decision['correction'])
+                    else:
+                        audit['unresolved_concerns'].append(f'SAM target rejected: {decision["reason"]}')
+                        break
             except Exception as error:
-                # Baseline remains mandatory; bounded local failure is explicit
-                # and the final revision is instructed to be conservative.
-                audit['unresolved_concerns'].append(f'Local SAM recheck {ordinal} unavailable: {type(error).__name__}')
-        audit['phases'].append('local_sam_rechecks')
-        final = stage('grounded_revision', GroundedEvents, draft=draft, review=review_data)
-        audit['recheck_budget'] = {'rounds': 1, 'selected_windows': len(windows), 'completed_windows': len(evidence)-1}
-        return final
+                check_record['error'] = type(error).__name__
+                audit['unresolved_concerns'].append(f'Targeted SAM unavailable for {window["question"]}: {type(error).__name__}')
+        audit['recheck_budget'] = {'selected_windows': len(windows), 'completed_windows': completed,
+                                 'sam_calls': calls, 'max_prompt_attempts_per_target': 2}
+        return stage('grounded_revision', GroundedEvents, draft=draft, review=review_data)

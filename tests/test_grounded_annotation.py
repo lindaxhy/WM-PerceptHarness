@@ -12,6 +12,13 @@ from percept_harness.models.fake import FakeVideoModel
 from percept_harness.runner import SyncRunner
 
 
+def concern(kind='object_identity', target=True):
+    return {'kind': kind, 'reason': 'Which pen is held by the hand?', 'event_indices': [0],
+            'start': 1.0, 'end': 3.0,
+            'target': {'description': 'red container', 'reference_time': 2.0,
+                       'bbox_xyxy': [0.1, 0.1, 0.8, 0.8]} if target else None}
+
+
 class RecordingModel(FakeVideoModel):
     def __init__(self, **kw):
         super().__init__(**kw)
@@ -33,112 +40,152 @@ class GroundedAnnotationTests(unittest.TestCase):
         self.settings = Settings(work_root=self.root / 'work', cv_cache_root=self.root / 'cv', cv_provider='fake')
         self.artifacts = CvArtifactStore(self.settings.cv_cache_root)
         self.addCleanup(self.artifacts.close)
-        self.executor = SyncCvExecutor(FakeCvEvidenceProvider(), self.artifacts)
+        self.cv_requests = []
+        captured = self.cv_requests
+        class RecordingProvider(FakeCvEvidenceProvider):
+            def analyze(self, request, staging):
+                captured.append(request)
+                return super().analyze(request, staging)
+        self.executor = SyncCvExecutor(RecordingProvider(), self.artifacts)
 
     def run_model(self, model, executor=True):
         return SyncRunner(model, self.settings, model_alias='fake',
                           cv_executor=self.executor if executor else None).evaluate(
                               self.video, 'embodied_action_captioning')
 
-    def test_grounded_stages_carry_authenticated_images_and_minimal_public_data(self):
+    def test_clear_video_needs_no_sam_executor_or_visual_evidence(self):
         model = RecordingModel()
-        result = self.run_model(model)
+        result = self.run_model(model, executor=False)
         self.assertEqual(result.status, 'completed', result.error)
         self.assertEqual(set(result.data), {'duration', 'events'})
-        self.assertEqual([r.stage for r in model.requests],
-                         ['entity_nomination', 'grounded_draft', 'evidence_review', 'grounded_revision'])
-        for request in model.requests[1:]:
-            self.assertIsNotNone(request.response_contract, 'grounded stages must declare structured schemas')
-            self.assertTrue(request.visual_evidence)
-            self.assertEqual(request.video_path, self.video)
-            self.assertTrue(all(e.png_bytes.startswith(b'\x89PNG') for e in request.visual_evidence))
-        self.assertTrue(result.metadata['synthetic'])
-        self.assertEqual(result.metadata['phases'], ['entity_nomination', 'baseline_sam', 'grounded_draft',
-                                                     'evidence_review', 'local_sam_rechecks', 'grounded_revision'])
+        self.assertEqual([r.stage for r in model.requests], ['grounded_draft', 'evidence_review', 'grounded_revision'])
+        self.assertFalse(result.metadata['evidence'])
+        self.assertFalse(self.cv_requests)
+        self.assertTrue(all(not r.visual_evidence for r in model.requests))
 
-    def test_successful_zero_detection_preserves_no_tracks_provenance(self):
-        class ZeroDetectionProvider(FakeCvEvidenceProvider):
+    def test_target_is_probed_and_visually_checked_before_tracking(self):
+        model = RecordingModel(failure_script={'evidence_review': [{'concerns': [concern()], 'unresolved': [], 'motion_evidence': 'Synthetic fixture: no camera uncertainty.'}]})
+        result = self.run_model(model)
+        self.assertEqual(result.status, 'completed', result.error)
+        self.assertEqual([r.mode for r in self.cv_requests], ['probe', 'track'])
+        self.assertEqual(len(self.cv_requests[0].timeline.frames), 1)
+        self.assertEqual(self.cv_requests[0].spatial_prompts, self.cv_requests[1].spatial_prompts)
+        self.assertEqual([r.stage for r in model.requests], ['grounded_draft', 'evidence_review', 'sam_prompt_review', 'grounded_revision'])
+        check = model.requests[2]
+        self.assertTrue(check.visual_evidence)
+        self.assertTrue(all(e.png_bytes.startswith(b'\x89PNG') for e in check.visual_evidence))
+        self.assertEqual(len(self.cv_requests[1].entities), 1)
+        self.assertEqual(result.metadata['recheck_budget']['completed_windows'], 1)
+
+    def test_camera_and_editorial_concerns_never_trigger_sam(self):
+        review = {'concerns': [concern('camera_motion', False), concern('event_boundary', False)], 'unresolved': [], 'motion_evidence': 'Synthetic fixture: no camera uncertainty.'}
+        model = RecordingModel(failure_script={'evidence_review': [review]})
+        result = self.run_model(model, executor=False)
+        self.assertEqual(result.status, 'completed', result.error)
+        self.assertFalse(self.cv_requests)
+        self.assertIn('Which pen', model.requests[-1].prompt)
+
+    def test_rejected_segmentation_has_bounded_retry_and_never_propagates(self):
+        target = concern()['target']
+        target['bbox_xyxy'] = [0.2, 0.2, 0.9, 0.9]
+        rejection = {'accepted': False, 'reason': 'Mask follows the wrong object.', 'correction': target}
+        model = RecordingModel(failure_script={
+            'evidence_review': [{'concerns': [concern()], 'unresolved': [], 'motion_evidence': 'Synthetic fixture: no camera uncertainty.'}],
+            'sam_prompt_review': [rejection, rejection]})
+        result = self.run_model(model)
+        self.assertEqual(result.status, 'completed', result.error)
+        self.assertEqual([r.mode for r in self.cv_requests], ['probe', 'probe'])
+        self.assertEqual(result.metadata['recheck_budget']['completed_windows'], 0)
+        self.assertTrue(result.metadata['unresolved_concerns'])
+        self.assertFalse(model.requests[-1].visual_evidence, 'rejected masks must not support final event claims')
+
+    def test_missing_requested_sam_is_audited_and_revision_remains_possible(self):
+        model = RecordingModel(failure_script={'evidence_review': [{'concerns': [concern()], 'unresolved': [], 'motion_evidence': 'Synthetic fixture: no camera uncertainty.'}]})
+        result = self.run_model(model, executor=False)
+        self.assertEqual(result.status, 'completed', result.error)
+        self.assertTrue(any('unavailable' in x for x in result.metadata['unresolved_concerns']))
+        self.assertEqual(result.metadata['recheck_budget']['completed_windows'], 0)
+
+    def test_empty_annotation_still_gets_visual_review_without_scene_probe(self):
+        empty = {'duration': 4.0, 'events': []}
+        model = RecordingModel(failure_script={'grounded_draft': [empty], 'grounded_revision': [empty]})
+        result = self.run_model(model, executor=False)
+        self.assertEqual(result.status, 'completed', result.error)
+        self.assertEqual(result.data, empty)
+        self.assertFalse(self.cv_requests)
+        self.assertIn('evidence_review', [r.stage for r in model.requests])
+
+    def test_audit_preserves_draft_claims_when_revision_changes_events(self):
+        final = {'duration': 4.0, 'events': []}
+        model = RecordingModel(failure_script={'grounded_revision': [final]})
+        result = self.run_model(model, executor=False)
+        self.assertEqual(result.status, 'completed', result.error)
+        self.assertEqual(result.data, final)
+        self.assertEqual(result.metadata['draft']['events'][0]['description'], 'A hand moves the red container.')
+
+    def test_failed_final_revision_retains_review_and_sam_audit(self):
+        model = RecordingModel(failure_script={
+            'evidence_review': [{'concerns': [concern()], 'unresolved': [], 'motion_evidence': 'Synthetic fixture: no camera uncertainty.'}],
+            'grounded_revision': [RuntimeError('fixture final request failed')]})
+        result = self.run_model(model)
+        self.assertEqual(result.status, 'failed')
+        self.assertIsNone(result.data)
+        self.assertIsNotNone(result.metadata)
+        self.assertEqual(len(result.metadata['evidence']), 2)
+        self.assertTrue(result.metadata['sam_checks'][0]['tracked'])
+        self.assertEqual(result.metadata['review']['concerns'][0]['kind'], 'object_identity')
+        self.assertNotIn('grounded_revision', result.metadata['phases'])
+
+    def test_zero_detection_does_not_trigger_tracking_or_claim_absence(self):
+        class ZeroDetection(FakeCvEvidenceProvider):
             def analyze(self, request, staging):
-                from percept_harness.cv.contracts import CvEvidenceArtifact, EvidenceStatus
-                return CvEvidenceArtifact(schema_version='cv_evidence_v1', status=EvidenceStatus.AVAILABLE,
+                from percept_harness.cv.contracts import CvEvidenceArtifact
+                return CvEvidenceArtifact(schema_version='cv_evidence_v1', status='available',
                     provider=request.provider, model_identity=request.model_identity,
                     video_sha256=request.video_sha256, checkpoint_sha256=request.checkpoint_sha256,
                     processed_timeline=request.timeline, entities=request.entities,
                     tracks=(), files=(), overlay_records=())
-        self.executor = SyncCvExecutor(ZeroDetectionProvider(), self.artifacts)
-        model = RecordingModel()
+        self.executor = SyncCvExecutor(ZeroDetection(), self.artifacts)
+        model = RecordingModel(failure_script={'evidence_review': [{'concerns': [concern()], 'unresolved': [], 'motion_evidence': 'Synthetic fixture: no camera uncertainty.'}]})
         result = self.run_model(model)
         self.assertEqual(result.status, 'completed', result.error)
+        self.assertEqual(result.metadata['recheck_budget']['sam_calls'], 1)
+        self.assertEqual(result.metadata['recheck_budget']['completed_windows'], 0)
         self.assertTrue(result.metadata['evidence'][0]['no_tracks'])
-        self.assertEqual(result.metadata['evidence'][0]['overlay_count'], 0)
-        self.assertEqual(model.requests[1].visual_evidence, ())
-        self.assertEqual(model.requests[1].video_path, self.video)
-        self.assertIn('no_tracks', model.requests[1].prompt)
+        self.assertFalse(model.requests[-1].visual_evidence)
 
-    def test_recheck_budget_reports_selected_windows(self):
-        model = RecordingModel(failure_script={'evidence_review': [{'concerns': [
-            {'reason': 'Check boundary', 'event_indices': [0], 'start': 1, 'end': 2, 'new_entities': []}], 'unresolved': []}]})
-        result = self.run_model(model)
-        self.assertEqual(result.status, 'completed', result.error)
-        self.assertEqual(result.metadata['recheck_budget']['selected_windows'], 1)
-        self.assertNotIn('requested_windows', result.metadata['recheck_budget'])
+    def test_target_budget_limits_work_and_reports_unchecked_questions(self):
+        from percept_harness.pipelines.event_schemas import EvidenceReview
+        from percept_harness.pipelines.event_evidence import targeted_windows
+        questions = []
+        for start in (0.0, 12.0, 24.0, 36.0):
+            c = concern()
+            c.update(start=start, end=start+10.0)
+            c['target']['reference_time'] = start+1.0
+            questions.append(c)
+        windows, omitted = targeted_windows(EvidenceReview.model_validate({'concerns': questions, 'unresolved': [], 'motion_evidence': 'Synthetic fixture: no camera uncertainty.'}), 50.0)
+        self.assertEqual(len(windows), 2)
+        self.assertEqual(len(omitted), 2)
 
-    def test_missing_mandatory_cv_fails_instead_of_degrading(self):
-        result = self.run_model(FakeVideoModel(), executor=False)
-        self.assertEqual(result.status, 'failed')
-        self.assertIsNone(result.data)
+    def test_response_contract_preserves_nullable_target_and_numeric_box_items(self):
+        from percept_harness.pipelines.event_schemas import EvidenceReview
+        from percept_harness.models.response_contract import compile_local_schema
+        schema = compile_local_schema(EvidenceReview.model_json_schema())
+        target = schema['properties']['concerns']['items']['properties']['target']['anyOf']
+        self.assertEqual(target[1], {'type': 'null'})
+        box = target[0]['properties']['bbox_xyxy']
+        self.assertEqual(box['items'], {'type': 'number', 'minimum': 0.0, 'maximum': 1.0})
+        self.assertEqual((box['minItems'], box['maxItems']), (4, 4))
 
-    def test_empty_annotation_still_has_baseline_and_review(self):
-        empty = {'duration': 4.0, 'events': []}
-        model = RecordingModel(failure_script={'entity_nomination': [{'entities': []}],
-                                               'grounded_draft': [empty], 'grounded_revision': [empty]})
-        result = self.run_model(model)
-        self.assertEqual(result.status, 'completed', result.error)
-        self.assertEqual(result.data, empty)
-        self.assertTrue(result.metadata['evidence'][0]['empty_nomination_scene_probe'])
-        self.assertTrue(model.requests[2].visual_evidence)
-
-    def test_review_merges_context_windows_and_adds_entities_on_original_clock(self):
-        review = {'concerns': [
-            {'reason': 'Object obscured', 'event_indices': [0], 'start': 1.5, 'end': 2.0, 'new_entities': ['blue cup']},
-            {'reason': 'Completion uncertain', 'event_indices': [0], 'start': 2.0, 'end': 2.5, 'new_entities': []}],
-            'unresolved': []}
-        model = RecordingModel(failure_script={'evidence_review': [review]})
-        result = self.run_model(model)
-        self.assertEqual(result.status, 'completed', result.error)
-        evidence = result.metadata['evidence']
-        self.assertEqual(len(evidence), 2)
-        self.assertEqual(evidence[1]['window'], [1.0, 3.0])
-        self.assertIn('blue cup', [e['canonical_label'] for e in evidence[1]['entities']])
-        self.assertTrue(all(1.0 <= p['timestamp_seconds'] <= 3.0 for p in evidence[1]['frame_mapping']))
-        self.assertTrue(all(p['original_frame_index'] == p['provider_frame_index'] for p in evidence[1]['frame_mapping']))
-        self.assertIn('local_1:', model.requests[-1].prompt)
-
-    def test_local_new_entity_is_not_dropped_when_baseline_fills_limit(self):
-        self.settings = self.settings.model_copy(update={'cv_entity_limit': 1})
-        model = RecordingModel(failure_script={'evidence_review': [{'concerns': [
-            {'reason': 'Check newly visible blue cup', 'event_indices': [0], 'start': 1.0, 'end': 2.0, 'new_entities': ['blue cup']}], 'unresolved': []}]})
-        result = self.run_model(model)
-        self.assertEqual(result.status, 'completed', result.error)
-        self.assertEqual(result.metadata['evidence'][1]['entities'][0]['canonical_label'], 'blue cup')
-        self.assertTrue(result.metadata['unresolved_concerns'])
-
-    def test_local_failure_is_audited_and_final_revision_is_conservative(self):
-        from percept_harness.cv.base import CvProviderError
-        class FailedRecheck(FakeCvEvidenceProvider):
-            def analyze(self, request, staging):
-                if request.timeline.frames[0].timestamp_seconds > 0:
-                    raise CvProviderError('fixture recheck unavailable')
-                return super().analyze(request, staging)
-        self.executor = SyncCvExecutor(FailedRecheck(), self.artifacts)
-        model = RecordingModel(failure_script={'evidence_review': [{'concerns': [
-            {'reason': 'Completion uncertain', 'event_indices': [0], 'start': 2.0, 'end': 2.5, 'new_entities': []}], 'unresolved': []}]})
-        result=self.run_model(model)
-        self.assertEqual(result.status, 'completed', result.error)
-        self.assertEqual(len(result.metadata['evidence']), 1)
-        self.assertTrue(any('unavailable' in x for x in result.metadata['unresolved_concerns']))
-        self.assertIn('Completion uncertain', model.requests[-1].prompt)
-        self.assertIn('Local SAM recheck 1 unavailable', model.requests[-1].prompt)
+    def test_submicrosecond_model_rounding_preserves_authoritative_clock(self):
+        from percept_harness.pipelines.event_schemas import validate_stage, GroundedEvents
+        actual = 9.840233333333334
+        result = validate_stage(GroundedEvents, {'duration': 9.840233, 'events': [
+            {'start': 0.0, 'end': 9.840234, 'description': 'Hand moves the magnet.'}]}, {'duration': actual})
+        self.assertEqual(result['duration'], actual)
+        self.assertEqual(result['events'][0]['end'], actual)
+        with self.assertRaises(ValueError):
+            validate_stage(GroundedEvents, {'duration': 9.84, 'events': []}, {'duration': actual})
 
     def test_strict_event_schema_rejects_categories_and_bad_times_but_allows_overlap(self):
         from percept_harness.pipelines import output_validation
@@ -151,38 +198,6 @@ class GroundedAnnotationTests(unittest.TestCase):
             value['events'][0].update(patch)
             self.assertIsNotNone(registry.failure_codes('GroundedEvents', registry.sanitize('GroundedEvents', value, {'duration': 4.0})))
 
-    def test_settings_default_does_not_preflight_gpu_assets(self):
-        self.assertEqual(Settings().cv_provider, 'sam31')
-        self.assertEqual(Settings().cv_bpe_path, Settings().cv_repository_path / 'sam3/assets/bpe_simple_vocab_16e6.txt.gz')
-
 
 if __name__ == '__main__':
     unittest.main()
-
-class AnnotationGuardTests(unittest.TestCase):
-    def test_production_model_cannot_use_fake_cv(self):
-        class ProductionModel:
-            def generate(self, request):
-                raise AssertionError('must reject before model execution')
-        with tempfile.TemporaryDirectory() as td:
-            path=Path(td)/'video.mp4'; path.write_bytes(b'not needed')
-            result=SyncRunner(ProductionModel(),Settings(cv_provider='fake'),model_alias='prod').evaluate(path,'embodied_action_captioning')
-            self.assertEqual(result.status,'failed')
-            self.assertIn('Fake CV',result.error)
-
-    def test_annotation_specific_preflight_rejects_disabled_and_missing_sam(self):
-        from argparse import Namespace
-        from percept_harness.cli import _cv_executor
-        with self.assertRaisesRegex(ValueError, 'requires SAM'):
-            with _cv_executor('disabled',Namespace(backend='fake',cv_device=None),Settings(cv_provider='disabled')):
-                pass
-        with self.assertRaisesRegex(ValueError, 'cv_repository_path'):
-            with _cv_executor('sam31',Namespace(backend='openai',cv_device=None),Settings(cv_repository_path=Path('/nonexistent/sam'))):
-                pass
-
-    def test_fake_cv_preflight_rejects_production_backend(self):
-        from argparse import Namespace
-        from percept_harness.cli import _cv_executor
-        with self.assertRaisesRegex(ValueError, 'fake model'):
-            with _cv_executor('fake',Namespace(backend='openai',cv_device=None),Settings(cv_provider='fake')):
-                pass

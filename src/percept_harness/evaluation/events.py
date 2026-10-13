@@ -11,6 +11,7 @@ import httpx
 
 from percept_harness.pipelines.event_schemas import GroundedEvents
 from percept_harness.models.base import parse_strict_json
+from percept_harness import result_store
 from .event_matching import match_weight_matrix, temporal_iou
 
 
@@ -126,7 +127,7 @@ def _identity(path: Path, root: Path, record: dict) -> str:
         return relative.parent.as_posix()
     video = record.get("video_path")
     if not isinstance(video, str) or not video:
-        raise ValueError("flat result needs video_path or explicit ID")
+        return path.stem
     return Path(video).stem
 
 
@@ -135,12 +136,20 @@ def load_group(root: Path) -> dict:
     if not root.is_dir():
         raise ValueError(f"annotation directory missing: {root}")
     items = {}
-    for path in sorted(root.rglob("*.json")):
+    candidates = set()
+    for path in root.rglob("*.json"):
+        relative = path.relative_to(root)
+        if any(part in {".percept", ".cv-archive"} for part in relative.parts) or (len(relative.parts) == 1 and re.fullmatch(r"shard-\d+\.status\.json", path.name)):
+            continue
+        if path.name.endswith(".audit.json") and not result_store.is_annotation_record(result_store.read_record(path)):
+            path = path.with_name(path.name[:-len(".audit.json")] + ".json")
+        candidates.add(path)
+    for path in sorted(candidates):
         relative = path.relative_to(root)
         if any(part in {".percept", ".cv-archive"} for part in relative.parts) or (len(relative.parts) == 1 and re.fullmatch(r"shard-\d+\.status\.json", path.name)):
             continue
         try:
-            record = json.loads(path.read_text(encoding="utf-8"))
+            record = result_store.annotation_record(path)
             if not isinstance(record, dict):
                 raise ValueError("result must be JSON object")
             sample_id = _identity(path, root, record)
@@ -150,6 +159,12 @@ def load_group(root: Path) -> dict:
             raise ValueError(f"duplicate or ambiguous sample ID {sample_id!r}: {items[sample_id]['path']} and {path}")
         items[sample_id] = {"path": str(path), "record": record}
     return items
+
+
+def _scoring_record(record: dict) -> dict:
+    if set(record) == {"duration", "events"}:
+        return {"status": "completed", "data": record}
+    return record
 
 
 def evaluate(reference_dir: Path, systems: dict[str, Path], judge: Callable, tiou_threshold: float = .75) -> dict:
@@ -166,8 +181,9 @@ def evaluate(reference_dir: Path, systems: dict[str, Path], judge: Callable, tio
                 continue
             try:
                 a, b = refs[sample_id]["record"], preds[sample_id]["record"]
+                a, b = [_scoring_record(record) for record in (a, b)]
                 if a.get("status") != "completed" or b.get("status") != "completed":
-                    raise ValueError("annotation status is not completed")
+                    raise ValueError("annotation status is not completed: " + str(a.get("error") or b.get("error") or "incomplete run"))
                 if a.get("data") is None or b.get("data") is None:
                     raise ValueError("annotation data missing")
                 score = score_pair(GroundedEvents.model_validate(a["data"]), GroundedEvents.model_validate(b["data"]), judge, tiou_threshold)

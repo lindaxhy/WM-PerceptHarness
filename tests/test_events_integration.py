@@ -18,14 +18,15 @@ from percept_harness.runner import SyncRunner, run_batch
 
 
 class OfflineEventIntegrationTests(unittest.TestCase):
-    def test_nested_root_annotate_score_archives_baseline_and_local_evidence(self):
+    def test_nested_root_annotate_score_archives_probe_and_targeted_tracking(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             video = root / 'clip.mp4'
             subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i',
                 'color=c=blue:s=64x64:r=4:d=4', '-c:v', 'mpeg4', str(video)], check=True)
-            review = {'concerns': [{'reason': 'Check cup movement', 'event_indices': [0],
-                'start': 1.0, 'end': 2.0, 'new_entities': ['blue cup']}], 'unresolved': []}
+            review = {'concerns': [{'kind': 'trajectory', 'reason': 'Check cup movement', 'event_indices': [0],
+                'start': 1.0, 'end': 2.0, 'target': {'description': 'blue cup',
+                'reference_time': 1.0, 'bbox_xyxy': [0.1,0.1,0.8,0.8]}}], 'unresolved': [], 'motion_evidence': 'Synthetic fixture: no camera uncertainty.'}
             model = FakeVideoModel(failure_script={'evidence_review': [review, review]})
             settings = Settings(work_root=root/'work', cv_cache_root=root/'cv', cv_provider='fake')
             with CvArtifactStore(settings.cv_cache_root) as artifacts:
@@ -38,7 +39,7 @@ class OfflineEventIntegrationTests(unittest.TestCase):
                     self.assertEqual(result.status, 'completed', result.error)
                     self.assertEqual(result.metadata['recheck_budget']['selected_windows'], 1)
                     evidence = result.metadata['evidence']
-                    self.assertEqual({item['scope'] for item in evidence}, {'baseline', 'local_1'})
+                    self.assertEqual({item['scope'] for item in evidence}, {'probe_1', 'track_3'})
                     archives = [archive_cv_evidence(item, settings.cv_cache_root, output/'.cv-archive')
                                 for item in evidence]
                     self.assertEqual(len(archives), 2)

@@ -204,6 +204,21 @@ class EvidenceThresholds(StrictModel):
         return value
 
 
+class SpatialPrompt(StrictModel):
+    """One entity's reference box on the original decoder-order timeline."""
+
+    entity_id: ObjectId
+    frame_index: NonnegativeInt
+    bbox_xyxy: tuple[Fraction, Fraction, Fraction, Fraction]
+
+    @model_validator(mode="after")
+    def require_ordered_box(self) -> SpatialPrompt:
+        left, top, right, bottom = self.bbox_xyxy
+        if left >= right or top >= bottom:
+            raise ValueError("bbox_xyxy must have ordered positive-width bounds")
+        return self
+
+
 class CvEvidenceRequest(StrictModel):
     schema_version: Literal["cv_request_v1"]
     provider: Literal["fake", "sam31"]
@@ -221,6 +236,10 @@ class CvEvidenceRequest(StrictModel):
     ]
     sampling: SamplingPolicy
     thresholds: EvidenceThresholds
+    mode: Literal["probe", "track"] = "track"
+    spatial_prompts: Annotated[
+        tuple[SpatialPrompt, ...], Field(max_length=_MAX_ARTIFACT_ENTITIES)
+    ] = ()
 
     @field_validator("video_path", mode="before")
     @classmethod
@@ -243,6 +262,16 @@ class CvEvidenceRequest(StrictModel):
         entity_ids = [entity.entity_id for entity in self.entities]
         if len(entity_ids) != len(set(entity_ids)):
             raise ValueError("entity IDs must be unique")
+        prompt_ids = [prompt.entity_id for prompt in self.spatial_prompts]
+        if len(prompt_ids) != len(set(prompt_ids)):
+            raise ValueError("spatial prompt entity IDs must be unique")
+        if not set(prompt_ids) <= set(entity_ids):
+            raise ValueError("spatial prompts must reference request entities")
+        if self.mode == "probe" and (not entity_ids or set(prompt_ids) != set(entity_ids)):
+            raise ValueError("probe requires one spatial prompt for every entity")
+        known_frames = {frame.frame_index for frame in self.timeline.frames}
+        if any(prompt.frame_index not in known_frames for prompt in self.spatial_prompts):
+            raise ValueError("spatial prompt frame must belong to the request timeline")
         for frame in self.timeline.frames:
             if frame.frame_index >= self.frame_count:
                 raise ValueError("timeline frame index must be below frame_count")

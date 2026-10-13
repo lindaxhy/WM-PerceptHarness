@@ -53,6 +53,9 @@ _CACHE_IDENTITY_FIELDS = frozenset(
         "thresholds",
     }
 )
+_TARGETED_CACHE_IDENTITY_FIELDS = _CACHE_IDENTITY_FIELDS | {
+    "timeline", "duration_seconds", "frame_count", "mode", "spatial_prompts"
+}
 _MANIFEST_FIELDS = frozenset({"cache_identity", "artifact"})
 
 
@@ -93,6 +96,13 @@ def _cache_identity(request: CvEvidenceRequest) -> dict[str, object]:
         "entities": [entity.model_dump(mode="json") for entity in request.entities],
         "sampling": request.sampling.model_dump(mode="json"),
         "thresholds": request.thresholds.model_dump(mode="json"),
+        "timeline": request.timeline.model_dump(mode="json"),
+        "duration_seconds": request.duration_seconds,
+        "frame_count": request.frame_count,
+        "mode": request.mode,
+        "spatial_prompts": [
+            prompt.model_dump(mode="json") for prompt in request.spatial_prompts
+        ],
     }
 
 
@@ -1138,6 +1148,29 @@ class CvArtifactStore:
         ):
             raise ValueError
 
+        CvArtifactStore._validate_processed_timeline(request, artifact)
+
+    @staticmethod
+    def _validate_processed_timeline(
+        request: CvEvidenceRequest, artifact: CvEvidenceArtifact
+    ) -> None:
+        if artifact.processed_timeline is None:
+            return
+        selected = {
+            frame.frame_index: frame.timestamp_seconds for frame in request.timeline.frames
+        }
+        references = {prompt.frame_index for prompt in request.spatial_prompts}
+        for frame in artifact.processed_timeline.frames:
+            if selected.get(frame.frame_index) != frame.timestamp_seconds:
+                raise ValueError("processed frame must belong to selected request timeline")
+            if request.mode == "probe" and frame.frame_index not in references:
+                raise ValueError("probe may only process reference frames")
+        processed_indices = {
+            frame.frame_index for frame in artifact.processed_timeline.frames
+        }
+        if references and not references <= processed_indices:
+            raise ValueError("spatial reference frames must be processed")
+
     def _validate_artifact_files(
         self,
         directory: Path | int,
@@ -1420,7 +1453,19 @@ class CvArtifactStore:
     def _validated_cache_identity(
         value: object,
     ) -> tuple[dict[str, object], tuple[EntityPrompt, ...]]:
-        if not isinstance(value, dict) or set(value) != _CACHE_IDENTITY_FIELDS:
+        if type(value) is not dict:
+            raise ValueError
+        if set(value) == _TARGETED_CACHE_IDENTITY_FIELDS:
+            request = CvEvidenceRequest.model_validate(
+                {**value, "video_path": Path("/cache-source")}
+            )
+            normalized = _cache_identity(request)
+            if value != normalized:
+                raise ValueError
+            return normalized, request.entities
+        # Existing authenticated manifests retain their original identity hash.
+        # New requests always hash the expanded identity and cannot hit these.
+        if set(value) != _CACHE_IDENTITY_FIELDS:
             raise ValueError
         schema_version = value["schema_version"]
         provider = value["provider"]
@@ -1473,6 +1518,12 @@ class CvArtifactStore:
             or artifact.entities != entities
         ):
             raise ValueError
+
+        if set(identity) == _TARGETED_CACHE_IDENTITY_FIELDS:
+            request = CvEvidenceRequest.model_validate(
+                {**identity, "video_path": Path("/cache-source")}
+            )
+            CvArtifactStore._validate_processed_timeline(request, artifact)
 
     @staticmethod
     def _read_bounded_descriptor(descriptor: int, limit: int) -> tuple[bytes, str]:
