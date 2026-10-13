@@ -30,14 +30,11 @@ class FakeVideoModel(VideoModel):
 
     _STAGES = frozenset(
         {
-            "general_segment",
-            "active_objects",
             "embodied_pass_a",
             "embodied_pass_b",
             "embodied_enrichment",
             "scene_semantics",
             "occlusion_semantics",
-            "general_summary",
         }
     )
 
@@ -72,27 +69,6 @@ class FakeVideoModel(VideoModel):
         return copy.deepcopy(self._fixture(request))
 
     def _fixture(self, request: ModelRequest) -> dict[str, Any]:
-        if request.stage == "general_segment":
-            return {
-                "segments": [
-                    _general_event(request.span.start, request.span.end)
-                ],
-                "warnings": [],
-            }
-        if request.stage == "active_objects":
-            return {
-                "objects": [
-                    {
-                        "category": "container",
-                        "instances": [
-                            {
-                                "name": "red container",
-                                "description": "a visible red rectangular container",
-                            }
-                        ],
-                    }
-                ]
-            }
         if request.stage == "embodied_pass_a":
             return {
                 "task_description": "move the red container",
@@ -185,37 +161,7 @@ class FakeVideoModel(VideoModel):
                     for candidate in _occlusion_candidates(request.prompt)
                 ]
             }
-        if request.stage == "general_summary":
-            return {
-                "summary": "deterministic video summary",
-                "timeline": _summary_timeline(request),
-                "warnings": [],
-            }
         raise AssertionError("validated fake stage had no fixture")
-
-
-def _general_event(start: float, end: float) -> dict[str, Any]:
-    return {
-        "start_time": start,
-        "end_time": end,
-        "scene": ["deterministic indoor scene"],
-        "subjects": ["deterministic visible subject"],
-        "actions": ["deterministic visible action"],
-        "visible_text": [],
-        "uncertainty": [],
-        "description": "deterministic visual event",
-        "warnings": [],
-    }
-
-
-def _summary_timeline(request: ModelRequest) -> list[dict[str, Any]]:
-    try:
-        prompt = json.loads(request.prompt)
-    except json.JSONDecodeError:
-        prompt = None
-    if isinstance(prompt, dict) and isinstance(prompt.get("timeline"), list):
-        return prompt["timeline"]
-    return [_general_event(request.span.start, request.span.end)]
 
 
 def _occlusion_candidates(prompt: str) -> list[Mapping[str, Any]]:

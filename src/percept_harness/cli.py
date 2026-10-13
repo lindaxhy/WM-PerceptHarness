@@ -91,9 +91,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     evaluate.add_argument(
         "--template",
-        required=True,
+        default="embodied_action_captioning",
         choices=SUPPORTED_TEMPLATES,
-        help="annotation template to run",
+        help="annotation template (default: embodied_action_captioning)",
     )
     evaluate.add_argument(
         "--backend",
@@ -123,11 +123,6 @@ def _parser() -> argparse.ArgumentParser:
         "--prompt-context",
         default=None,
         help="naming context for embodied_action_captioning (object hints, not an SOP)",
-    )
-    evaluate.add_argument(
-        "--query",
-        default=None,
-        help="free-form query for general_video_captioning",
     )
     evaluate.add_argument(
         "--cv",
@@ -201,7 +196,6 @@ def _eval(arguments: argparse.Namespace) -> int:
                 arguments.template,
                 arguments.output,
                 prompt_context=arguments.prompt_context,
-                query=arguments.query,
                 force=arguments.force,
             )
     except OutputBusyError as error:

@@ -117,8 +117,6 @@ class Settings(BaseSettings):
     openai_max_output_chars: PositiveInteger = 1_000_000
     openai_proxy: SecretStr | None = None
     max_model_output_chars: int = Field(default=1_000_000, gt=0)
-    segment_seconds: float = 30.0
-    segment_overlap_seconds: float = 2.0
     max_fine_segment_seconds: float = 30.0
     # Retained for pipeline affinity-grace computation; not a service lease.
     lease_seconds: int = 300

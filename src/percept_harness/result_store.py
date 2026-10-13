@@ -59,8 +59,7 @@ def _runtime() -> dict[str, Any]:
     return {"packages": versions, "media_tools": tools}
 
 
-def run_identity(runner, template: str, prompt_context: str | None,
-                 query: str | None) -> dict[str, Any]:
+def run_identity(runner, template: str, prompt_context: str | None) -> dict[str, Any]:
     """Snapshot the built-in execution path; unverifiable integrations cannot resume."""
     from .models.fake import FakeVideoModel
     from .models.openai_compat import OpenAICompatVideoModel
@@ -94,7 +93,6 @@ def run_identity(runner, template: str, prompt_context: str | None,
         "backend": backend,
         "settings": settings,
         "prompt_context": prompt_context,
-        "query": query,
         "code_sha256": package_digest(),
         "runtime": _runtime(),
         "reusable": reusable,
@@ -184,7 +182,6 @@ def archive_result(path: Path, output: Path) -> None:
             raise ValueError("Archived result is inconsistent; refusing to replace current output")
     else:
         atomic_bytes(destination, payload)
-
 
 
 class OutputBusyError(RuntimeError):

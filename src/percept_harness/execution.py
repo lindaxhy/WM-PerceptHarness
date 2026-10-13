@@ -458,8 +458,6 @@ def _schema_validation_context(
 ) -> Mapping[str, Any] | None:
     context = payload.get("schema_context")
     if context is None:
-        if request.schema_name == "general_segment":
-            return {"span": {"start": request.span.start, "end": request.span.end}}
         return None
     if not isinstance(context, Mapping):
         raise ValueError("model job schema context must be an object")

@@ -31,9 +31,6 @@ from .base import ModelOutputError, ModelRequest, parse_strict_json
 from .response_contract import canonical
 
 STAGE_MAX_OUTPUT_TOKENS = {
-    "active_objects": 1_024,
-    "general_segment": 4_096,
-    "general_summary": 2_048,
     "embodied_pass_a": 4_096,
     "embodied_pass_b": 8_192,
     "embodied_enrichment": 4_096,
