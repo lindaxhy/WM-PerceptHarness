@@ -33,23 +33,30 @@ The following code is preparation/integration support. Local checks do not estab
 
 ## Checkpoint preparation
 
-`pip install` installs Python packages, not model weights. The packaged downloader manages the checkpoints for the two direct video scorers:
-
-```bash
-percept download clipiqa --cache-dir ./weights
-percept download motion --cache-dir ./weights
-```
-
-Pass the same `--cache-dir` when running `percept score clipiqa` or `percept score motion`. The download default is `./weights` relative to the current directory; use an absolute path when sharing a cache across checkouts. Existing upstream caches can be used directly: a Torch hub directory for CLIP-IQA+ or a VBench cache for motion.
+`pip install` installs Python packages, not model weights. Use the explicit
+`curl` commands in the README for [CLIP-IQA+](../README.md#clip-iqa) and
+[Motion Smoothness](../README.md#motion-smoothness). The former
+`percept download` command has been removed; downloading is handled outside the
+package.
 
 | Metric | Files relative to the cache directory | Source |
 |---|---|---|
 | CLIP-IQA+ | `pyiqa/CLIP-IQA%2B_learned_prompts-603f3273.pth`, `clip/RN50.pt` | PyIQA / OpenAI CLIP |
 | Motion Smoothness | `amt_model/amt-s.pth` | AMT-S |
 
-Download URLs and trusted full SHA-256 values have one source of truth in the packaged [weight registry](../src/percept_harness/weights.py). Downloads follow redirects, stream to a temporary file, and publish only after checksum verification. Matching cached files are reused without network access; failed downloads leave existing files intact. Rerun the command after a failure; partial downloads are not resumed. Custom-cache scoring also verifies the files before loading models. The directory is ignored by Git and is not shipped in the wheel.
+The examples save files under `./weights`, relative to the current directory.
+For another location, change the download destinations and pass that same path
+as `--cache-dir` to scoring and `scripts/verify_install.py`. Existing caches can
+be reused if their files match the recorded hashes. The shared
+[weight registry](../src/percept_harness/weights.py) contains only paths and
+SHA-256 digests; installation checks and custom-cache scoring verify the files
+before model loading. If a download fails or verification reports a mismatch,
+repeat the corresponding download. Checkpoints are ignored by Git and are not
+shipped in the wheel.
 
-This command covers these three pinned checkpoints only. Other VBench dimensions, DOVER, external evaluators and semantic event judges retain their respective setup instructions. SAM3.1 source, checkpoint, tokenizer and GPU runtime support targeted checks during production event annotation; see [grounding setup](usage.md#targeted-sam31-grounding). Do not assume downloading these assets prepares every metric.
+These instructions cover three checkpoints only. Other VBench dimensions,
+DOVER, external evaluators and semantic event judges retain their respective
+setup instructions. SAM3.1 has separate [grounding setup](usage.md#targeted-sam31-grounding).
 
 ## CLIP-IQA+
 
@@ -129,10 +136,13 @@ python -m pip install --only-binary=:all: --no-deps vbench==0.1.5
 
 The `motion` extra in `pyproject.toml` retains the direct dependency versions from the recorded validation environment. Hardware-specific Torch/TorchVision and VBench are installed separately. The official VBench wheel declares a larger, older dependency set for other dimensions (including `numpy<2` and `transformers==4.33.2`); the command above deliberately installs only the Motion Smoothness runtime. Consequently, a global `pip check` can report unmet VBench metadata requirements. This environment is for this dimension only, not all VBench tasks.
 
-Prepare the verified AMT-S checkpoint with:
+Download the AMT-S checkpoint, then verify it in the configured motion environment:
 
 ```bash
-percept download motion --cache-dir /data/model-cache/vbench
+mkdir -p /data/model-cache/vbench/amt_model
+curl --fail --location --output /data/model-cache/vbench/amt_model/amt-s.pth \
+  'https://huggingface.co/lalala125/AMT/resolve/main/amt-s.pth'
+python scripts/verify_install.py --metric motion --cache-dir /data/model-cache/vbench
 ```
 
 The scorer passes this directory through `VBENCH_CACHE_DIR` to the official evaluator and verifies the checkpoint before inference.

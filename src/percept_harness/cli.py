@@ -45,9 +45,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     if argv and argv[0] in _DIRECT_METRICS:
         from .video_metrics.vbench_backend import metric_main
         return metric_main(argv[0].replace("-", "_"), argv[1:])
-    if argv and argv[0] == "download":
-        from .weights import main as download_main
-        return download_main(argv[1:])
     if argv and argv[0] == "score":
         score_parser = argparse.ArgumentParser(
             prog="percept score",
@@ -76,7 +73,6 @@ def _parser() -> argparse.ArgumentParser:
     )
     for name, description in _DIRECT_METRICS.items():
         commands.add_parser(name, help=description)
-    commands.add_parser("download", help="download and verify metric checkpoints")
     evaluate = commands.add_parser(
         "annotate",
         help="annotate videos to structured JSON",

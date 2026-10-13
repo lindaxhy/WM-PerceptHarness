@@ -171,7 +171,11 @@ python3.12 -m venv .venv-clipiqa
 source .venv-clipiqa/bin/activate
 # Install the appropriate PyTorch/TorchVision build before the next step.
 python -m pip install -e '.[clipiqa]'
-percept download clipiqa --cache-dir ./weights
+mkdir -p ./weights/pyiqa ./weights/clip
+curl --fail --location --output './weights/pyiqa/CLIP-IQA%2B_learned_prompts-603f3273.pth' \
+  'https://huggingface.co/chaofengc/IQA-PyTorch-Weights/resolve/main/CLIP-IQA%2B_learned_prompts-603f3273.pth'
+curl --fail --location --output ./weights/clip/RN50.pt \
+  'https://openaipublic.azureedge.net/clip/models/afeb0e10f9e5a86da6080e35cf09123aca3b358a0c3e3b6c78a7b63bc04b6762/RN50.pt'
 python scripts/verify_install.py --metric clipiqa --cache-dir ./weights
 percept score clipiqa --video ./videos/sample_001.mp4 \
   --cache-dir ./weights --output outputs/sample_001.clipiqa.json
@@ -189,7 +193,9 @@ source .venv-motion/bin/activate
 # Install the appropriate PyTorch/TorchVision build before the next step.
 python -m pip install -e '.[motion]'
 python -m pip install --only-binary=:all: --no-deps vbench==0.1.5
-percept download motion --cache-dir ./weights
+mkdir -p ./weights/amt_model
+curl --fail --location --output ./weights/amt_model/amt-s.pth \
+  'https://huggingface.co/lalala125/AMT/resolve/main/amt-s.pth'
 python scripts/verify_install.py --metric motion --cache-dir ./weights
 percept score motion --video ./videos/sample_001.mp4 \
   --cache-dir ./weights --gpu 0 --output outputs/sample_001.motion.json
@@ -197,7 +203,12 @@ percept score motion --video ./videos/sample_001.mp4 \
 
 The JSON includes the score and paths to the official evaluator result and log. Motion Smoothness measures local interpolation smoothness; a smooth video can still depict an incorrect action.
 
-**Weights:** `percept download` currently supports `clipiqa` and `motion`. It verifies SHA-256 and reuses valid files. Use the same `--cache-dir` for downloading and scoring; `./weights` is relative to the current directory. Other metrics require their own [checkpoint preparation](docs/metrics.md#checkpoint-preparation).
+**Weights:** Install Python dependencies with `pip`, then download model weights
+with the `curl` commands above. The former `percept download` command has been
+removed. `weights.py` only records cache-relative paths and SHA-256 digests;
+installation checks and scoring verify the files. Use the same `--cache-dir`
+for checks and scoring; `./weights` is relative to the current directory.
+Other metrics require their own [checkpoint preparation](docs/metrics.md#checkpoint-preparation).
 
 ### Other individual metrics
 
