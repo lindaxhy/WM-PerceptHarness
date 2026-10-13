@@ -226,6 +226,16 @@ def _verify_cv_archive(root: Path, expected_manifest: str):
             raise ValueError("CV archive file SHA-256 mismatch")
 
 
+def required_event_phases(metadata):
+    if metadata.get('event_workflow') == 'confidence-gated':
+        required = {'confidence_draft'}
+        if (metadata.get('recheck_budget', {}).get('selected_windows', 0)
+                or metadata.get('confidence_gate', {}).get('requires_revision', False)):
+            required.add('grounded_revision')
+        return required
+    return {'grounded_draft', 'evidence_review', 'grounded_revision'}
+
+
 class ReviewRequiredRunner(SyncRunner):
     """Require complete review, while allowing no targeted SAM requests."""
     def evaluate(self, *args, **kwargs):
@@ -239,7 +249,8 @@ class ReviewRequiredRunner(SyncRunner):
             GroundedEvents.model_validate(outcome.data)
         except ValueError:
             return replace(outcome, status='failed', data=None, error='Invalid event annotation')
-        if not {'grounded_draft', 'evidence_review', 'grounded_revision'}.issubset(phases):
+        required = required_event_phases(metadata)
+        if not required.issubset(phases):
             return replace(outcome, status='failed', data=None,
                            error='Complete grounded review unavailable')
         return outcome
@@ -259,7 +270,8 @@ def run_manifest(arguments) -> int:
     devices = [int(s) for s in (arguments.cv_devices or str(settings.cv_device)).split(",")]
     if any(g < 0 for g in devices) or len(set(devices)) != len(devices):
         raise ValueError("CV devices must be distinct nonnegative integers")
-    settings = Settings.model_validate({**settings.model_dump(), "cv_provider": provider})
+    settings = Settings.model_validate({**settings.model_dump(), "cv_provider": provider,
+        "event_workflow": getattr(arguments, "event_workflow", None) or settings.event_workflow})
     rows = [row for row in read_manifest(arguments.manifest)
             if assignment(row["job_id"], arguments.shard_count) == arguments.shard_index]
     root = arguments.output.resolve()
@@ -343,8 +355,8 @@ def run_manifest(arguments) -> int:
                     # Resume is verified by normal run_batch identity, never by file existence.
                     metadata = outcome.metadata or {}
                     evidence = metadata.get('evidence', [])
-                    if 'grounded_revision' not in metadata.get('phases', []):
-                        raise RuntimeError('event draft was not replaced by grounded revision')
+                    if not required_event_phases(metadata).issubset(metadata.get('phases', [])):
+                        raise RuntimeError('required event workflow phases are incomplete')
                     archives = []
                     with archive_lock:
                         for record in evidence:

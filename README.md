@@ -58,7 +58,37 @@ Pass a directory to `--videos` to process its videos recursively. Annotation use
 event descriptions and bounds on the original video clock. You can omit `--template`; existing
 commands that specify it explicitly remain valid.
 
-The VLM drafts events and independently reviews the original video. Only concrete object identity, location, occlusion or trajectory questions trigger SAM: a text + candidate box prompt is checked on one reference frame before tracking that object within the relevant window. There is no unconditional baseline SAM pass. Camera-motion doubts and editorial changes stay in the existing visual review. Tracking supports review but does not prove an action, outcome or boundary.
+By default (`--event-workflow reviewed`), the VLM drafts events and independently reviews the original video. Only concrete object identity, location, occlusion or trajectory questions trigger SAM: a text + candidate box prompt is checked on one reference frame before tracking that object within the relevant window. There is no unconditional baseline SAM pass. Camera-motion doubts and editorial changes stay in the existing visual review. Tracking supports review but does not prove an action, outcome or boundary.
+
+To try the experimental workflow that handles self-reported uncertainties:
+
+```bash
+percept annotate --videos ./videos/sample_001.mp4 --cv sam31 \
+  --event-workflow confidence-gated --output ./outputs/experiment
+```
+
+The first VLM call produces events, confidence scores and optional questions.
+Despite the selector name, **every explicit question is processed regardless of
+confidence**; a score of 0.6 or lower requires a question but is not the only SAM
+trigger. Events retain the original segmentation rules, without fixed-length
+windows or forced merging of continuous actions.
+
+- No questions: return the draft after one VLM call.
+- Questions without an actionable SAM target: revise using the original frames.
+- Actionable object questions: SAM single-frame segmentation, VLM mask check,
+  accepted video tracking, then final VLM revision. One accepted target normally
+  takes three VLM calls in total; additional targets or mask retries add calls.
+
+Invalid optional SAM targets, such as a reference frame outside the question
+window, are dropped and recorded in the audit. The valid question still reaches
+revision, and other valid targets remain eligible. Invalid event data and invalid
+question text/type/windows still fail validation. Confidence, questions and dropped
+targets stay in the audit; public JSON remains `{duration, events}`.
+
+This experiment remains opt-in: confident errors can go unreported, and SAM cannot
+recover fully hidden paths or off-screen outcomes. A completed revision is not a
+quality certification. See [workflow details](docs/usage.md#annotation)
+for configuration, budgets and output behavior.
 
 ### 4. Read the results
 

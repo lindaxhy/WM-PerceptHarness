@@ -120,6 +120,7 @@ class Settings(BaseSettings):
     max_fine_segment_seconds: float = 30.0
     # Retained for pipeline affinity-grace computation; not a service lease.
     lease_seconds: int = 300
+    event_workflow: Literal["reviewed", "confidence-gated"] = "reviewed"
     cv_device: NonnegativeInteger = 3
     cv_provider: Literal["disabled", "fake", "sam31"] = "sam31"
     cv_model_alias: Literal["sam3.1"] = "sam3.1"

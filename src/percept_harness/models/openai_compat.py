@@ -31,7 +31,7 @@ from .base import ModelOutputError, ModelRequest, parse_strict_json
 from .response_contract import canonical
 
 STAGE_MAX_OUTPUT_TOKENS = {
-    "entity_nomination": 4096, "grounded_draft": 16384, "evidence_review": 8192,
+    "entity_nomination": 4096, "confidence_draft": 16384, "grounded_draft": 16384, "evidence_review": 8192,
     "sam_prompt_review": 4096, "grounded_revision": 16384,
 
 }
