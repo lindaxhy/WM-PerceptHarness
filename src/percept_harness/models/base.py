@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import base64
 import math
 import re
 from dataclasses import dataclass, field
@@ -41,6 +43,45 @@ class VideoSession:
 
 
 @dataclass(frozen=True)
+class VisualEvidence:
+    """Immutable PNG bytes resolved through an authenticated CV artifact store."""
+    png_bytes: bytes
+    timestamp: float
+    entity_id: str
+    track_id: str
+    source: str
+
+    def __post_init__(self):
+        if type(self.png_bytes) is not bytes or not self.png_bytes.startswith(b'\x89PNG\r\n\x1a\n') or len(self.png_bytes) > 8 * 1024 * 1024:
+            raise ModelRequestError('visual evidence must be a bounded PNG')
+        if type(self.timestamp) not in (int, float) or not math.isfinite(self.timestamp) or self.timestamp < 0:
+            raise ModelRequestError('visual evidence time must be finite original seconds')
+        for value in (self.entity_id, self.track_id, self.source):
+            if type(value) is not str or not value.strip() or len(value) > 256:
+                raise ModelRequestError('invalid visual evidence identity')
+
+    def identity(self):
+        return {'sha256': hashlib.sha256(self.png_bytes).hexdigest(), 'timestamp': self.timestamp,
+                'entity_id': self.entity_id, 'track_id': self.track_id, 'source': self.source}
+
+    def payload(self):
+        return {**self.identity(), 'png_base64': base64.b64encode(self.png_bytes).decode('ascii')}
+
+    @classmethod
+    def from_payload(cls, value):
+        if type(value) is not dict or set(value) != {'sha256', 'timestamp', 'entity_id', 'track_id', 'source', 'png_base64'}:
+            raise ModelRequestError('invalid visual evidence payload')
+        encoded = value['png_base64']
+        if type(encoded) is not str or len(encoded) > 12 * 1024 * 1024:
+            raise ModelRequestError('invalid visual evidence byte budget')
+        result = cls(png_bytes=base64.b64decode(encoded, validate=True), timestamp=value['timestamp'],
+                     entity_id=value['entity_id'], track_id=value['track_id'], source=value['source'])
+        if result.identity()['sha256'] != value['sha256']:
+            raise ModelRequestError('visual evidence digest mismatch')
+        return result
+
+
+@dataclass(frozen=True)
 class ModelRequest:
     """Immutable visual-only input for one local model inference stage."""
 
@@ -57,8 +98,15 @@ class ModelRequest:
     clip_context: TuningLevel | None = None
     video_session: VideoSession | None = None
     response_contract: ModelResponseContract | None = None
+    visual_evidence: tuple[VisualEvidence, ...] = ()
 
     def __post_init__(self) -> None:
+        if type(self.visual_evidence) is not tuple or len(self.visual_evidence) > 96 or any(type(e) is not VisualEvidence for e in self.visual_evidence):
+            raise ModelRequestError('invalid visual evidence collection')
+        if sum(len(e.png_bytes) for e in self.visual_evidence) > 64 * 1024 * 1024:
+            raise ModelRequestError('visual evidence exceeds byte budget')
+        if any(not self.span.start <= e.timestamp < self.span.end for e in self.visual_evidence):
+            raise ModelRequestError('visual evidence outside original video span')
         if not isinstance(self.stage, str) or not self.stage.strip():
             raise ModelRequestError("stage must be a non-blank string")
         if not isinstance(self.video_path, Path):

@@ -49,7 +49,7 @@ def check_cli(metric):
         raise RuntimeError('percept is missing from PATH; activate the installed Python environment')
     if Path(launcher).resolve() != expected.resolve():
         raise RuntimeError('percept on PATH belongs to another environment; activate the environment shown above')
-    commands = [['--help'], ['annotate', '--help'], ['score', 'fidelity', '--help']]
+    commands = [['--help'], ['annotate', '--help'], ['score', 'events', '--help']]
     if metric != 'core':
         commands.append(['score', metric, '--help'])
     for args in commands:
@@ -62,9 +62,11 @@ def check_cli(metric):
 
 def check_smoke():
     from percept_harness.evaluation.event_matching import Event, match_events, temporal_iou
+    from percept_harness.evaluation.events import score_pair
+    from percept_harness.pipelines.event_schemas import GroundedEvents
     from percept_harness.models.base import ModelOutputError, parse_strict_json
 
-    if parse_strict_json('{"segments": []}') != {'segments': []}:
+    if parse_strict_json('{"duration": 1, "events": []}') != {'duration': 1, 'events': []}:
         raise RuntimeError('Structured output parsing failed')
     try:
         parse_strict_json('{"score": NaN}')
@@ -78,7 +80,12 @@ def check_smoke():
     matches = match_events([reference], [prediction])
     if len(matches) != 1 or (matches[0].reference_index, matches[0].prediction_index) != (0, 0):
         raise RuntimeError('Event matching smoke check failed')
-    return 'JSON parsing and temporal matching passed'
+    grounded = GroundedEvents.model_validate({'duration': 2.0, 'events': [
+        {'start': 0.0, 'end': 2.0, 'description': 'A hand moves a cup.'}]})
+    score = score_pair(grounded, grounded, lambda a, b: {'match': a == b, 'reason': 'same action'})
+    if score['segment_f1'] != 1 or score['semantic_match_rate'] != 1 or score['joint_f1'] != 1:
+        raise RuntimeError('Grounded event scoring smoke check failed')
+    return 'JSON parsing, temporal matching and grounded event scoring passed'
 
 
 def check_runtime(metric):

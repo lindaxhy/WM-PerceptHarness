@@ -31,11 +31,9 @@ from .base import ModelOutputError, ModelRequest, parse_strict_json
 from .response_contract import canonical
 
 STAGE_MAX_OUTPUT_TOKENS = {
-    "embodied_pass_a": 4_096,
-    "embodied_pass_b": 8_192,
-    "embodied_enrichment": 4_096,
-    "scene_semantics": 8_192,
-    "occlusion_semantics": 12_288,
+    "entity_nomination": 4096, "grounded_draft": 16384, "evidence_review": 8192,
+    "sam_prompt_review": 4096, "grounded_revision": 16384,
+
 }
 RESPONSE_FORMAT_MODES = ("json_schema", "json_object", "none")
 # Provider statuses worth one more attempt: throttling, and transient
@@ -196,13 +194,17 @@ class OpenAICompatVideoModel:
         temporary = Path(tempfile.mkdtemp(prefix="percept-frames-"))
         try:
             span_seconds = max(0.0, request.span.end - request.span.start)
+            evidence_count = len(request.visual_evidence)
+            original_budget = self.max_frames - evidence_count
+            if original_budget < 1:
+                raise OpenAICompatBackendError('mandatory evidence exceeds frame budget')
             fps = request.fps
-            if span_seconds > 0 and fps * span_seconds > self.max_frames:
+            if span_seconds > 0 and fps * span_seconds > original_budget:
                 # A long clip at the requested cadence would exceed max_frames
                 # and previously failed outright. Spread the frame budget
                 # evenly across the span instead (0.5 guards the < end loop
                 # boundary against rounding up to max_frames + 1).
-                fps = (self.max_frames - 0.5) / span_seconds
+                fps = (original_budget - 0.5) / span_seconds
             try:
                 frames = self._extract(request.video_path, request.span, fps, temporary)
                 content = self._content(request, frames)
@@ -292,7 +294,7 @@ class OpenAICompatVideoModel:
         raise OpenAICompatBackendError("transport failed")  # pragma: no cover
 
     def _content(self, request: ModelRequest, frames: list[FrameRef]) -> list[dict[str, Any]]:
-        if not frames or len(frames) > self.max_frames:
+        if not frames or len(frames) + len(request.visual_evidence) > self.max_frames:
             raise OpenAICompatBackendError("frame count is outside configured bounds")
         previous = -math.inf
         content: list[dict[str, Any]] = [{"type": "text", "text": request.prompt}]
@@ -310,6 +312,10 @@ class OpenAICompatVideoModel:
                 {"type": "image_url", "image_url": {
                     "url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")}},
             ))
+        for evidence in request.visual_evidence:
+            content.extend((
+                {'type': 'text', 'text': 'SAM overlay metadata: ' + json.dumps(evidence.identity(), sort_keys=True)},
+                {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,' + base64.b64encode(evidence.png_bytes).decode('ascii')}}))
         return content
 
     def _bounded_body(self, response: httpx.Response) -> bytes:

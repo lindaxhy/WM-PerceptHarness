@@ -1,0 +1,152 @@
+"""Strict natural event contracts; times always refer to the source video."""
+from typing import Annotated, Literal
+import hashlib
+import math
+from ..models.response_contract import ModelResponseContract, compile_local_schema, canonical
+from pydantic import Field, StrictStr, StrictBool, field_validator, model_validator
+from ..cv.contracts import StrictModel, Timestamp, PositiveTimestamp, Fraction
+from ..cv.entities import EntityCandidate
+
+Text = Annotated[StrictStr, Field(min_length=1, max_length=4000)]
+Label = Annotated[StrictStr, Field(min_length=1, max_length=256)]
+
+
+class Event(StrictModel):
+    start: Timestamp
+    end: PositiveTimestamp
+    description: Text
+
+    @field_validator('description')
+    @classmethod
+    def nonblank(cls, value):
+        if not value.strip():
+            raise ValueError('description must not be blank')
+        return value
+
+    @model_validator(mode='after')
+    def interval(self):
+        if self.end <= self.start:
+            raise ValueError('event must have positive duration')
+        return self
+
+
+class GroundedEvents(StrictModel):
+    duration: PositiveTimestamp
+    events: Annotated[tuple[Event, ...], Field(max_length=2000)]
+
+    @model_validator(mode='after')
+    def bounds(self):
+        if any(event.end > self.duration for event in self.events):
+            raise ValueError('event outside original video')
+        return self
+
+
+class EntityNomination(StrictModel):
+    entities: Annotated[tuple[EntityCandidate, ...], Field(max_length=64)]
+
+
+class SpatialTarget(StrictModel):
+    description: Label
+    reference_time: Timestamp
+    bbox_xyxy: tuple[Fraction, Fraction, Fraction, Fraction]
+
+    @model_validator(mode='after')
+    def valid(self):
+        x1, y1, x2, y2 = self.bbox_xyxy
+        if not self.description.strip() or x1 >= x2 or y1 >= y2:
+            raise ValueError('target needs a description and positive normalized box')
+        return self
+
+
+SAM_KINDS = frozenset(('object_identity', 'object_location', 'occlusion', 'trajectory'))
+
+
+class Concern(StrictModel):
+    kind: Literal['object_identity', 'object_location', 'occlusion', 'trajectory',
+                  'event_boundary', 'description', 'missing_event', 'camera_motion']
+    reason: Text
+    event_indices: Annotated[tuple[Annotated[int, Field(ge=0, strict=True)], ...], Field(max_length=2000)]
+    start: Timestamp
+    end: PositiveTimestamp
+    target: SpatialTarget | None
+
+    @model_validator(mode='after')
+    def valid(self):
+        if self.end <= self.start or not self.reason.strip():
+            raise ValueError('invalid review concern')
+        if self.kind not in SAM_KINDS and self.target is not None:
+            raise ValueError('editorial and camera concerns must not request SAM')
+        if self.target and not self.start <= self.target.reference_time <= self.end:
+            raise ValueError('reference frame must be within concern window')
+        return self
+
+
+class SamPromptReview(StrictModel):
+    accepted: StrictBool
+    reason: Text
+    correction: SpatialTarget | None
+
+    @model_validator(mode='after')
+    def valid(self):
+        if not self.reason.strip() or (self.accepted and self.correction is not None):
+            raise ValueError('accepted segmentation cannot request correction')
+        return self
+
+
+class EvidenceReview(StrictModel):
+    motion_evidence: Annotated[StrictStr, Field(min_length=1, max_length=800, pattern=r"\S")]
+    concerns: Annotated[tuple[Concern, ...], Field(max_length=32)]
+    unresolved: Annotated[tuple[Text, ...], Field(max_length=32)]
+
+    @field_validator('unresolved')
+    @classmethod
+    def nonblank(cls, values):
+        if any(not value.strip() for value in values):
+            raise ValueError('blank unresolved concern')
+        return values
+
+
+def validate_stage(schema, data, context):
+    # Media metadata is authoritative; tolerate decimal serialization at <=1 µs,
+    # never rescale a model's event timeline or accept a materially wrong duration.
+    if schema is GroundedEvents and isinstance(data, dict):
+        actual, reported = context['duration'], data.get('duration')
+        if type(reported) in (int, float) and math.isfinite(reported) and abs(reported - actual) <= 1e-6:
+            data = {**data, 'duration': actual}
+            if isinstance(data.get('events'), (list, tuple)):
+                events = []
+                for event in data['events']:
+                    if isinstance(event, dict):
+                        end = event.get('end')
+                        if type(end) in (int, float) and math.isfinite(end) and actual < end <= actual + 1e-6:
+                            event = {**event, 'end': actual}
+                    events.append(event)
+                data['events'] = events
+    value = schema.model_validate(data)
+    if isinstance(value, GroundedEvents) and value.duration != context['duration']:
+        raise ValueError('duration must match original video')
+    if isinstance(value, EvidenceReview):
+        for concern in value.concerns:
+            if concern.end > context['duration'] or any(i >= context['event_count'] for i in concern.event_indices):
+                raise ValueError('review references invalid event or time')
+    if isinstance(value, SamPromptReview) and value.correction:
+        if not context['window_start'] <= value.correction.reference_time <= context['window_end']:
+            raise ValueError('corrected reference outside requested window')
+    return value.model_dump(mode='json')
+
+
+def register_event_schemas(registry):
+    from .output_validation import DeclaredSchemaOutputError
+    from pydantic import ValidationError
+    for schema in (EntityNomination, GroundedEvents, EvidenceReview, SamPromptReview):
+        def validator(data, context, schema=schema):
+            try:
+                return validate_stage(schema, data, context or {})
+            except (ValueError, TypeError, KeyError, ValidationError):
+                raise DeclaredSchemaOutputError(('GROUNDED_SCHEMA_INVALID',)) from None
+        def response_contract(context, schema=schema):
+            encoded = canonical(compile_local_schema(schema.model_json_schema()))
+            return ModelResponseContract(schema.__name__, encoded, hashlib.sha256(encoded.encode()).hexdigest())
+        registry.register(schema.__name__, validator,
+                          allowed_issue_codes=('GROUNDED_SCHEMA_INVALID',),
+                          generic_issue_code='GROUNDED_SCHEMA_INVALID', response_contract_factory=response_contract)

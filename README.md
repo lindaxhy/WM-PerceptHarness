@@ -8,11 +8,11 @@ Annotate videos, compare real and generated action timelines, and evaluate video
 
 | Task | Input | Output | Requirements |
 |---|---|---|---|
-| Video annotation | One video or a directory of videos | Task descriptions and action timelines in JSON | FFmpeg + a vision-capable OpenAI-compatible API |
-| Event fidelity | Matching real/generated action annotations | Temporal event agreement; optional semantic similarity | Core package; `fidelity` extra for semantic scoring |
+| Grounded event annotation | One video or a directory of videos | `{duration, events: [{start, end, description}]}` in each successful result | FFmpeg, a vision-capable OpenAI-compatible API, local SAM3.1 assets and GPU |
+| Event scoring | Matching reference/system event annotations | Segment F1, semantic match rate and joint F1 | Core package and a semantic judge endpoint |
 | Video quality | One video | A score for the selected metric | The metric's runtime and model weights |
 
-Annotation uses sampled video frames; it does not use audio. You supply the videos and, for fidelity, their real/generated pairing. Metrics produce separate results; the repository does not compute a unified benchmark score. See the [metric guide](docs/metrics.md) for implementation and validation status.
+Annotation uses sampled video frames; it does not use audio. You supply the videos and, for event scoring, their reference/system pairing. Metrics produce separate results; the repository does not compute a unified benchmark score. See the [metric guide](docs/metrics.md) for implementation and validation status.
 
 ## Quick start
 
@@ -30,7 +30,7 @@ python -m pip install -e .
 python scripts/verify_install.py
 ```
 
-This installs the annotation client and temporal fidelity scorer. GPU metrics have separate [runtime requirements](docs/usage.md#optional-metric-environments). `pip install` installs code and dependencies; it does not download model weights.
+This installs the annotation client and event scorer. Grounded annotation also requires local SAM3.1 assets and a compatible GPU runtime; see [setup](docs/usage.md#targeted-sam31-grounding). Other GPU metrics have separate [runtime requirements](docs/usage.md#optional-metric-environments). `pip install` installs code and dependencies; it does not download model weights.
 
 ### 2. Configure the annotation model
 
@@ -42,7 +42,7 @@ export PERCEPT_OPENAI_MODEL="your-vision-model-id"
 export PERCEPT_OPENAI_API_KEY="your-api-key"
 ```
 
-Choose a model that accepts image inputs through the chat completions API. More options, including multiple model aliases and optional SAM3.1 evidence, are documented in [configuration](docs/usage.md#annotation-configuration). `.env` files are not loaded automatically.
+Choose a model that accepts image inputs through the chat completions API. Configure local SAM3.1 for targeted checks before annotation; see [configuration](docs/usage.md#annotation-configuration). `.env` files are not loaded automatically.
 
 ### 3. Annotate your video
 
@@ -54,13 +54,11 @@ percept annotate \
 ```
 
 Pass a directory to `--videos` to process its videos recursively. Annotation uses
-`embodied_action_captioning`, the only supported template, and produces a task
-description and time-bounded action segments. You can omit `--template`; existing
+`embodied_action_captioning`, the only supported template, and produces
+event descriptions and bounds on the original video clock. You can omit `--template`; existing
 commands that specify it explicitly remain valid.
 
-The action pipeline identifies coarse actions and relevant entities (Pass A),
-refines temporal boundaries (Pass B), enriches segment attributes, and adds scene
-semantics. Optional SAM3.1 evidence supports tracking and occlusion review.
+The VLM drafts events and independently reviews the original video. Only concrete object identity, location, occlusion or trajectory questions trigger SAM: a text + candidate box prompt is checked on one reference frame before tracking that object within the relevant window. There is no unconditional baseline SAM pass. Camera-motion doubts and editorial changes stay in the existing visual review. Tracking supports review but does not prove an action, outcome or boundary.
 
 ### 4. Read the results
 
@@ -68,42 +66,30 @@ For the example above, a fresh output directory contains:
 
 ```text
 outputs/actions/
-├── sample_001.json    # Annotation and per-video metadata
+├── sample_001.json        # Only duration and events
+├── sample_001.audit.json  # Execution state, review and evidence references
 └── results.jsonl      # Batch summary, status and result filenames
 ```
 
-Read `status` and `error` to check success, then `data` for the annotation. Timestamps are seconds on the original video. The directory also contains `.percept/` run records used for resume and history. If video filenames collide, use the `result_file` recorded in `results.jsonl` to locate the correct JSON.
+Read `sample_001.json` directly for the annotation; execution `status`, `error`, provenance and intermediate review live in `sample_001.audit.json`. Failed runs have an audit file and no successful annotation file. Timestamps are seconds on the original video. The directory also contains `.percept/` run records used for resume and history. If video filenames collide, use the `result_file` recorded in `results.jsonl` to locate the correct JSON.
 
-Matching completed built-in runs can resume. Add `--force` for an independent repeat. See [outputs and resume](docs/usage.md#result-identity-and-resume) for the exact reuse rules.
+Grounded runs currently rerun because CV execution identity is not yet reusable. Add `--force` for an independent repeat that also disables the request cache. See [outputs and resume](docs/usage.md#result-identity-and-resume) for the exact rules.
 
 ## Compare real and generated videos
 
-Name matching videos with the same sample ID and annotate each into its own sample directory. With the API settings above:
+Annotate each side with the SAM setup above. Name paired videos with the same sample ID and use matching sample directories:
 
 ```bash
-percept annotate --videos ./videos/real/sample_001.mp4 \
-  --template embodied_action_captioning --output outputs/reference/sample_001
-percept annotate --videos ./videos/generated/sample_001.mp4 \
-  --template embodied_action_captioning --output outputs/generated/sample_001
-
-percept score fidelity \
-  --reference outputs/reference \
-  --system model=outputs/generated \
-  --out outputs/fidelity.json
+percept annotate --videos ./videos/real/sample_001.mp4 --output outputs/reference/sample_001
+percept annotate --videos ./videos/generated/sample_001.mp4 --output outputs/generated/sample_001
+export PERCEPT_JUDGE_BASE_URL="https://your-judge.example/v1"
+export PERCEPT_JUDGE_MODEL="your-judge-model-id"
+export PERCEPT_JUDGE_API_KEY="your-judge-key"
+percept score events --reference outputs/reference \
+  --system model=outputs/generated --out outputs/event_scores
 ```
 
-The scorer pairs this layout by sample ID:
-
-```text
-outputs/
-├── reference/sample_001/sample_001.json
-├── generated/sample_001/sample_001.json
-└── fidelity.json
-```
-
-Repeat the annotation steps for each pair. A flat folder of annotation JSON files is not accepted. The output reports temporal event-family overlap, event F1 and outcome agreement. Check `paired_samples` against the number of pairs you intended to evaluate.
-
-Temporal scoring needs no API calls or local model weights. For semantic similarity, install `python -m pip install -e '.[fidelity]'` and add `--semantic`; its embedding model is downloaded/cached separately. See [fidelity evaluation](docs/usage.md#event-timeline-fidelity) for input exclusions, actionless-case limitations and repeated-reference evaluation.
+`--out` names a directory containing `events.json`. The scorer also accepts flat result directories; it identifies samples from audit metadata or the annotation filename. Plain human-authored `{duration, events}` ground truth and legacy result envelopes are also accepted. A missing, failed or invalid annotation makes the system aggregate null and the command exits nonzero. A successful empty `events` list is valid. Old categorical `segments`/`semantic_events` JSON is incompatible and must be regenerated. The scoring formula and adaptation limits are in [event evaluation](docs/usage.md#grounded-event-scoring).
 
 ## Evaluate video quality
 
@@ -179,7 +165,7 @@ CLIPScore, DOVER and other external evaluators have separate entries in the [met
 
 | Guide | Contents |
 |---|---|
-| [Usage](docs/usage.md) | Installation checks, configuration, annotation/fidelity workflows and outputs |
+| [Usage](docs/usage.md) | Installation checks, configuration, annotation/event scoring workflows and outputs |
 | [Metrics](docs/metrics.md) | Metric protocols, weights, input examples and reporting scope |
 | [Third-party notices](docs/third-party-notices.md) | Upstream sources and component licenses |
 

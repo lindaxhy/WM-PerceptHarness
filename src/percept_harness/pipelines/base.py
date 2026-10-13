@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -25,6 +25,7 @@ class PipelineContext:
     task_dir: Path
     media_path: Path | None = None
     media_resolver: Any | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @runtime_checkable

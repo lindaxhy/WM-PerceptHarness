@@ -516,9 +516,20 @@ class Sam31EvidenceProvider:
                         validated_request.timeline, validated_request.sampling
                     )
                 )
+                reference_indices = {
+                    prompt.frame_index for prompt in validated_request.spatial_prompts
+                }
+                if validated_request.mode == "probe":
+                    initial_indices = tuple(sorted(reference_indices))
+                else:
+                    initial_indices = tuple(
+                        sorted(set(initial_indices) | reference_indices)
+                    )
                 _validate_source_indices(validated_request, initial_indices)
                 if (
-                    validated_request.duration_seconds
+                    validated_request.mode == "probe"
+                    or validated_request.spatial_prompts
+                    or validated_request.duration_seconds
                     <= validated_request.sampling.short_video_seconds
                 ):
                     final_indices = initial_indices
@@ -712,7 +723,11 @@ class Sam31EvidenceProvider:
                 if masks_directory is not None
                 else None
             )
-            labels = (entity.canonical_label, *tuple(entity.aliases)[:2])
+            # Keep the verified spatial/text prompt fixed during targeted tracking.
+            labels = (
+                (entity.canonical_label,) if request.spatial_prompts
+                else (entity.canonical_label, *tuple(entity.aliases)[:2])
+            )
 
             def execute(label: str, destination: Path | None) -> _PromptRun:
                 return self._run_prompt(
@@ -783,15 +798,29 @@ class Sam31EvidenceProvider:
         self._predictor.handle_request(
             {"type": "reset_session", "session_id": session_id}
         )
-        self._predictor.handle_request(
-            {
-                "type": "add_prompt",
-                "session_id": session_id,
-                "frame_index": 0,
-                "text": prompt_text or entity.canonical_label,
-                "output_prob_thresh": request.thresholds.min_confidence,
-            }
+        spatial = next(
+            (prompt for prompt in request.spatial_prompts
+             if prompt.entity_id == entity.entity_id), None
         )
+        reference_index = (
+            next(index for index, frame in enumerate(sampled.frames)
+                 if frame.source_frame_index == spatial.frame_index)
+            if spatial is not None else 0
+        )
+        prompt_request = {
+            "type": "add_prompt",
+            "session_id": session_id,
+            "frame_index": reference_index,
+            "text": prompt_text or entity.canonical_label,
+            "output_prob_thresh": request.thresholds.min_confidence,
+        }
+        if spatial is not None:
+            left, top, right, bottom = spatial.bbox_xyxy
+            prompt_request.update(
+                bounding_boxes=[[left, top, right - left, bottom - top]],
+                bounding_box_labels=[1],
+            )
+        prompt_response = self._predictor.handle_request(prompt_request)
         frame_count = len(sampled.frames)
         detections: list[_Detection] = []
         present: list[frozenset[int] | None] = [None] * frame_count
@@ -804,18 +833,32 @@ class Sam31EvidenceProvider:
         stream_request = {
             "type": "propagate_in_video",
             "session_id": session_id,
-            "propagation_direction": "forward",
-            "start_frame_index": 0,
+            "propagation_direction": "both" if spatial is not None else "forward",
+            "start_frame_index": reference_index,
             "max_frame_num_to_track": frame_count,
             "output_prob_thresh": request.thresholds.min_confidence,
         }
+        if spatial is not None:
+            # The pinned detector adds this limit to start_frame_index without
+            # clamping its image batch. None uses the complete sampled window
+            # and keeps a nonzero reference from extending past its final frame.
+            stream_request.pop("max_frame_num_to_track")
         try:
-            stream = self._predictor.handle_stream_request(stream_request)
+            stream = (
+                iter((prompt_response,)) if request.mode == "probe"
+                else self._predictor.handle_stream_request(stream_request)
+            )
         except BaseException:
             if writer is not None:
                 writer.abort()
             raise
         stream_failed = False
+        # Pinned SAM3MultiplexTracking excludes the reference on reverse passes.
+        expected_indices = (
+            (reference_index,) if request.mode == "probe" else
+            tuple(range(reference_index, frame_count))
+            + tuple(range(reference_index - 1, -1, -1))
+        )
         next_expected_index = 0
         try:
             for response in stream:
@@ -826,7 +869,10 @@ class Sam31EvidenceProvider:
                     expected_dimensions=frame_dimensions,
                     mask_writer=writer,
                 )
-                if local_index != next_expected_index:
+                if (
+                    next_expected_index >= len(expected_indices)
+                    or local_index != expected_indices[next_expected_index]
+                ):
                     raise ValueError
                 next_expected_index += 1
                 if present[local_index] is not None:
@@ -856,8 +902,12 @@ class Sam31EvidenceProvider:
                             writer.abort()
                         raise _CleanupFailure from None
         try:
-            if next_expected_index != frame_count:
+            if next_expected_index != len(expected_indices):
                 raise ValueError
+            if request.mode == "probe":
+                present = [
+                    value if value is not None else frozenset() for value in present
+                ]
             if any(value is None for value in present) or mask_shape is None:
                 raise ValueError
             if len({
@@ -2126,6 +2176,22 @@ def _build_artifact(
             )
 
     overlays = _select_overlays(prompt_runs)
+    if request.spatial_prompts:
+        reference_frames = {
+            prompt.entity_id: prompt.frame_index for prompt in request.spatial_prompts
+        }
+        references = tuple(
+            (run.entity_id, item.object_id, item)
+            for run in prompt_runs for item in run.detections
+            if item.source_frame_index == reference_frames.get(run.entity_id)
+        )
+        reference_keys = {
+            (entity, obj, item.source_frame_index) for entity, obj, item in references
+        }
+        overlays = references + tuple(
+            entry for entry in overlays
+            if (entry[0], entry[1], entry[2].source_frame_index) not in reference_keys
+        )
     if overlays:
         overlays_directory = _create_private_directory(staging / "overlays")
         output_directories.append(overlays_directory)

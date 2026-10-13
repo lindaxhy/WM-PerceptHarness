@@ -121,11 +121,11 @@ class Settings(BaseSettings):
     # Retained for pipeline affinity-grace computation; not a service lease.
     lease_seconds: int = 300
     cv_device: NonnegativeInteger = 3
-    cv_provider: Literal["disabled", "fake", "sam31"] = "disabled"
+    cv_provider: Literal["disabled", "fake", "sam31"] = "sam31"
     cv_model_alias: Literal["sam3.1"] = "sam3.1"
     cv_repository_path: Path = Path("models/sam3")
     cv_checkpoint_path: Path = Path("models/sam3/checkpoints/sam3.pt")
-    cv_bpe_path: Path = Path("models/sam3/assets/bpe_simple_vocab_16e6.txt.gz")
+    cv_bpe_path: Path = Path("models/sam3/sam3/assets/bpe_simple_vocab_16e6.txt.gz")
     cv_checkpoint_sha256: str = "0" * 64
     cv_cache_root: Path = Path("work/cv-cache")
     cv_cache_max_bytes: PositiveInteger = 8 * 1024 * 1024 * 1024
@@ -180,19 +180,6 @@ class Settings(BaseSettings):
             raise ValueError("openai_base_url must be an http(s) URL")
         if self.cv_scan_fps > self.cv_max_fps:
             raise ValueError("cv_scan_fps must not exceed cv_max_fps")
-        if self.cv_provider == "sam31":
-            path_kinds = (
-                ("cv_repository_path", self.cv_repository_path, "directory"),
-                ("cv_checkpoint_path", self.cv_checkpoint_path, "file"),
-                ("cv_bpe_path", self.cv_bpe_path, "file"),
-                ("cv_cache_root", self.cv_cache_root, "directory"),
-            )
-            for field_name, path, expected_kind in path_kinds:
-                matches = path.is_dir() if expected_kind == "directory" else path.is_file()
-                if not matches:
-                    raise ValueError(
-                        f"{field_name} must be an existing local {expected_kind}"
-                    )
         return self
 
     @classmethod

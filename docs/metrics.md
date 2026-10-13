@@ -8,13 +8,13 @@ Use the sections below for [CLIP-IQA+](#clip-iqa), [Motion Smoothness](#motion-s
 
 | Evaluator | Command | Environment | Evidence and scope |
 |---|---|---|---|
-| Event-timeline fidelity | `percept score fidelity` | Core; optional `fidelity` extra for semantic scoring | Deterministic local smoke check; compares paired annotations |
+| Grounded event scoring | `percept score events` | Core package and an OpenAI-compatible semantic judge endpoint | Offline tests cover real FFmpeg video with synthetic annotation/CV evidence and an injected judge; hosted judge and live SAM GPU inference remain unvalidated |
 | CLIP-IQA+ | `percept score clipiqa` | PyIQA 0.1.16; CPU or CUDA | Implemented sampled-frame scorer; a fresh full dependency installation is not validated by the historical record |
 | VBench Motion Smoothness / AMT-S | `percept score motion` | VBench 0.1.5, CUDA, AMT-S weights | Existing record marks single-video smoke completed; this is not a full-dataset validation |
 
 See [installation](usage.md) and the metric protocols below, [input/output conventions](usage.md), and [checkpoint preparation](#checkpoint-preparation). The packaged commands use the active environment; they do not merge the different dependency stacks. Use the `percept score` commands above for these public workflows. The evaluator integrations below use the same CLI; input preparation remains in `scripts/`. Removed script paths are not compatibility entry points. JSON provenance retains the existing wrapper identifiers for compatibility.
 
-CLIP-IQA+ is a **backup**, excluded from the current frozen main selection. Motion Smoothness is selected. Event fidelity is the repository's annotation-based workflow and is not silently inserted into the separate frozen 21-item list.
+CLIP-IQA+ is a **backup**, excluded from the current frozen main selection. Motion Smoothness is selected. Grounded event scoring is the repository's annotation-based workflow and is not silently inserted into the separate frozen 21-item list.
 
 ## Additional integration tools
 
@@ -49,7 +49,7 @@ Pass the same `--cache-dir` when running `percept score clipiqa` or `percept sco
 
 Download URLs and trusted full SHA-256 values have one source of truth in the packaged [weight registry](../src/percept_harness/weights.py). Downloads follow redirects, stream to a temporary file, and publish only after checksum verification. Matching cached files are reused without network access; failed downloads leave existing files intact. Rerun the command after a failure; partial downloads are not resumed. Custom-cache scoring also verifies the files before loading models. The directory is ignored by Git and is not shipped in the wheel.
 
-This command covers these three pinned checkpoints only. Other VBench dimensions, DOVER, external evaluators, semantic fidelity models, and optional SAM3.1 retain their respective setup instructions. Do not assume downloading these assets prepares every metric.
+This command covers these three pinned checkpoints only. Other VBench dimensions, DOVER, external evaluators and semantic event judges retain their respective setup instructions. SAM3.1 source, checkpoint, tokenizer and GPU runtime support targeted checks during production event annotation; see [grounding setup](usage.md#targeted-sam31-grounding). Do not assume downloading these assets prepares every metric.
 
 ## CLIP-IQA+
 
@@ -463,4 +463,4 @@ The frozen selection from 2026-09-20 contains 21 main/specialist metrics and fiv
 
 Mechanics, Thermotics and Material are separate specialist reports, excluded from a unified main score. PSNR/SSIM/LPIPS need aligned real future frames; FVD/FID need a matching real collection or statistics. Without those references, report `N/A`.
 
-Aesthetic Quality and long-video consistency variants are diagnostics; CLIP-IQA+ is a backup. Physical Adherence is outside the frozen selection. VideoPhy-2 Joint is an analysis of paired PC/SA scores (`PC >= 4` and `SA >= 4`), not an additional model or metric. Event fidelity is the separate annotation-based workflow. Report scores, coverage and exclusions separately rather than averaging incompatible metrics.
+Aesthetic Quality and long-video consistency variants are diagnostics; CLIP-IQA+ is a backup. Physical Adherence is outside the frozen selection. VideoPhy-2 Joint is an analysis of paired PC/SA scores (`PC >= 4` and `SA >= 4`), not an additional model or metric. Grounded event scoring is the separate annotation-based workflow. Report scores, coverage and exclusions separately rather than averaging incompatible metrics.

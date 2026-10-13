@@ -39,6 +39,7 @@ class EvalOutcome:
     elapsed_seconds: float | None = None
     provenance: dict[str, Any] | None = None
     result_file: str | None = None
+    metadata: dict[str, Any] | None = None
 
 
 def default_pipeline_registry() -> PipelineRegistry:
@@ -89,7 +90,14 @@ class SyncRunner:
         """Evaluate one video end-to-end and return its terminal outcome."""
         started = time.monotonic()
         video_path = Path(video_path)
+        context = None
         try:
+            if not self.custom_registry:
+                from .models.fake import FakeVideoModel
+                if self.settings.cv_provider == 'disabled':
+                    raise SafePipelineError('Annotation requires SAM; disabled CV is not supported')
+                if self.settings.cv_provider == 'fake' and not isinstance(self.model, FakeVideoModel):
+                    raise SafePipelineError('Fake CV is allowed only with an explicit fake model')
             resolved = video_path.resolve(strict=True)
             if not resolved.is_file():
                 raise ValueError("video path must be a regular file")
@@ -121,6 +129,7 @@ class SyncRunner:
                 template=template,
                 status="completed",
                 data=dict(result),
+                metadata=dict(context.metadata),
                 elapsed_seconds=time.monotonic() - started,
             )
         except SafePipelineError as error:
@@ -128,6 +137,7 @@ class SyncRunner:
                 video_path=video_path,
                 template=template,
                 status="failed",
+                metadata=dict(context.metadata) if context is not None else None,
                 error=str(error),
                 elapsed_seconds=time.monotonic() - started,
             )
@@ -136,6 +146,7 @@ class SyncRunner:
                 video_path=video_path,
                 template=template,
                 status="failed",
+                metadata=dict(context.metadata) if context is not None else None,
                 error=f"{type(error).__name__}: {error}",
                 elapsed_seconds=time.monotonic() - started,
             )
@@ -227,7 +238,7 @@ def _run_batch(
             if previous is not None:
                 outcome = EvalOutcome(
                     video_path=video, template=template, status="skipped",
-                    data=previous["data"], provenance=identity, result_file=path.name,
+                    data=previous["data"], provenance=identity, result_file=path.name, metadata=previous.get("metadata"),
                 )
                 log(f"[{index}/{len(videos)}] skip {video.name} (matching input and run)")
             else:
@@ -253,7 +264,7 @@ def _run_batch(
             outcomes.append(outcome)
             run_record["results"].append({"video_path": str(video), "result_file": path.name,
                                           "status": outcome.status, "input": identity["input"] if identity else None,
-                                          "record_sha256": result_store.file_digest(path)})
+                                          "record_sha256": result_store.file_digest(path if path.exists() else result_store.audit_path(path))})
             result_store.write_json(manifest, run_record)
         _write_aggregate(output_dir / "results.jsonl", outcomes)
         run_record["status"] = "completed" if all(o.status != "failed" for o in outcomes) else "failed"
@@ -310,13 +321,14 @@ def _write_result(result_path: Path, outcome: EvalOutcome) -> None:
         "template": outcome.template,
         "status": outcome.status,
         "data": outcome.data,
+        "metadata": outcome.metadata,
         "error": outcome.error,
         "elapsed_seconds": outcome.elapsed_seconds,
         "provenance": outcome.provenance,
         "data_sha256": result_store.json_digest(outcome.data),
         "result_file": outcome.result_file,
     }
-    result_store.write_json(result_path, record)
+    result_store.write_annotation(result_path, record)
 
 
 def _write_aggregate(jsonl_path: Path, outcomes: list[EvalOutcome]) -> None:
@@ -325,6 +337,7 @@ def _write_aggregate(jsonl_path: Path, outcomes: list[EvalOutcome]) -> None:
         "template": outcome.template,
         "status": outcome.status,
         "data": outcome.data,
+        "metadata": outcome.metadata,
         "error": outcome.error,
         "provenance": outcome.provenance,
         "result_file": outcome.result_file,

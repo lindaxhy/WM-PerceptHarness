@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .config import Settings
 from .result_store import write_json
-from .runner import SyncRunner, run_batch
+from .runner import SyncRunner, run_batch, _write_result
 
 
 class RequestGate:
@@ -106,20 +106,19 @@ def _cv_worker(connection, cv_settings, gpu):
     try:
         from .cli import _cv_executor
         settings = Settings(**cv_settings)
-        with _cv_executor(settings.cv_provider, SimpleNamespace(cv_device=gpu), settings) as execute:
-            provider = execute.provider
-            identity = {"pid": os.getpid(), "provider": settings.cv_provider,
-                        "checkpoint_sha256": getattr(provider, "checkpoint_sha256", None),
-                        "repository_revision": getattr(provider, "repository_revision", None)}
-            runtime_identity = getattr(provider, "runtime_identity", None)
-            if callable(runtime_identity):
-                identity.update(runtime_identity())
-            connection.send(("ready", identity))
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            execute = None
+            connection.send(("ready", {"pid": os.getpid(), "provider": settings.cv_provider,
+                                       "initialization": "deferred_until_target"}))
             while True:
                 payload = connection.recv()
                 if payload is None:
                     break
                 try:
+                    if execute is None:
+                        execute = stack.enter_context(_cv_executor(settings.cv_provider, SimpleNamespace(
+                            cv_device=gpu, backend="fake" if settings.cv_provider == "fake" else "openai"), settings))
                     result, metrics = execute(payload)
                     connection.send(("ok", (result, metrics)))
                 except Exception as error:
@@ -179,10 +178,10 @@ class GpuSlot:
         self.connection.close()
 
 
-def archive_cv_evidence(data, cache_root: Path, archive_root: Path) -> Path:
+def archive_cv_evidence(evidence, cache_root: Path, archive_root: Path) -> Path:
     """Retain authenticated SAM files outside the bounded local runtime cache."""
     from .cv.artifacts import CvArtifactStore, CvArtifactHandle
-    handle = CvArtifactHandle(data["cv_evidence"]["artifact_key"], data["cv_evidence"]["manifest_sha256"])
+    handle = CvArtifactHandle(evidence["artifact_key"], evidence["manifest_sha256"])
     destination = archive_root / handle.key[:2] / (handle.key + "-" + handle.manifest_sha256)
     if not destination.exists():
         with CvArtifactStore(cache_root) as store:
@@ -228,22 +227,26 @@ def _verify_cv_archive(root: Path, expected_manifest: str):
 
 
 class ReviewRequiredRunner(SyncRunner):
-    """Do not leave a resumable success record after missing SAM/review evidence."""
+    """Require complete review, while allowing no targeted SAM requests."""
     def evaluate(self, *args, **kwargs):
         outcome = super().evaluate(*args, **kwargs)
         if outcome.status != "completed":
             return outcome
-        data = outcome.data
-        stages = data["performance"]["stages"]
-        if (data["cv_evidence"]["status"] != "available"
-                or not any(s.get("model_stage") == "occlusion_semantics" for s in stages)):
-            return replace(outcome, status="failed", data=None,
-                           error="SAM evidence or complete scene review unavailable")
+        metadata = outcome.metadata or {}
+        phases = metadata.get('phases', [])
+        from .pipelines.event_schemas import GroundedEvents
+        try:
+            GroundedEvents.model_validate(outcome.data)
+        except ValueError:
+            return replace(outcome, status='failed', data=None, error='Invalid event annotation')
+        if not {'grounded_draft', 'evidence_review', 'grounded_revision'}.issubset(phases):
+            return replace(outcome, status='failed', data=None,
+                           error='Complete grounded review unavailable')
         return outcome
 
 
 def run_manifest(arguments) -> int:
-    from .cli import _load_backend
+    from .cli import _load_backend, annotation_cv_preflight
     if arguments.workers_per_gpu <= 0 or arguments.request_concurrency <= 0:
         raise ValueError("worker and request concurrency must be positive")
     if not 0 <= arguments.shard_index < arguments.shard_count:
@@ -252,6 +255,7 @@ def run_manifest(arguments) -> int:
     provider = arguments.cv or settings.cv_provider
     if provider not in {"sam31", "fake"}:
         raise ValueError("manifest annotation requires --cv sam31 or --cv fake")
+    annotation_cv_preflight(provider, arguments.backend, settings, check_assets=False)
     devices = [int(s) for s in (arguments.cv_devices or str(settings.cv_device)).split(",")]
     if any(g < 0 for g in devices) or len(set(devices)) != len(devices):
         raise ValueError("CV devices must be distinct nonnegative integers")
@@ -321,6 +325,7 @@ def run_manifest(arguments) -> int:
                 jid = row["job_id"]
                 with mutex:
                     states[jid] = {"status": "running", "gpu": gpu, "started_unix": time.time()}
+                outcome = None
                 try:
                     video = Path(row["video_path"])
                     expected = row.get("expected_sha256")
@@ -336,26 +341,28 @@ def run_manifest(arguments) -> int:
                     if outcome.status not in {"completed", "skipped"}:
                         raise RuntimeError(outcome.error or "annotation failed")
                     # Resume is verified by normal run_batch identity, never by file existence.
-                    if outcome.status == "skipped":
-                        data = json.loads((job_root / outcome.result_file).read_text())["data"]
-                    else:
-                        data = outcome.data
-                    if data["cv_evidence"]["status"] != "available":
-                        raise RuntimeError("SAM evidence unavailable; annotation is not accepted")
-                    scene_events = data["annotation_branches"]["scene_facts"]["events"]
-                    if any(e["model_stage"] != "occlusion_semantics" for e in scene_events):
-                        raise RuntimeError("scene draft was not replaced by the review")
+                    metadata = outcome.metadata or {}
+                    evidence = metadata.get('evidence', [])
+                    if 'grounded_revision' not in metadata.get('phases', []):
+                        raise RuntimeError('event draft was not replaced by grounded revision')
+                    archives = []
                     with archive_lock:
-                        archived = archive_cv_evidence(data, lane_settings.cv_cache_root, root / ".cv-archive")
-                        archived_keys[data["cv_evidence"]["artifact_key"]] = archived
-                    write_json(job_root / ".percept" / "cv-artifact.json", {
-                        "archive_path": str(archived),
-                        "manifest_sha256": data["cv_evidence"]["manifest_sha256"],
-                        "host": os.uname().nodename, "gpu": gpu})
+                        for record in evidence:
+                            if record.get('status') != 'available':
+                                continue
+                            archived = archive_cv_evidence(record, lane_settings.cv_cache_root, root / '.cv-archive')
+                            archived_keys[record['artifact_key']] = archived
+                            archives.append({'scope': record['scope'], 'archive_path': str(archived),
+                                             'manifest_sha256': record['manifest_sha256']})
+                    write_json(job_root / '.percept' / 'cv-artifact.json', {
+                        'artifacts': archives, 'host': os.uname().nodename, 'gpu': gpu})
                     with mutex:
-                        states[jid].update(status="completed", finished_unix=time.time(),
-                            result_file=str(job_root / outcome.result_file), cv_archive=str(archived), resumed=outcome.status == "skipped")
+                        states[jid].update(status='completed', finished_unix=time.time(),
+                            result_file=str(job_root / outcome.result_file), cv_archives=archives, resumed=outcome.status == 'skipped')
                 except Exception as error:
+                    if outcome is not None and outcome.status in {"completed", "skipped"}:
+                        _write_result(job_root / outcome.result_file, replace(
+                            outcome, status="failed", data=None, error=f"Evidence export failed: {error}"))
                     with mutex:
                         states[jid].update(status="failed", finished_unix=time.time(), error=str(error))
                 finally:
