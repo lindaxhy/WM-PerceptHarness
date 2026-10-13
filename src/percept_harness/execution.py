@@ -21,7 +21,7 @@ from typing import Any, Protocol
 
 from .domain import InferenceJob, InferenceJobSpec, InferenceStatus
 from .media import TimeSpan, VideoMetadata
-from .models.base import ModelOutputError, ModelRequest, VideoModel, VideoSession
+from .models.base import ModelOutputError, ModelRequest, VideoModel, VideoSession, VisualEvidence
 from .metrics import validate_inference_job_metrics
 
 logger = logging.getLogger(__name__)
@@ -124,6 +124,7 @@ class SemanticResultCache:
             "schema_name": request.schema_name,
             "schema_context": dict(schema_context) if schema_context else None,
             "backend": dict(backend_identity),
+            "visual_evidence": [e.identity() for e in request.visual_evidence],
         })
 
     def _entry_path(self, key: str) -> Path:
@@ -436,6 +437,7 @@ def _model_request(job: InferenceJob) -> ModelRequest:
         media_resolution=payload.get("media_resolution"),
         reasoning_effort=payload.get("reasoning_effort"),
         clip_context=payload.get("clip_context"),
+        visual_evidence=tuple(VisualEvidence.from_payload(e) for e in payload.get("visual_evidence", ())),
     )
 
 

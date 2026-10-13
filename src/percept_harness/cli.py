@@ -172,8 +172,7 @@ def _eval(arguments: argparse.Namespace) -> int:
     if arguments.cv_device is not None:
         overrides["cv_device"] = arguments.cv_device
     if cv_provider != settings.cv_provider or arguments.cv_device is not None:
-        # Settings validates sam31 paths only when PERCEPT_CV_PROVIDER=sam31, so
-        # re-validate with the CLI override applied.
+        # Validate typed configuration here; GPU assets are annotation-only.
         try:
             settings = type(settings).model_validate({**settings.model_dump(), **overrides})
         except Exception as error:
@@ -198,7 +197,7 @@ def _eval(arguments: argparse.Namespace) -> int:
                 prompt_context=arguments.prompt_context,
                 force=arguments.force,
             )
-    except OutputBusyError as error:
+    except (OutputBusyError, ValueError, RuntimeError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
     finally:
@@ -269,12 +268,24 @@ def _single_alias(registry: dict, name: str) -> str:
     return next(iter(registry))
 
 
+def annotation_cv_preflight(provider_name, backend, settings):
+    if provider_name == 'disabled':
+        raise ValueError('Annotation requires SAM; disabled CV is not supported')
+    if provider_name == 'fake' and backend != 'fake':
+        raise ValueError('Fake CV requires an explicit fake model backend')
+    if provider_name == 'sam31':
+        for name, kind in (('cv_repository_path', 'directory'), ('cv_checkpoint_path', 'file'), ('cv_bpe_path', 'file')):
+            path = getattr(settings, name)
+            if not (path.is_dir() if kind == 'directory' else path.is_file()):
+                raise ValueError(f'{name} must be an existing local {kind}')
+    elif provider_name != 'fake':
+        raise ValueError('Unsupported annotation CV provider')
+
+
 @contextmanager
 def _cv_executor(provider_name: str, arguments: argparse.Namespace, settings: Settings):
-    """Yield a SyncCvExecutor for the chosen provider, or None when disabled."""
-    if provider_name == "disabled":
-        yield None
-        return
+    """Load mandatory annotation CV; scoring never enters this GPU preflight."""
+    annotation_cv_preflight(provider_name, arguments.backend, settings)
 
     from .cv.artifacts import CvArtifactStore
     from .cv.executor import SyncCvExecutor

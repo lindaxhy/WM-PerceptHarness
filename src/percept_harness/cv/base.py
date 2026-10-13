@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -14,6 +15,7 @@ from .contracts import (
     EvidenceStatus,
     FrameTimeline,
     TrackObservation,
+    OverlayRecord,
 )
 
 
@@ -105,6 +107,21 @@ class FakeCvEvidenceProvider:
                         observations=tuple(observations),
                     )
                 )
+            # Synthetic overlays use decoded source pixels and the fixture box.
+            # These are explicitly synthetic; no learned segmentation is implied.
+            overlays = []
+            for track in tracks[:24]:
+                observation = track.observations[0]
+                relative = f'overlays/{track.track_id}.png'
+                destination = staging / relative
+                destination.parent.mkdir(mode=0o700, exist_ok=True)
+                x, y, right, bottom = observation.bbox_xyxy
+                subprocess.run(['ffmpeg', '-v', 'error', '-i', str(request.video_path),
+                    '-vf', f"select=eq(n\\,{observation.frame_index}),drawbox=x=iw*{x}:y=ih*{y}:w=iw*{right-x}:h=ih*{bottom-y}:color=lime:t=2",
+                    '-frames:v', '1', '-update', '1', str(destination)], check=True, capture_output=True)
+                payload = destination.read_bytes()
+                files.append(ArtifactFile(path=relative, sha256=hashlib.sha256(payload).hexdigest(), size_bytes=len(payload)))
+                overlays.append(OverlayRecord(path=relative, track_id=track.track_id, frame_index=observation.frame_index))
             artifact = CvEvidenceArtifact(
                 schema_version="cv_evidence_v1",
                 status=EvidenceStatus.AVAILABLE,
@@ -116,7 +133,7 @@ class FakeCvEvidenceProvider:
                 entities=request.entities,
                 tracks=tuple(tracks),
                 files=tuple(files),
-                overlay_records=(),
+                overlay_records=tuple(overlays),
             )
             self._metrics = {
                 "processed_frames": len(request.timeline.frames),
