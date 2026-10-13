@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import hashlib
 import importlib.metadata
 import json
 import math
@@ -24,69 +23,24 @@ DOVER_COMMIT = "f1ddc96215bc7fbcf8f315c65d47905f339c3419"
 DOVER_ORIGIN = "https://github.com/VQAssessment/DOVER"
 CONVNEXT_FILENAME = "convnext_tiny_1k_224_ema.pth"
 SCORE_LABEL = "Normalized fused overall score (scale in [0,1]):"
-# SHA-256 of LF-normalized files from the commit above.  This also verifies
-# official tar exports without .git and does not trust a user-supplied revision.
-SOURCE_SHA256 = {
-    "evaluate_one_video.py": "76226b3509772a4c2159bb0cb3526f5c2c52c841feb09d5cb1cc502427e5b564",
-    "dover.yml": "48f35676852ac7fd535338b0e0d45b833eabe8c6b4be9c6a7a4bfdf671f964fe",
-    "requirements.txt": "b2288e81d50782082b998e208cedb7dcfe03a9fe429ee187b62850344e1b3787",
-    "setup.py": "847929587a1e91297d42f6a9b96cc2427231f3d40031fabda5e17a0f54e1d11b",
-    "dover/__init__.py": "7bff0dcd5bc9afc65d4393449aae2d0ec8181b6e9028341c2bd5509c16d7444d",
-    "dover/datasets/__init__.py": "118fec1d52cfe3cff8491e7eec4628211c25cff8cc7b456d20b77c2e3f33e2f4",
-    "dover/datasets/basic_datasets.py": "cf61875d05ab17dd239f90fa62a60f408260f1248b2ec83ac39b49e0267fd6b5",
-    "dover/datasets/dover_datasets.py": "5f017410154117ca1ff93afef2ede1e6360be382c259fe722c34b33c8bc1ea8a",
-    "dover/models/__init__.py": "a2f5133edafdae33ef9dcea6e082d3577f1d0a3728fa337d2514703620346a07",
-    "dover/models/backbone_get_attention.py": "ad710791bee65fc73c1df5b0c66d09a7adcad26bfe009e62418f4b6b1ceb7d45",
-    "dover/models/backbone_v0_1.py": "cc4e99fb65ee591af4ddb3dc333744c536c18b2fec22982eae4f3a7bb1662a68",
-    "dover/models/conv_backbone.py": "fa50ec66714ed1191123aeff4572da02cb95f3de8884349194ca6828c81c6e90",
-    "dover/models/evaluator.py": "c589b03d6fd5b48d15d7da609c0feddf48d79fbb670d047674afb1314a12bc64",
-    "dover/models/head.py": "4f66f792c018c5aa69cf4305a5b6e6e82d2f47cc9aa725c51042f1c29dcccad1",
-    "dover/models/swin_backbone.py": "18045b20bf6e97e5dc5cae56ec07746e57b904a04ad4aeeeab28b9ec4f57d990",
-    "dover/models/xclip_backbone.py": "0e6b4c29d0a89c89bd52cfce745892b43aeed1d7263501f2890775c36cb8d226",
-    "dover/version.py": "c65276beb52b51602a72f6cba52fa1a6212c33b97fee994ea2962097a6ec0473",
-}
 RUNTIME_PACKAGES = (
     "torch", "torchvision", "numpy", "PyYAML", "decord", "opencv-python",
     "timm", "einops", "scikit-video", "scipy", "tqdm",
 )
 
 
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def verify_source(root: Path) -> dict:
-    expected_python = {name for name in SOURCE_SHA256 if name.startswith("dover/")}
-    actual_python = {path.relative_to(root).as_posix() for path in (root / "dover").rglob("*.py")}
-    if actual_python != expected_python:
-        raise ValueError("DOVER Python source inventory differs from the pinned commit")
-    for name, expected in SOURCE_SHA256.items():
-        path = root / name
+    for relative in ['evaluate_one_video.py', 'dover.yml', 'dover/__init__.py']:
+        path = root / relative
         if not path.is_file():
-            raise FileNotFoundError(f"Missing pinned DOVER source: {path}")
-        actual = hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
-        if actual != expected:
-            raise ValueError(f"DOVER source differs from {DOVER_COMMIT}: {name}")
-    return {"origin": DOVER_ORIGIN, "commit": DOVER_COMMIT,
-            "verification": "LF-normalized SHA-256 of all runtime Python files, config and requirements",
-            "files": SOURCE_SHA256.copy()}
+            raise FileNotFoundError(f"Missing required source file: {path}")
+    return {"origin": DOVER_ORIGIN, "expected_commit": DOVER_COMMIT}
 
 
-def checkpoint_record(path: Path, expected: str | None = None) -> dict:
+def checkpoint_record(path: Path) -> dict:
     if not path.is_file() or path.stat().st_size == 0:
         raise FileNotFoundError(f"Required local checkpoint missing/empty; no download attempted: {path}")
-    digest = sha256(path)
-    if expected is not None:
-        if not re.fullmatch(r"[0-9a-fA-F]{64}", expected):
-            raise ValueError("Expected checkpoint SHA-256 must contain exactly 64 hexadecimal characters")
-        if digest != expected.lower():
-            raise ValueError(f"Checkpoint SHA-256 mismatch: {path}")
-    return {"path": str(path), "sha256": digest, "bytes": path.stat().st_size,
-            "expected_sha256_checked": expected is not None}
+    return {"path": str(path), "bytes": path.stat().st_size}
 
 
 def inspect_runtime(device: str, allow_unverified_runtime: bool, gpu: str | None = None) -> dict:
@@ -159,7 +113,6 @@ def _save(path: Path, payload: dict) -> None:
 
 def run_official(*, dover_root: Path, video: Path, torch_home: Path, output_dir: Path,
                  device: str = "cpu", gpu: str | None = None, check_only: bool = False,
-                 checkpoint_sha256: str | None = None, convnext_sha256: str | None = None,
                  allow_unverified_runtime: bool = False) -> dict:
     output_dir = output_dir.expanduser().absolute()
     # Exclusive directory ownership prevents reading stale logs or results.
@@ -183,12 +136,12 @@ def run_official(*, dover_root: Path, video: Path, torch_home: Path, output_dir:
             raise ValueError("--device must be cpu, cuda, or cuda:N")
         result["source"] = verify_source(root)
         result["dover_root"] = str(root)
-        result["video"] = {"path": str(video), "sha256": sha256(video), "bytes": video.stat().st_size}
+        result["video"] = {"path": str(video), "bytes": video.stat().st_size}
         # dover.yml intentionally remains unchanged.  Use a local symlink at
         # this exact location if the full checkpoint lives on a model volume.
         checkpoints = {
-            "dover": checkpoint_record(root / "pretrained_weights" / "DOVER.pth", checkpoint_sha256),
-            "convnext_initialization": checkpoint_record(torch_home / "hub" / "checkpoints" / CONVNEXT_FILENAME, convnext_sha256),
+            "dover": checkpoint_record(root / "pretrained_weights" / "DOVER.pth"),
+            "convnext_initialization": checkpoint_record(torch_home / "hub" / "checkpoints" / CONVNEXT_FILENAME),
         }
         result["checkpoints"] = checkpoints
         if gpu is not None and device.startswith("cuda:") and device != "cuda:0":
@@ -216,15 +169,8 @@ def run_official(*, dover_root: Path, video: Path, torch_home: Path, output_dir:
         with log_path.open("xb") as stream:
             completed = subprocess.run(command, cwd=root, env=env, stdout=stream, stderr=subprocess.STDOUT)
         result["returncode"] = completed.returncode
-        result["log_sha256"] = sha256(log_path)
         if completed.returncode:
             raise RuntimeError(f"Official DOVER exited with {completed.returncode}; inspect {log_path}")
-        verify_source(root)
-        if sha256(video) != result["video"]["sha256"]:
-            raise RuntimeError("Video changed during inference; no score accepted")
-        for item in checkpoints.values():
-            if sha256(Path(item["path"])) != item["sha256"]:
-                raise RuntimeError("Checkpoint changed during inference; no score accepted")
         try:
             result["score"] = parse_fused_score(log_path.read_text(encoding="utf-8", errors="replace"))
         except ValueError as error:
@@ -253,8 +199,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--device", default="cpu", help="cpu (default), cuda, or cuda:N")
     parser.add_argument("--gpu", help="CUDA_VISIBLE_DEVICES for the official process")
     parser.add_argument("--check-only", action="store_true", help="Validate files and environment; never start inference")
-    parser.add_argument("--checkpoint-sha256", help="Expected SHA-256 from your verified DOVER.pth acquisition")
-    parser.add_argument("--convnext-sha256", help="Expected SHA-256 from your verified ConvNeXt acquisition")
     parser.add_argument("--allow-unverified-runtime", action="store_true",
                         help="Explicitly permit a non-Torch-1.13 compatibility experiment; label its output separately")
     args = parser.parse_args(argv)

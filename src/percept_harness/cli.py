@@ -10,7 +10,6 @@ from collections.abc import Sequence
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
-from .result_store import OutputBusyError
 from .config import Settings
 from .runner import (
     SyncRunner,
@@ -104,7 +103,9 @@ def _parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--shard-count", type=int, default=1)
     evaluate.add_argument("--event-workflow", choices=("reviewed", "confidence-gated"),
                           default=None, help="event workflow (default: PERCEPT_EVENT_WORKFLOW, reviewed)")
-    evaluate.add_argument("--force", action="store_true", help="rerun matching results; archive displaced files")
+    reuse = evaluate.add_mutually_exclusive_group()
+    reuse.add_argument("--resume", action="store_true", help="skip completed results; use a new output directory when inputs/settings change")
+    reuse.add_argument("--force", action="store_true", help="rerun videos without reusing VLM request cache")
     evaluate.add_argument(
         "--model",
         default=None,
@@ -188,8 +189,9 @@ def _eval(arguments: argparse.Namespace) -> int:
                 arguments.output,
                 prompt_context=arguments.prompt_context,
                 force=arguments.force,
+                resume=arguments.resume,
             )
-    except (OutputBusyError, ValueError, RuntimeError) as error:
+    except (ValueError, RuntimeError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
     finally:
@@ -324,7 +326,6 @@ def _loaded_cv_executor(provider_name: str, arguments: argparse.Namespace, setti
             provider = Sam31EvidenceProvider.load(
                 settings.cv_repository_path,
                 settings.cv_checkpoint_path,
-                settings.cv_checkpoint_sha256,
                 bpe_path=settings.cv_bpe_path,
                 compile_model=settings.cv_compile_model,
                 max_artifact_bytes=settings.cv_cache_max_bytes,

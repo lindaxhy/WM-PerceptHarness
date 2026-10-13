@@ -39,7 +39,7 @@ class SyncCvExecutor:
                 peak_allocated_bytes=0,
                 inference_seconds=0.0,
             )
-            return _published_result(cached.key, cached.manifest_sha256, artifact, True), metrics
+            return _published_result(cached.key, artifact, True), metrics
 
         started = time.monotonic()
         oom_retry = False
@@ -59,7 +59,7 @@ class SyncCvExecutor:
                         inference_seconds=inference_seconds,
                     )
                     handle = self.artifact_store.publish(request, staging, artifact)
-                return _published_result(handle.key, handle.manifest_sha256, artifact, False), metrics
+                return _published_result(handle.key, artifact, False), metrics
             except CvOutOfMemoryError:
                 if attempt_index == 1:
                     raise
@@ -70,13 +70,11 @@ class SyncCvExecutor:
 
 def _published_result(
     key: str,
-    manifest_sha256: str,
     artifact: CvEvidenceArtifact,
     cache_hit: bool,
 ) -> dict[str, Any]:
     return {
         "artifact_key": key,
-        "manifest_sha256": manifest_sha256,
         "cache_hit": cache_hit,
         "status": artifact.status.value,
     }

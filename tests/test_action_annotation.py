@@ -53,7 +53,7 @@ class ActionAnnotationTests(unittest.TestCase):
             audit = json.loads((root / 'out' / 'clip.audit.json').read_text())
             self.assertTrue(audit['metadata']['synthetic'])
             self.assertNotIn('template', audit)
-            self.assertNotIn('template', audit['provenance']['run'])
+            self.assertNotIn('provenance', audit)
             aggregate = json.loads((root / 'out' / 'results.jsonl').read_text().splitlines()[0])
             self.assertNotIn('template', aggregate)
 

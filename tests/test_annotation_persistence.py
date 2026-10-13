@@ -24,31 +24,57 @@ class AnnotationPersistenceTests(unittest.TestCase):
 
     def outcome(self, **changes):
         values = dict(video_path=self.video,
-                      status='completed', data=self.data, provenance=self.identity,
+                      status='completed', data=self.data,
                       metadata={'phases': ['grounded_draft', 'evidence_review', 'grounded_revision'], 'evidence': []})
         values.update(changes)
         return EvalOutcome(**values)
 
-    def test_public_is_minimal_audit_resumes_and_digest_tampering_does_not(self):
+    def test_public_is_minimal_and_manual_edits_need_no_digest(self):
         _write_result(self.path, self.outcome())
         self.assertEqual(json.loads(self.path.read_text()), self.data)
         audit = json.loads((self.root / 'clip.audit.json').read_text())
         self.assertNotIn('data', audit)
-        self.assertEqual(audit['data_sha256'], result_store.json_digest(self.data))
-        self.assertEqual(result_store.completed_result(self.path, self.identity)['data'], self.data)
+        self.assertNotIn('data_sha256', audit)
+        self.assertEqual(result_store.completed_result(self.path, self.video)['data'], self.data)
         self.assertEqual(result_store.result_path(self.root, self.video), self.path)
         self.path.write_text(json.dumps({'duration': 3, 'events': []}))
-        self.assertIsNone(result_store.completed_result(self.path, self.identity))
+        self.assertEqual(result_store.completed_result(self.path, self.video)['data']['duration'], 3)
 
-    def test_failure_removes_stale_public_and_archives_both_records(self):
+    def test_failure_removes_stale_public(self):
         _write_result(self.path, self.outcome())
-        result_store.archive_result(self.path, self.root)
         _write_result(self.path, self.outcome(status='failed', data=None, error='review failed'))
         self.assertFalse(self.path.exists())
         self.assertEqual(json.loads((self.root / 'clip.audit.json').read_text())['status'], 'failed')
-        self.assertEqual(len(list((self.root / '.percept/history').glob('*.json'))), 2)
         self.assertEqual(result_store.result_path(self.root, self.video), self.path)
-        self.assertIsNone(result_store.completed_result(self.path, self.identity))
+        self.assertIsNone(result_store.completed_result(self.path, self.video))
+
+    def test_existing_suffix_is_reused_after_primary_is_deleted(self):
+        _write_result(self.path, self.outcome())
+        other = self.root / 'other' / 'clip.mp4'
+        second = result_store.result_path(self.root, other)
+        _write_result(second, self.outcome(video_path=other))
+        self.path.unlink()
+        result_store.audit_path(self.path).unlink()
+        self.assertEqual(result_store.result_path(self.root, other), second)
+
+    def test_batch_only_skips_with_explicit_resume(self):
+        from percept_harness.runner import run_batch
+        from unittest.mock import Mock
+        self.video.write_bytes(b'video')
+        runner = Mock()
+        runner.evaluate.return_value = self.outcome()
+        run_batch(runner, [self.video], self.root, log=lambda _: None)
+        run_batch(runner, [self.video], self.root, log=lambda _: None)
+        self.assertEqual(runner.evaluate.call_count, 2)
+        skipped = run_batch(runner, [self.video], self.root, resume=True, log=lambda _: None)
+        self.assertEqual(skipped[0].status, 'skipped')
+        self.assertEqual(runner.evaluate.call_count, 2)
+        self.path.write_text('{')
+        run_batch(runner, [self.video], self.root, resume=True, log=lambda _: None)
+        self.assertEqual(runner.evaluate.call_count, 3)
+        self.assertFalse((self.root / '.percept').exists())
+        with self.assertRaises(ValueError):
+            run_batch(runner, [self.video], self.root, resume=True, force=True)
 
     def test_plain_ground_truth_and_audited_prediction_score_empty_as_valid(self):
         ref = self.root / 'ref'; pred = self.root / 'pred'
@@ -59,7 +85,7 @@ class AnnotationPersistenceTests(unittest.TestCase):
         self.assertEqual((system['valid_count'], system['invalid_count']), (1, 0))
         self.assertEqual(set(load_group(pred)), {'clip'})
         (pred / 'clip.json').write_text(json.dumps({'duration': 3, 'events': []}))
-        self.assertEqual(evaluate(ref, {'sys': pred}, lambda a,b: None)['systems']['sys']['invalid_count'], 1)
+        self.assertEqual(evaluate(ref, {'sys': pred}, lambda a,b: None)['systems']['sys']['invalid_count'], 0)
 
     def test_orphan_failed_audit_is_error_sample_not_empty_dataset(self):
         ref = self.root / 'ref'; pred = self.root / 'pred'
@@ -96,15 +122,15 @@ class AnnotationPersistenceTests(unittest.TestCase):
         with patch.object(result_store, 'write_json', side_effect=interrupted):
             with self.assertRaises(OSError):
                 _write_result(self.path, self.outcome())
-        self.assertIsNone(result_store.completed_result(self.path, self.identity))
+        self.assertIsNone(result_store.completed_result(self.path, self.video))
         self.assertEqual(load_group(self.root)['clip']['record']['status'], 'writing')
 
     def test_legacy_envelope_still_resumes_and_scores(self):
         legacy = {'video_path': str(self.video), 'template': 'embodied_action_captioning',
                   'status': 'completed', 'data': self.data, 'provenance': self.identity,
-                  'data_sha256': result_store.json_digest(self.data)}
+                  'data_sha256': 'legacy-checksum-ignored'}
         self.path.write_text(json.dumps(legacy))
-        self.assertEqual(result_store.completed_result(self.path, self.identity)['data'], self.data)
+        self.assertEqual(result_store.completed_result(self.path, self.video)['data'], self.data)
         report = evaluate(self.root, {'sys': self.root}, lambda a,b: None)
         self.assertEqual(report['systems']['sys']['valid_count'], 1)
 
@@ -114,7 +140,7 @@ class AnnotationPersistenceTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 _write_result(self.path, self.outcome(status='failed', data=None))
         self.assertFalse(self.path.exists())
-        self.assertIsNone(result_store.completed_result(self.path, self.identity))
+        self.assertIsNone(result_store.completed_result(self.path, self.video))
 
     def test_idle_gpu_worker_does_not_initialize_sam(self):
         from percept_harness.batch import _cv_worker

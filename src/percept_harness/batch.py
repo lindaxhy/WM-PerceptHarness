@@ -179,39 +179,37 @@ class GpuSlot:
 
 
 def archive_cv_evidence(evidence, cache_root: Path, archive_root: Path) -> Path:
-    """Retain authenticated SAM files outside the bounded local runtime cache."""
+    """Retain SAM files outside the bounded local runtime cache."""
     from .cv.artifacts import CvArtifactStore, CvArtifactHandle
-    handle = CvArtifactHandle(evidence["artifact_key"], evidence["manifest_sha256"])
-    destination = archive_root / handle.key[:2] / (handle.key + "-" + handle.manifest_sha256)
+    handle = CvArtifactHandle(evidence["artifact_key"])
+    destination = archive_root / handle.key[:2] / handle.key
     if not destination.exists():
         with CvArtifactStore(cache_root) as store:
-            store.load(handle)  # Authenticate the complete immutable entry before exporting.
+            store.load(handle)  # Check the entry structure before exporting.
         source = cache_root / handle.key[:2] / handle.key
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = Path(tempfile.mkdtemp(prefix=".cv-copy-", dir=destination.parent))
         try:
             shutil.copytree(source, temporary, dirs_exist_ok=True)
-            _verify_cv_archive(temporary, handle.manifest_sha256)
+            _verify_cv_archive(temporary)
             try:
                 os.replace(temporary, destination)
             except OSError:
                 if not destination.exists():
                     raise
-                _verify_cv_archive(destination, handle.manifest_sha256)
+                _verify_cv_archive(destination)
         finally:
             if temporary.exists():
                 shutil.rmtree(temporary)
-    _verify_cv_archive(destination, handle.manifest_sha256)
+    _verify_cv_archive(destination)
     return destination
 
 
-def _verify_cv_archive(root: Path, expected_manifest: str):
+def _verify_cv_archive(root: Path):
     manifest = root / "manifest.json"
     if manifest.is_symlink():
         raise ValueError("CV archive manifest must be a regular file")
     content = manifest.read_bytes()
-    if hashlib.sha256(content).hexdigest() != expected_manifest:
-        raise ValueError("CV archive manifest SHA-256 mismatch")
     artifact = json.loads(content)["artifact"]
     for record in artifact["files"]:
         relative = Path(record["path"])
@@ -220,10 +218,8 @@ def _verify_cv_archive(root: Path, expected_manifest: str):
         path = root / relative
         if path.is_symlink() or path.resolve().is_relative_to(root.resolve()) is False:
             raise ValueError("CV archive contains a foreign file")
-        with path.open("rb") as stream:
-            digest = hashlib.file_digest(stream, "sha256").hexdigest()
-        if path.stat().st_size != record["size_bytes"] or digest != record["sha256"]:
-            raise ValueError("CV archive file SHA-256 mismatch")
+        if path.stat().st_size != record["size_bytes"]:
+            raise ValueError("CV archive file size mismatch")
 
 
 def required_event_phases(metadata):
@@ -340,19 +336,13 @@ def run_manifest(arguments) -> int:
                 outcome = None
                 try:
                     video = Path(row["video_path"])
-                    expected = row.get("expected_sha256")
-                    if expected:
-                        with video.open("rb") as stream:
-                            digest = hashlib.file_digest(stream, "sha256").hexdigest()
-                        if digest != expected:
-                            raise ValueError("input SHA-256 differs from manifest")
                     job_root = root / jid
                     outcomes = run_batch(runner, [video], job_root,
-                                         force=arguments.force, log=lambda message: None)
+                                         force=arguments.force, resume=arguments.resume, log=lambda message: None)
                     outcome = outcomes[0]
                     if outcome.status not in {"completed", "skipped"}:
                         raise RuntimeError(outcome.error or "annotation failed")
-                    # Resume is verified by normal run_batch identity, never by file existence.
+                    # Explicit resume reuses completed, structurally valid annotations.
                     metadata = outcome.metadata or {}
                     evidence = metadata.get('evidence', [])
                     if not required_event_phases(metadata).issubset(metadata.get('phases', [])):
@@ -364,8 +354,7 @@ def run_manifest(arguments) -> int:
                                 continue
                             archived = archive_cv_evidence(record, lane_settings.cv_cache_root, root / '.cv-archive')
                             archived_keys[record['artifact_key']] = archived
-                            archives.append({'scope': record['scope'], 'archive_path': str(archived),
-                                             'manifest_sha256': record['manifest_sha256']})
+                            archives.append({'scope': record['scope'], 'archive_path': str(archived)})
                     write_json(job_root / '.percept' / 'cv-artifact.json', {
                         'artifacts': archives, 'host': os.uname().nodename, 'gpu': gpu})
                     with mutex:

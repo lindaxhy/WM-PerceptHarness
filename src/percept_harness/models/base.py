@@ -67,23 +67,22 @@ class VisualEvidence:
                 raise ModelRequestError('invalid visual evidence identity')
 
     def identity(self):
-        return {'sha256': hashlib.sha256(self.png_bytes).hexdigest(), 'timestamp': self.timestamp,
+        return {'image_key': hashlib.sha256(self.png_bytes).hexdigest(), 'timestamp': self.timestamp,
                 'entity_id': self.entity_id, 'track_id': self.track_id, 'source': self.source}
 
     def payload(self):
-        return {**self.identity(), 'png_base64': base64.b64encode(self.png_bytes).decode('ascii')}
+        return {'timestamp': self.timestamp, 'entity_id': self.entity_id, 'track_id': self.track_id,
+                'source': self.source, 'png_base64': base64.b64encode(self.png_bytes).decode('ascii')}
 
     @classmethod
     def from_payload(cls, value):
-        if type(value) is not dict or set(value) != {'sha256', 'timestamp', 'entity_id', 'track_id', 'source', 'png_base64'}:
+        if type(value) is not dict or set(value) != {'timestamp', 'entity_id', 'track_id', 'source', 'png_base64'}:
             raise ModelRequestError('invalid visual evidence payload')
         encoded = value['png_base64']
         if type(encoded) is not str or len(encoded) > 12 * 1024 * 1024:
             raise ModelRequestError('invalid visual evidence byte budget')
         result = cls(png_bytes=base64.b64decode(encoded, validate=True), timestamp=value['timestamp'],
                      entity_id=value['entity_id'], track_id=value['track_id'], source=value['source'])
-        if result.identity()['sha256'] != value['sha256']:
-            raise ModelRequestError('visual evidence digest mismatch')
         return result
 
 

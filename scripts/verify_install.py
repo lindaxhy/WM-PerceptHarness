@@ -126,9 +126,9 @@ def check_device(metric, device):
 
 
 def check_weights(metric, cache):
-    from percept_harness.weights import verify_weights
-    verify_weights(metric, cache)
-    return f'SHA-256 verified: {cache}'
+    from percept_harness.weights import check_weights
+    check_weights(metric, cache)
+    return f'Checkpoint files present: {cache}'
 
 
 def main(argv=None):

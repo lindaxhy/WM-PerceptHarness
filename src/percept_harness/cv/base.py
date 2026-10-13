@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import subprocess
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -86,7 +85,6 @@ class FakeCvEvidenceProvider:
                 files.append(
                     ArtifactFile(
                         path=mask_ref,
-                        sha256=hashlib.sha256(payload).hexdigest(),
                         size_bytes=len(payload),
                     )
                 )
@@ -135,15 +133,15 @@ class FakeCvEvidenceProvider:
                     '-vf', f"select=eq(n\\,{observation.frame_index}),drawbox=x=iw*{x}:y=ih*{y}:w=iw*{right-x}:h=ih*{bottom-y}:color=lime:t=2",
                     '-frames:v', '1', '-update', '1', str(destination)], check=True, capture_output=True)
                 payload = destination.read_bytes()
-                files.append(ArtifactFile(path=relative, sha256=hashlib.sha256(payload).hexdigest(), size_bytes=len(payload)))
+                files.append(ArtifactFile(path=relative, size_bytes=len(payload)))
                 overlays.append(OverlayRecord(path=relative, track_id=track.track_id, frame_index=observation.frame_index))
             artifact = CvEvidenceArtifact(
                 schema_version="cv_evidence_v1",
                 status=EvidenceStatus.AVAILABLE,
                 provider=request.provider,
                 model_identity=request.model_identity,
-                video_sha256=request.video_sha256,
-                checkpoint_sha256=request.checkpoint_sha256,
+                video_identity=request.video_identity,
+                checkpoint_identity=request.checkpoint_identity,
                 processed_timeline=FrameTimeline(frames=processed_frames),
                 entities=request.entities,
                 tracks=tuple(tracks),

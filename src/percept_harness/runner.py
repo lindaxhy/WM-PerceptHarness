@@ -9,7 +9,6 @@ import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +32,6 @@ class EvalOutcome:
     data: dict[str, Any] | None = None
     error: str | None = None
     elapsed_seconds: float | None = None
-    provenance: dict[str, Any] | None = None
     result_file: str | None = None
     metadata: dict[str, Any] | None = None
 
@@ -161,97 +159,33 @@ def run_batch(
     output_dir: Path,
     *,
     prompt_context: str | None = None,
+    resume: bool = False,
     force: bool = False,
     log=print,
 ) -> list[EvalOutcome]:
-    """Serialize writers and reuse only results from the same verified experiment."""
-    with result_store.output_lock(Path(output_dir)):
-        return _run_batch(runner, videos, output_dir,
-                          prompt_context=prompt_context, force=force, log=log)
-
-
-def _run_batch(
-    runner: SyncRunner,
-    videos: list[Path],
-    output_dir: Path,
-    *,
-    prompt_context: str | None = None,
-    force: bool = False,
-    log=print,
-) -> list[EvalOutcome]:
-    """Reuse only intact results with matching input and verified execution identity."""
+    """Write each video result; skip completed files only with explicit resume."""
+    if resume and force:
+        raise ValueError("resume and force cannot be combined")
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     if force:
-        # --force asks for an independent repeat; replaying cached per-request
-        # results would silently reproduce the previous run instead.
         runner.semantic_cache = None
-    run = result_store.run_identity(runner, prompt_context)
-    manifest = output_dir / ".percept" / "runs" / f"{uuid.uuid4().hex}.json"
-    run_record = {"run": run, "run_fingerprint": result_store.json_digest(run),
-                  "force": force, "status": "running", "results": [],
-                  "started_at": datetime.now(timezone.utc).isoformat()}
-    result_store.write_json(manifest, run_record)
-    outcomes: list[EvalOutcome] = []
-    if not run["reusable"]:
-        log("resume disabled: custom model, pipeline, or CV execution identity is not verified")
-    try:
-        for index, source in enumerate(videos, start=1):
-            video = Path(source).resolve()
-            path = result_store.result_path(output_dir, video)
-            try:
-                identity = result_store.provenance(video, run)
-            except OSError:
-                identity = None  # The evaluator reports the normal missing/unreadable-input failure.
-            previous = (result_store.completed_result(path, identity)
-                        if identity is not None and not force else None)
-            if previous is not None:
-                try:
-                    if result_store.file_digest(video) != identity["input"]["sha256"]:
-                        previous = None
-                        identity = result_store.provenance(video, run)
-                except OSError:
-                    previous = None
-                    identity = None
-            if previous is not None:
-                outcome = EvalOutcome(
-                    video_path=video, status="skipped",
-                    data=previous["data"], provenance=identity, result_file=path.name, metadata=previous.get("metadata"),
-                )
-                log(f"[{index}/{len(videos)}] skip {video.name} (matching input and run)")
-            else:
-                log(f"[{index}/{len(videos)}] eval {video.name} ...")
-                outcome = runner.evaluate(
-                    video, prompt_context=prompt_context
-                )
-                if outcome.status == "completed":
-                    try:
-                        unchanged = identity is not None and result_store.file_digest(video) == identity["input"]["sha256"]
-                    except OSError:
-                        unchanged = False
-                    unchanged = unchanged and result_store.run_identity(
-                        runner, prompt_context
-                    ) == run
-                    if not unchanged:
-                        outcome = EvalOutcome(video_path=video, status="failed",
-                                              error="Input or run configuration changed during annotation; result discarded")
-                outcome = replace(outcome, provenance=identity, result_file=path.name)
-                result_store.archive_result(path, output_dir)
-                _write_result(path, outcome)
-                log(f"[{index}/{len(videos)}] {outcome.status} {video.name} -> {path.name}")
-            outcomes.append(outcome)
-            run_record["results"].append({"video_path": str(video), "result_file": path.name,
-                                          "status": outcome.status, "input": identity["input"] if identity else None,
-                                          "record_sha256": result_store.file_digest(path if path.exists() else result_store.audit_path(path))})
-            result_store.write_json(manifest, run_record)
-        _write_aggregate(output_dir / "results.jsonl", outcomes)
-        run_record["status"] = "completed" if all(o.status != "failed" for o in outcomes) else "failed"
-    except BaseException:
-        run_record["status"] = "interrupted"
-        raise
-    finally:
-        run_record["finished_at"] = datetime.now(timezone.utc).isoformat()
-        result_store.write_json(manifest, run_record)
+    outcomes = []
+    for index, source in enumerate(videos, start=1):
+        video = Path(source).resolve()
+        path = result_store.result_path(output_dir, video)
+        previous = result_store.completed_result(path, video) if resume and video.is_file() else None
+        if previous is not None:
+            outcome = EvalOutcome(video_path=video, status="skipped", data=previous["data"],
+                                  result_file=path.name, metadata=previous.get("metadata"))
+            log(f"[{index}/{len(videos)}] skip {video.name} (completed result)")
+        else:
+            log(f"[{index}/{len(videos)}] eval {video.name} ...")
+            outcome = replace(runner.evaluate(video, prompt_context=prompt_context), result_file=path.name)
+            _write_result(path, outcome)
+            log(f"[{index}/{len(videos)}] {outcome.status} {video.name} -> {path.name}")
+        outcomes.append(outcome)
+    _write_aggregate(output_dir / "results.jsonl", outcomes)
     return outcomes
 
 
@@ -295,8 +229,6 @@ def _write_result(result_path: Path, outcome: EvalOutcome) -> None:
         "metadata": outcome.metadata,
         "error": outcome.error,
         "elapsed_seconds": outcome.elapsed_seconds,
-        "provenance": outcome.provenance,
-        "data_sha256": result_store.json_digest(outcome.data),
         "result_file": outcome.result_file,
     }
     result_store.write_annotation(result_path, record)
@@ -309,7 +241,6 @@ def _write_aggregate(jsonl_path: Path, outcomes: list[EvalOutcome]) -> None:
         "data": outcome.data,
         "metadata": outcome.metadata,
         "error": outcome.error,
-        "provenance": outcome.provenance,
         "result_file": outcome.result_file,
     }, ensure_ascii=False, allow_nan=False) + "\n" for outcome in outcomes]
     result_store.atomic_text(jsonl_path, "".join(lines))

@@ -1,6 +1,5 @@
 """Strict natural event contracts; times always refer to the source video."""
 from typing import Annotated, Literal
-import hashlib
 import math
 from ..models.response_contract import ModelResponseContract, compile_local_schema, canonical
 from pydantic import Field, StrictStr, StrictBool, field_validator, model_validator
@@ -216,7 +215,7 @@ def register_event_schemas(registry):
                 raise DeclaredSchemaOutputError(('GROUNDED_SCHEMA_INVALID',)) from None
         def response_contract(context, schema=schema):
             encoded = canonical(compile_local_schema(schema.model_json_schema()))
-            return ModelResponseContract(schema.__name__, encoded, hashlib.sha256(encoded.encode()).hexdigest())
+            return ModelResponseContract(schema.__name__, encoded)
         registry.register(schema.__name__, validator,
                           allowed_issue_codes=('GROUNDED_SCHEMA_INVALID',),
                           generic_issue_code='GROUNDED_SCHEMA_INVALID', response_contract_factory=response_contract)

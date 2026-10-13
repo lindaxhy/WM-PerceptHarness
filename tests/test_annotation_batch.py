@@ -37,7 +37,7 @@ class AnnotationBatchTests(unittest.TestCase):
             record=json.loads((root/'out/one/clip.json').read_text())
             self.assertEqual(set(record),{'duration','events'})
             audit=json.loads((root/'out/one/clip.audit.json').read_text())
-            self.assertEqual(audit['provenance']['run']['settings']['cv_provider'], 'sam31')
+            self.assertNotIn('provenance', audit)
             self.assertEqual(audit['metadata']['evidence'], [])
             archives=json.loads((root/'out/one/.percept/cv-artifact.json').read_text())['artifacts']
             self.assertEqual(archives, [])

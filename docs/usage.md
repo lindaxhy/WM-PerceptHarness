@@ -89,7 +89,6 @@ Use the pinned SAM source revision `660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7`, i
 |---|---|
 | `PERCEPT_CV_REPOSITORY_PATH` | Local SAM source checkout |
 | `PERCEPT_CV_CHECKPOINT_PATH` | Local checkpoint file |
-| `PERCEPT_CV_CHECKPOINT_SHA256` | SHA-256 digest of that checkpoint |
 | `PERCEPT_CV_BPE_PATH` | `<repository>/sam3/assets/bpe_simple_vocab_16e6.txt.gz` (default `models/sam3/sam3/assets/...`) |
 | `PERCEPT_CV_DEVICE` | GPU device index |
 | `PERCEPT_CV_CACHE_ROOT` | Writable evidence cache |
@@ -105,7 +104,7 @@ percept annotate --videos video.mp4 \
   --output outputs/actions
 ```
 
-Each successful `<video_stem>.json` is exactly `{ "duration": number, "events": [{ "start": number, "end": number, "description": string }] }`. The sibling `<video_stem>.audit.json` contains execution status, errors, metadata, provenance and the annotation digest. A failure writes its audit without a public annotation; an empty successful event list remains a valid annotation. `results.jsonl` summarizes the batch.
+Each successful `<video_stem>.json` is exactly `{ "duration": number, "events": [{ "start": number, "end": number, "description": string }] }`. The sibling `<video_stem>.audit.json` contains execution status, errors and review metadata. A failure writes its audit without a public annotation; an empty successful event list remains a valid annotation. `results.jsonl` summarizes the batch.
 
 The validator canonicalizes model duration rounding within one microsecond to authoritative media metadata (including an endpoint overshoot within that tolerance); larger duration discrepancies still fail. Times are finite seconds relative to the original container playback start and lie within the video endpoint. Initial video-stream delays are preserved; trailing audio does not extend an available video-stream duration. SAM uses decoded frame PTS on this clock and preserves original decoder indices. Each event is an independently describable visible process or change, bounded by meaningful completion, interruption or a different activity. Long events, gaps, overlaps and unfinished actions are valid. Segmentation follows the original event-boundary rules: independently describable phases may remain separate, with no requirement to merge a continuous manipulation into one event or to exhaustively cover the timeline. There are no event categories or fixed event-length limits.
 
@@ -117,8 +116,7 @@ percept annotate --videos video.mp4 --cv sam31 \
 ```
 
 The default remains `--event-workflow reviewed` for comparison. The selector also
-works with `--manifest` or `PERCEPT_EVENT_WORKFLOW=confidence-gated`; it is included
-in run provenance so the two workflows cannot resume each other's results.
+works with `--manifest` or `PERCEPT_EVENT_WORKFLOW=confidence-gated`; use a separate output directory for each workflow when using `--resume`.
 
 In the experiment, the first VLM call (`confidence_draft`) generates each event,
 a confidence in [0, 1], and a concrete uncertainty with an optional SAM candidate.
@@ -162,31 +160,37 @@ The camera check is a short instruction inside `evidence_review`: compare appare
 
 ### Result identity and resume
 
-A free `<video_stem>.json` is used for the first source claiming that name. Another source with the same stem gets `<stem-prefix>--<sha256-of-resolved-path>.json`. Ownership is checked against the full resolved source path, even when videos have identical bytes. Existing disambiguated paths remain stable on later runs. Use `result_file` in `results.jsonl` to find each result; do not guess a suffix or assume directory traversal order assigns the plain filename. An unreadable existing record is preserved and the new result uses the disambiguated path. If both names are occupied by unverifiable records, use a fresh output directory.
+Each video writes `<video_stem>.json` and `<video_stem>.audit.json`.
+Same-name videos use numeric suffixes such as `clip--1.json`; the audit records
+which resolved source path owns a result. Use `result_file` in `results.jsonl`
+to locate it. Existing unreadable files are preserved and a free suffix is used.
 
-A result is skipped only when all of these match:
-
-- Resolved input path and SHA-256 of the video bytes.
-- Template, model alias, effective built-in backend settings and prompt context.
-- Run settings, packaged Python/prompt asset digest, dependency versions, and FFmpeg/FFprobe version fingerprints.
-- Completed status and intact annotation payload digest.
-
-Legacy records without provenance are rerun. Changed settings or input bytes trigger evaluation. Credentials are included only as a digest: changing API keys conservatively reruns because an account may route a model ID differently. Raw API keys, endpoint URLs, proxies and extra request dictionaries/headers are not persisted; digests distinguish their values without writing credentials into manifests. Record the non-secret provider/model configuration separately for publication: a hash is not a recoverable configuration file.
-
-Custom models, custom transports/frame extractors, and any CV execution currently disable resume because the loaded external implementation/weights cannot yet be verified completely. They still receive provenance and run manifests, but run again each time. Local fingerprints cannot detect a provider silently changing the remote model behind an unchanged ID.
+Videos are evaluated again by default. `--resume` skips a result only when its
+source path matches, its status is completed, and its annotation passes schema
+validation. Failed, incomplete or malformed results are retried. Legacy result
+envelopes can still be read. There are no content checksums, code/environment
+fingerprints, automatic history archives or per-run manifests.
 
 ```bash
-percept annotate --videos video.mp4 \
-  --output outputs/actions --force
+percept annotate --videos video.mp4 --output outputs/actions --resume
 ```
 
-`--force` reruns even a matching result, for independent repeats or changed remote model behavior. Before replacing a current annotation and audit, their exact bytes are archived in `.percept/history/<record-sha256>.json`. `.percept/runs/<run-id>.json` records the run settings, timestamps, input/result mapping, status, and result-file digest; that digest also identifies a later archived record. Each file is replaced atomically. The audit is the commit marker: its digest must match the public annotation; interrupted or mismatched pairs cannot resume or score as successful. Inputs or configuration that change during evaluation produce a failed record, not a reusable success.
+Resume does not detect changed video bytes, models, prompts or settings. Use a
+new output directory for a different experiment. Manually edited valid event
+annotations can be read without updating an audit digest. Each JSON is replaced
+atomically; the audit's temporary `writing` status prevents an interrupted pair
+from being treated as complete. A failed run removes its stale public annotation.
+Use separate output directories for concurrent invocations; there is no writer
+lock. `results.jsonl` describes the latest completed batch.
 
-There is also a separate request-level cache for the OpenAI-compatible backend, enabled by `PERCEPT_SEMANTIC_RESULT_CACHE=true`. It lives under `<PERCEPT_WORK_ROOT>/semantic-cache` (default `work/semantic-cache`) and can reuse validated model responses during reruns. Replayed responses pass through the current sanitizer and validator; rejected or malformed responses are not published as successful cache entries. `--force` disables this cache as well as whole-result skipping. Merely choosing a different output directory does not guarantee fresh model calls; use `--force` for independent annotation repeats, including self-agreement runs.
-
-A writer lock prevents overlapping batches from using the same output directory. A normal exit or exception releases it. After an abrupt process/machine termination, inspect `.percept/writer.lock` (host/PID) and remove it only after confirming the original writer has stopped. The last manifest may remain `running` after an abrupt termination. Use separate output directories for parallel jobs. Each `results.jsonl` describes the most recent completed batch, while the per-run manifests retain earlier mappings.
-
-Annotation uses one event pipeline; the obsolete `--template` option is no longer accepted. Python callers use `runner.evaluate(video_path)` and `run_batch(runner, videos, output_dir)` without a template argument. New audit and run records omit the template field; legacy annotation envelopes remain readable. Model requests and inference jobs require an explicit model name from configuration. Pass confirmed object names using `--prompt-context` when helpful. This is naming guidance, not a prescribed action sequence; the action pipeline identifies relevant entities directly from the video.
+A separate VLM request cache is enabled by `PERCEPT_SEMANTIC_RESULT_CACHE=true`
+under `<PERCEPT_WORK_ROOT>/semantic-cache`. It uses the video path, file size,
+modification time and request settings to identify requests, and validates cached
+responses against the current schema. `--force` disables this cache for an
+independent annotation repeat and cannot be combined with `--resume`. Merely
+changing the output directory does not disable request caching. SAM evidence has
+its own cache. Internal hashes name cache entries and assign jobs to shards;
+they are not file integrity checks.
 
 ## Grounded event scoring
 
@@ -224,10 +228,10 @@ Both outputs share:
 | `metric` | `clipiqa+` or `vbench_motion_smoothness` |
 | `score` | Metric-specific scalar |
 | `higher_is_better` | Score direction |
-| `video`, `video_sha256` | Input identity |
+| `video` | Input path |
 | `versions` | Runtime package versions |
 
-CLIP-IQA+ additionally records frame sampling, resizing, device, and MemoBench revision. Motion Smoothness records checkpoint identity, the official command, original result, and log. Both refuse to overwrite existing result files. Event reports are dataset-level reports with a different schema; no combined score is computed.
+CLIP-IQA+ additionally records frame sampling, resizing, device, and MemoBench revision. Motion Smoothness records the checkpoint path, the official command, original result, and log. Both refuse to overwrite existing result files. Event reports are dataset-level reports with a different schema; no combined score is computed.
 
 Use the short command selector `clipiqa` even though its output metric identifier is `clipiqa+`.
 
@@ -239,7 +243,7 @@ Manifest mode requires SAM3.1 (`--cv sam31`); fake CV is only available in the
 single-process offline test path (`--videos`).
 
 A JSONL manifest supplies one absolute `video_path` and a unique relative
-`job_id` per line. Optional `expected_sha256` binds an input to a known version.
+`job_id` per line. Input checksum fields are not used.
 Each job writes normal annotation results under `<output>/<job_id>/`.
 
 ```bash
@@ -258,9 +262,8 @@ shard. All hosts must see the input and output paths.
 
 Shard status files record worker PIDs, active jobs, accepted results, failures,
 and observed request concurrency. Missing SAM evidence or a missing full review
-is not accepted as a successful manifest job. Existing conservative CV resume
-rules remain: whole-result skipping is disabled for unverifiable CV execution;
-validated request and CV-artifact caches can still be reused. To retry a subset,
+is not accepted as a successful manifest job. With `--resume`, completed annotations can be reused; request and CV-artifact
+caches are independent of this option. To retry a subset,
 create a manifest of failed/pending jobs after checking the prior worker is no
 longer running. Do not restart a live shard just because an observation timed
 out. Size CV-cache byte/file budgets and temporary storage for the full corpus.
@@ -276,13 +279,13 @@ python scripts/verify_install.py --metric clipiqa --cache-dir ./weights
 python scripts/verify_install.py --metric motion --cache-dir ./weights
 ```
 
-The default checks Python, core imports, FFmpeg/FFprobe execution, the active environment’s `percept` launcher on `PATH`, and small deterministic JSON/event-scoring examples. Optional profiles also check runtime imports, the pinned PyIQA/VBench version, device availability and weight SHA-256. CLIP-IQA+ can use `--device cpu`; Motion Smoothness requires CUDA. Only run the profile for the environment you installed. A failure exits with status 1 and lists the failed check.
+The default checks Python, core imports, FFmpeg/FFprobe execution, the active environment’s `percept` launcher on `PATH`, and small deterministic JSON/event-scoring examples. Optional profiles also check runtime imports, the pinned PyIQA/VBench version, device availability and weight-file presence. CLIP-IQA+ can use `--device cpu`; Motion Smoothness requires CUDA. Only run the profile for the environment you installed. A failure exits with status 1 and lists the failed check.
 
 The script does not download weights, contact a VLM API or perform model inference. It is an installation/preflight check, not a replacement for full regression or scientific validation. Other official evaluators retain their documented `--check-only` and upstream setup procedures.
 
 ## Reproducibility
 
-For a reported run, record input checksums and pair IDs; model/provider configuration without secrets; prompt/code revision; runtime versions and device; checkpoint sources and hashes; sampling settings; sample counts and exclusions. Preserve raw results and separate output directories for independent repeats. Use `--force` for independent annotation repeats.
+For a reported run, record input paths and pair IDs; model/provider configuration without secrets; prompt/code revision; runtime versions and device; checkpoint sources and versions; sampling settings; sample counts and exclusions. Preserve raw results and separate output directories for independent repeats. Use `--force` for independent annotation repeats.
 
 Save `python --version`, `python -m pip freeze` and `python -m pip check` for each evaluator environment. The motion-only VBench environment deliberately differs from the full upstream dependency metadata. A successful local check does not establish successful real-model inference or a complete benchmark run.
 

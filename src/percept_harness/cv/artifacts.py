@@ -44,10 +44,10 @@ _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _CACHE_IDENTITY_FIELDS = frozenset(
     {
         "schema_version",
-        "video_sha256",
+        "video_identity",
         "provider",
         "model_identity",
-        "checkpoint_sha256",
+        "checkpoint_identity",
         "entities",
         "sampling",
         "thresholds",
@@ -65,10 +65,9 @@ class CvArtifactError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class CvArtifactHandle:
-    """Immutable identity for one validated content-addressed artifact."""
+    """Cache key for one structurally validated artifact."""
 
     key: str
-    manifest_sha256: str
 
 
 def _canonical_json(value: object) -> bytes:
@@ -82,17 +81,17 @@ def _canonical_json(value: object) -> bytes:
 
 
 def cv_cache_key(request: CvEvidenceRequest) -> str:
-    """Hash only immutable inputs that determine provider CV evidence."""
+    """Name the cache entry from request identities and inference settings."""
     return hashlib.sha256(_canonical_json(_cache_identity(request))).hexdigest()
 
 
 def _cache_identity(request: CvEvidenceRequest) -> dict[str, object]:
     return {
         "schema_version": request.schema_version,
-        "video_sha256": request.video_sha256,
+        "video_identity": request.video_identity,
         "provider": request.provider,
         "model_identity": request.model_identity,
-        "checkpoint_sha256": request.checkpoint_sha256,
+        "checkpoint_identity": request.checkpoint_identity,
         "entities": [entity.model_dump(mode="json") for entity in request.entities],
         "sampling": request.sampling.model_dump(mode="json"),
         "thresholds": request.thresholds.model_dump(mode="json"),
@@ -107,7 +106,7 @@ def _cache_identity(request: CvEvidenceRequest) -> dict[str, object]:
 
 
 class CvArtifactStore:
-    """Owner-controlled, content-addressed storage for CV evidence chunks."""
+    """Owner-controlled storage for CV evidence chunks keyed by request."""
 
     _process_locks_guard = threading.Lock()
     _process_locks: dict[str, threading.RLock] = {}
@@ -211,7 +210,7 @@ class CvArtifactStore:
         return descriptor
 
     def lookup(self, key: str) -> CvArtifactHandle | None:
-        """Return a digest-validated immutable handle, or None on a miss."""
+        """Return a validated cache handle, or None on a miss."""
         with self._operation():
             return self._lookup(key)
 
@@ -228,7 +227,7 @@ class CvArtifactStore:
                 return None
             entry = self._entry_path(key)
             try:
-                artifact, manifest_digest = self._validate_entry(entry, key)
+                artifact = self._validate_entry(entry, key)
             except (
                 CvArtifactError,
                 OSError,
@@ -241,7 +240,7 @@ class CvArtifactStore:
                 return None
             del artifact
             self._validate_store_root()
-            return CvArtifactHandle(key=key, manifest_sha256=manifest_digest)
+            return CvArtifactHandle(key=key)
 
     @contextmanager
     def staging(self, key: str) -> Iterator[Path]:
@@ -324,7 +323,6 @@ class CvArtifactStore:
             )
             if len(manifest) > self._max_manifest_bytes:
                 raise ValueError
-            manifest_digest = hashlib.sha256(manifest).hexdigest()
             with self._publication_staging(key) as publication:
                 self._copy_artifact_files(stage, publication, artifact)
                 self._write_new_file(publication / _MANIFEST_NAME, manifest)
@@ -334,7 +332,7 @@ class CvArtifactStore:
                     destination_identity = self._entry_identity(key)
                     if destination_identity is not None:
                         try:
-                            existing_artifact, existing_digest = self._validate_entry(
+                            existing_artifact = self._validate_entry(
                                 destination, key
                             )
                         except (
@@ -353,9 +351,7 @@ class CvArtifactStore:
                                 request, existing_artifact
                             )
                             self._validate_store_root()
-                            return CvArtifactHandle(
-                                key=key, manifest_sha256=existing_digest
-                            )
+                            return CvArtifactHandle(key=key)
                     prefix_descriptor = self._open_prefix(key, create=False)
                     if prefix_descriptor is None:
                         raise ValueError
@@ -369,13 +365,10 @@ class CvArtifactStore:
                             publication_status.st_dev,
                             publication_status.st_ino,
                         )
-                        staged_artifact, staged_digest = self._validate_entry(
+                        staged_artifact = self._validate_entry(
                             publication, key
                         )
-                        if (
-                            staged_artifact != artifact
-                            or staged_digest != manifest_digest
-                        ):
+                        if staged_artifact != artifact:
                             raise ValueError
                         current_publication = os.stat(
                             publication.name,
@@ -412,13 +405,10 @@ class CvArtifactStore:
                     finally:
                         os.close(prefix_descriptor)
                     try:
-                        published_artifact, published_digest = self._validate_entry(
+                        published_artifact = self._validate_entry(
                             destination, key
                         )
-                        if (
-                            published_artifact != artifact
-                            or published_digest != manifest_digest
-                        ):
+                        if published_artifact != artifact:
                             raise ValueError
                     except (
                         CvArtifactError,
@@ -433,10 +423,7 @@ class CvArtifactStore:
                         )
                         raise ValueError
                     self._validate_store_root()
-                    return CvArtifactHandle(
-                        key=key,
-                        manifest_sha256=manifest_digest,
-                    )
+                    return CvArtifactHandle(key=key)
         except (
             AttributeError,
             CvArtifactError,
@@ -459,7 +446,7 @@ class CvArtifactStore:
         *,
         max_total_bytes: int = 64 * 1024 * 1024,
     ) -> dict[str, bytes]:
-        """Read at most 24 registered PNGs, bound to an authenticated manifest.
+        """Read at most 24 registered PNGs, bound to an validated manifest.
 
         This is deliberately not a general artifact-file accessor. Returned
         bytes are checked again after load, through pinned no-follow descriptors;
@@ -512,17 +499,13 @@ class CvArtifactStore:
                             if path == _MANIFEST_NAME
                             else remaining
                         )
-                        content, digest = self._read_bounded_descriptor(
+                        content = self._read_bounded_descriptor(
                             descriptor, limit
                         )
-                        if path == _MANIFEST_NAME:
-                            if digest != handle.manifest_sha256:
-                                raise ValueError
-                        else:
+                        if path != _MANIFEST_NAME:
                             file = files[path]
                             if (
                                 len(content) != file.size_bytes
-                                or digest != file.sha256
                                 or not content.startswith(_PNG_SIGNATURE)
                             ):
                                 raise ValueError
@@ -586,7 +569,7 @@ class CvArtifactStore:
                 if identity is None:
                     raise ValueError
                 try:
-                    artifact, manifest_digest = self._validate_entry(
+                    artifact = self._validate_entry(
                         entry, handle.key
                     )
                 except (
@@ -598,8 +581,6 @@ class CvArtifactStore:
                     ValidationError,
                 ):
                     self._quarantine_entry(handle.key, entry, identity)
-                    raise ValueError
-                if manifest_digest != handle.manifest_sha256:
                     raise ValueError
                 self._validate_store_root()
                 return artifact
@@ -1015,14 +996,12 @@ class CvArtifactStore:
                 target = destination.joinpath(*file.path.split("/"))
                 target_descriptor = self._open_new_regular_file(target)
                 try:
-                    digest = hashlib.sha256()
                     size = 0
                     while chunk := os.read(source_descriptor, _STREAM_BYTES):
                         size += len(chunk)
                         total += len(chunk)
                         if total > self._max_bytes:
                             raise ValueError
-                        digest.update(chunk)
                         self._write_all(target_descriptor, chunk)
                     os.fsync(target_descriptor)
                     target_status = os.fstat(target_descriptor)
@@ -1039,7 +1018,6 @@ class CvArtifactStore:
                     or target_status.st_nlink != 1
                     or target_status.st_size != size
                     or size != file.size_bytes
-                    or digest.hexdigest() != file.sha256
                 ):
                     raise ValueError
 
@@ -1142,8 +1120,8 @@ class CvArtifactStore:
         if (
             artifact.provider != request.provider
             or artifact.model_identity != request.model_identity
-            or artifact.video_sha256 != request.video_sha256
-            or artifact.checkpoint_sha256 != request.checkpoint_sha256
+            or artifact.video_identity != request.video_identity
+            or artifact.checkpoint_identity != request.checkpoint_identity
             or artifact.entities != request.entities
         ):
             raise ValueError
@@ -1228,7 +1206,6 @@ class CvArtifactStore:
             for file in artifact.files:
                 descriptor = opened_files[file.path][0]
                 os.lseek(descriptor, 0, os.SEEK_SET)
-                digest = hashlib.sha256()
                 size = 0
                 signature = bytearray()
                 while chunk := os.read(descriptor, _STREAM_BYTES):
@@ -1240,8 +1217,7 @@ class CvArtifactStore:
                         signature.extend(
                             chunk[: len(_PNG_SIGNATURE) - len(signature)]
                         )
-                    digest.update(chunk)
-                if size != file.size_bytes or digest.hexdigest() != file.sha256:
+                if size != file.size_bytes:
                     raise ValueError
                 self._validate_descriptor_content(file.path, bytes(signature))
             after = self._capture_tree_metadata(directory)
@@ -1354,7 +1330,7 @@ class CvArtifactStore:
 
     def _validate_entry(
         self, entry: Path, expected_key: str
-    ) -> tuple[CvEvidenceArtifact, str]:
+    ) -> CvEvidenceArtifact:
         prefix_descriptor: int | None = None
         entry_descriptor: int | None = None
         prefix = self._prefix_directory(expected_key)
@@ -1387,7 +1363,7 @@ class CvArtifactStore:
                     or manifest_status.st_size > self._max_manifest_bytes
                 ):
                     raise ValueError
-                manifest, manifest_digest = self._read_bounded_descriptor(
+                manifest = self._read_bounded_descriptor(
                     manifest_descriptor, self._max_manifest_bytes
                 )
                 payload = json.loads(manifest)
@@ -1442,7 +1418,7 @@ class CvArtifactStore:
                     raise ValueError
             elif self._path_identity(entry) != entry_identity:
                 raise ValueError
-            return artifact, manifest_digest
+            return artifact
         finally:
             if entry_descriptor is not None:
                 os.close(entry_descriptor)
@@ -1463,7 +1439,7 @@ class CvArtifactStore:
             if value != normalized:
                 raise ValueError
             return normalized, request.entities
-        # Existing authenticated manifests retain their original identity hash.
+        # Older manifest layouts retain their original cache identity.
         # New requests always hash the expanded identity and cannot hit these.
         if set(value) != _CACHE_IDENTITY_FIELDS:
             raise ValueError
@@ -1474,13 +1450,8 @@ class CvArtifactStore:
             raise ValueError
         if not isinstance(model_identity, str) or not model_identity.strip():
             raise ValueError
-        for field in ("video_sha256", "checkpoint_sha256"):
-            digest = value[field]
-            if (
-                not isinstance(digest, str)
-                or len(digest) != _KEY_LENGTH
-                or any(character not in "0123456789abcdef" for character in digest)
-            ):
+        for field in ("video_identity", "checkpoint_identity"):
+            if not isinstance(value[field], str) or not value[field]:
                 raise ValueError
         raw_entities = value["entities"]
         if not isinstance(raw_entities, list):
@@ -1492,10 +1463,10 @@ class CvArtifactStore:
         thresholds = EvidenceThresholds.model_validate(value["thresholds"])
         normalized: dict[str, object] = {
             "schema_version": schema_version,
-            "video_sha256": value["video_sha256"],
+            "video_identity": value["video_identity"],
             "provider": provider,
             "model_identity": model_identity,
-            "checkpoint_sha256": value["checkpoint_sha256"],
+            "checkpoint_identity": value["checkpoint_identity"],
             "entities": [entity.model_dump(mode="json") for entity in entities],
             "sampling": sampling.model_dump(mode="json"),
             "thresholds": thresholds.model_dump(mode="json"),
@@ -1513,8 +1484,8 @@ class CvArtifactStore:
         if (
             artifact.provider != identity["provider"]
             or artifact.model_identity != identity["model_identity"]
-            or artifact.video_sha256 != identity["video_sha256"]
-            or artifact.checkpoint_sha256 != identity["checkpoint_sha256"]
+            or artifact.video_identity != identity["video_identity"]
+            or artifact.checkpoint_identity != identity["checkpoint_identity"]
             or artifact.entities != entities
         ):
             raise ValueError
@@ -1526,12 +1497,11 @@ class CvArtifactStore:
             CvArtifactStore._validate_processed_timeline(request, artifact)
 
     @staticmethod
-    def _read_bounded_descriptor(descriptor: int, limit: int) -> tuple[bytes, str]:
+    def _read_bounded_descriptor(descriptor: int, limit: int) -> bytes:
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1 or opened.st_size > limit:
             raise ValueError
         os.lseek(descriptor, 0, os.SEEK_SET)
-        digest = hashlib.sha256()
         chunks: list[bytes] = []
         size = 0
         while chunk := os.read(descriptor, min(_STREAM_BYTES, limit + 1 - size)):
@@ -1539,10 +1509,9 @@ class CvArtifactStore:
             if size > limit:
                 raise ValueError
             chunks.append(chunk)
-            digest.update(chunk)
         if size != opened.st_size:
             raise ValueError
-        return b"".join(chunks), digest.hexdigest()
+        return b"".join(chunks)
 
     @staticmethod
     def _fsync_directory(

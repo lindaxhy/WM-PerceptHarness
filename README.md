@@ -100,9 +100,9 @@ outputs/actions/
 └── results.jsonl      # Batch summary, status and result filenames
 ```
 
-Read `sample_001.json` directly for the annotation; execution `status`, `error`, provenance and intermediate review live in `sample_001.audit.json`. Failed runs have an audit file and no successful annotation file. Timestamps are seconds on the original video. The directory also contains `.percept/` run records used for resume and history. If video filenames collide, use the `result_file` recorded in `results.jsonl` to locate the correct JSON.
+Read `sample_001.json` directly for the annotation; execution `status`, `error` and intermediate review live in `sample_001.audit.json`. Failed runs have an audit file and no successful annotation file. Timestamps are seconds on the original video. If video filenames collide, use the `result_file` recorded in `results.jsonl` to locate the correct JSON.
 
-Grounded runs currently rerun because CV execution identity is not yet reusable. Add `--force` for an independent repeat that also disables the request cache. See [outputs and resume](docs/usage.md#result-identity-and-resume) for the exact rules.
+Videos are evaluated again by default. Add `--resume` to skip completed results for the same source path, or `--force` for a repeat without the VLM request cache. Use a new output directory when changing videos, models or workflow settings; resume does not compare their contents or configuration. See [outputs and resume](docs/usage.md#result-identity-and-resume) for the exact rules.
 
 ## Annotate across multiple GPUs
 
@@ -181,7 +181,7 @@ percept score clipiqa --video ./videos/sample_001.mp4 \
   --cache-dir ./weights --output outputs/sample_001.clipiqa.json
 ```
 
-The JSON includes the score, sampled-frame count, sampling settings and input checksum. `--device auto` selects CUDA when available, otherwise CPU. CLIP-IQA+ measures sampled-frame image quality.
+The JSON includes the score, sampled-frame count, sampling settings and input path. `--device auto` selects CUDA when available, otherwise CPU. CLIP-IQA+ measures sampled-frame image quality.
 
 ### Motion Smoothness
 
@@ -205,8 +205,8 @@ The JSON includes the score and paths to the official evaluator result and log. 
 
 **Weights:** Install Python dependencies with `pip`, then download model weights
 with the `curl` commands above. The former `percept download` command has been
-removed. `weights.py` only records cache-relative paths and SHA-256 digests;
-installation checks and scoring verify the files. Use the same `--cache-dir`
+removed. `weights.py` only records cache-relative paths;
+installation checks and scoring check that the files exist. No SHA-256 verification is performed. Use the same `--cache-dir`
 for checks and scoring; `./weights` is relative to the current directory.
 Other metrics require their own [checkpoint preparation](docs/metrics.md#checkpoint-preparation).
 

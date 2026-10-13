@@ -1931,8 +1931,8 @@ def _preflight_artifact(artifact: object) -> None:
         "schema_version",
         "provider",
         "model_identity",
-        "video_sha256",
-        "checkpoint_sha256",
+        "video_identity",
+        "checkpoint_identity",
     ):
         _preflight_text(getattr(artifact, field_name, None), f"artifact.{field_name}")
     if not isinstance(getattr(artifact, "status", None), EvidenceStatus):
@@ -2032,7 +2032,6 @@ def _preflight_artifact(artifact: object) -> None:
         if not isinstance(artifact_file, ArtifactFile):
             raise _structural_error("artifact.files item type")
         _preflight_text(artifact_file.path, "artifact file path")
-        _preflight_text(artifact_file.sha256, "artifact file sha256")
         _preflight_int(artifact_file.size_bytes, "artifact file size_bytes")
     overlay_records = _preflight_tuple(
         getattr(artifact, "overlay_records", None),
@@ -2466,8 +2465,8 @@ def _revalidate_artifact(artifact: CvEvidenceArtifact) -> CvEvidenceArtifact:
             "status": artifact.status.value,
             "provider": artifact.provider,
             "model_identity": artifact.model_identity,
-            "video_sha256": artifact.video_sha256,
-            "checkpoint_sha256": artifact.checkpoint_sha256,
+            "video_identity": artifact.video_identity,
+            "checkpoint_identity": artifact.checkpoint_identity,
             "processed_timeline": (
                 _timeline_validation_record(artifact.processed_timeline)
                 if artifact.processed_timeline is not None
@@ -2506,7 +2505,6 @@ def _revalidate_artifact(artifact: CvEvidenceArtifact) -> CvEvidenceArtifact:
             "files": tuple(
                 {
                     "path": item.path,
-                    "sha256": item.sha256,
                     "size_bytes": item.size_bytes,
                 }
                 for item in artifact.files

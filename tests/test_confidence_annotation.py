@@ -119,7 +119,7 @@ class ConfidenceAnnotationTests(unittest.TestCase):
         self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
         audit = json.loads((self.root/'out/one/clip.audit.json').read_text())
         self.assertEqual(audit['metadata']['phases'], ['confidence_draft'])
-        self.assertEqual(audit['provenance']['run']['settings']['event_workflow'], 'confidence-gated')
+        self.assertEqual(audit['metadata']['event_workflow'], 'confidence-gated')
 
     def test_submicrosecond_rounding_canonicalizes_nested_target(self):
         from percept_harness.pipelines.event_schemas import ConfidenceDraft, validate_stage

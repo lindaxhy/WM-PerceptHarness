@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager, redirect_stdout
-import hashlib
 import importlib.metadata
 import json
 import math
@@ -64,14 +63,6 @@ class VideoReader:
         self._cap.release()
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 @contextmanager
 def _weight_cache(cache: Path | None):
     """Temporarily point both PyIQA caches at the prepared directory."""
@@ -110,9 +101,9 @@ def score_video(
     if sample_step < 1 or max_side < 1:
         raise ValueError("sample_step and max_side must be positive")
     if cache_dir is not None:
-        from percept_harness.weights import verify_weights
+        from percept_harness.weights import check_weights
         cache_dir = Path(cache_dir).expanduser().resolve()
-        verify_weights("clipiqa", cache_dir)
+        check_weights("clipiqa", cache_dir)
     version = importlib.metadata.version("pyiqa")
     if version != PYIQA_VERSION:
         raise RuntimeError(f"Expected pyiqa=={PYIQA_VERSION}; found {version}")
@@ -154,7 +145,6 @@ def score_video(
         "score": score,
         "higher_is_better": True,
         "video": str(path),
-        "video_sha256": _sha256(path),
         "frame_count": reader.num_frames,
         "sampled_frames": len(scores),
         "sampling": {
