@@ -13,9 +13,15 @@ from .events import OpenAIJudge, evaluate
 def _safe_url(value):
     if not value:
         return None
-    parts = urlsplit(value)
-    hostname = parts.hostname or ""
-    host = hostname + (f":{parts.port}" if parts.port else "")
+    try:
+        parts = urlsplit(value)
+        hostname = parts.hostname or ""
+        port = parts.port
+    except ValueError as error:
+        raise ValueError("invalid judge base URL") from error
+    if not parts.scheme or not hostname:
+        raise ValueError("invalid judge base URL")
+    host = hostname + (f":{port}" if port else "")
     return f"{parts.scheme}://{host}"
 
 
@@ -41,11 +47,12 @@ def main(argv=None, *, judge=None):
         except ValueError as error:
             parser.error(str(error))
     try:
+        safe_url = _safe_url(args.judge_base_url)
         report = evaluate(args.reference, systems, judge, args.tiou_threshold)
-        report["judge"] = {"protocol": "OpenAI-compatible chat completions, strict JSON match/reason", "base_url": _safe_url(args.judge_base_url), "model": args.judge_model} if isinstance(judge, OpenAIJudge) else {"protocol": "injected callable"}
+        report["judge"] = {"protocol": "OpenAI-compatible chat completions, strict JSON match/reason", "base_url": safe_url, "model": args.judge_model} if isinstance(judge, OpenAIJudge) else {"protocol": "injected callable"}
         failed = any(system["invalid_count"] for system in report["systems"].values())
     except (OSError, ValueError) as error:
-        report = {"status": "error", "error": f"{type(error).__name__}: {error}", "systems": {name: {"samples": {}, "valid_count": 0, "invalid_count": 1, "aggregate": None, "error": f"{type(error).__name__}: {error}"} for name in systems}, "judge": {"protocol": "OpenAI-compatible chat completions", "base_url": _safe_url(args.judge_base_url), "model": args.judge_model}}
+        report = {"status": "error", "error": f"{type(error).__name__}: {error}", "systems": {name: {"samples": {}, "valid_count": 0, "invalid_count": 1, "aggregate": None, "error": f"{type(error).__name__}: {error}"} for name in systems}, "judge": {"protocol": "OpenAI-compatible chat completions", "base_url": None, "model": args.judge_model}}
         failed = True
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "events.json").write_text(json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")

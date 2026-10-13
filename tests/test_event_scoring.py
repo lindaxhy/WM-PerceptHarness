@@ -20,6 +20,10 @@ class EventScoreTests(unittest.TestCase):
         self.assertEqual([(x["reference_index"], x["prediction_index"]) for x in score["joint_matches"]], [(0, 1), (1, 0)])
         self.assertEqual((score["segment_f1"], score["semantic_match_rate"], score["joint_f1"]), (1, 0, 1))
         self.assertEqual(len(score["candidate_judgments"]), 4)
+        self.assertEqual(score["temporal_match_count"], 2)
+        self.assertEqual(score["joint_match_count"], 2)
+        self.assertEqual(score["unmatched_temporal_reference_indices"], [])
+        self.assertEqual(score["unmatched_joint_prediction_indices"], [])
 
     def test_boundary_and_empty_denominators(self):
         a, b, empty = annotation((0, 10, "walk")), annotation((2, 10, "walk")), annotation()
@@ -205,3 +209,45 @@ class MalformedReportTests(unittest.TestCase):
             self.assertEqual(report["systems"]["sys"]["invalid_count"], 1)
             self.assertIsNone(report["systems"]["sys"]["aggregate"])
             self.assertIn("clip.json", report["systems"]["sys"]["error"])
+
+class EndpointAndAuditTests(unittest.TestCase):
+    def test_invalid_judge_port_produces_sanitized_error_report(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from percept_harness.evaluation import events_cli
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ref, pred, out = root / "ref", root / "pred", root / "out"
+            ref.mkdir(); pred.mkdir()
+            payload = {"status": "completed", "video_path": "/x/clip.mp4", "data": {"duration": 1, "events": []}}
+            for directory in (ref, pred):
+                (directory / "clip.json").write_text(json.dumps(payload))
+            code = events_cli.main(["--reference", str(ref), "--system", f"sys={pred}", "--out", str(out),
+                "--judge-base-url", "http://user:secret@localhost:bad/private", "--judge-model", "m", "--judge-api-key", "key"])
+            self.assertEqual(code, 1)
+            report = (out / "events.json").read_text()
+            self.assertIn('invalid judge', report.lower())
+            self.assertNotIn('secret', report)
+            self.assertNotIn('private', report)
+            self.assertNotIn('key', report)
+
+    def test_unmatched_indices_distinguish_temporal_and_joint_assignments(self):
+        ref = annotation((0, 10, "A"))
+        pred = annotation((0, 10, "B"))
+        score = events.score_pair(ref, pred, lambda a, b: {"match": False, "reason": "different action"})
+        self.assertEqual(score["temporal_match_count"], 1)
+        self.assertEqual(score["joint_match_count"], 0)
+        self.assertEqual(score["unmatched_temporal_reference_indices"], [])
+        self.assertEqual(score["unmatched_joint_reference_indices"], [0])
+        self.assertEqual(score["unmatched_joint_prediction_indices"], [0])
+
+class InstallSmokeTests(unittest.TestCase):
+    def test_core_smoke_covers_grounded_event_scoring(self):
+        import importlib.util
+        from pathlib import Path
+        path = Path(__file__).resolve().parents[1] / "scripts" / "verify_install.py"
+        spec = importlib.util.spec_from_file_location("verify_install", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertIn("grounded event scoring", module.check_smoke())

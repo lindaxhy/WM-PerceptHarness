@@ -75,10 +75,33 @@ def score_pair(reference: GroundedEvents, prediction: GroundedEvents, judge: Cal
     joint_matrix = [[iou if decisions.get((i, j), {}).get("match", False) else 0 for j, iou in enumerate(row)] for i, row in enumerate(matrix)]
     joint = match_weight_matrix(joint_matrix, tiou_threshold)
     temporal_passes = sum(decisions[m.reference_index, m.prediction_index]["match"] for m in temporal)
-    counts = {"reference_events": len(refs), "prediction_events": len(preds), "temporal_matches": len(temporal), "semantic_passes_on_temporal_matches": temporal_passes, "joint_match_count": len(joint)}
     segment = _prf(len(temporal), len(refs), len(preds))
     both = _prf(len(joint), len(refs), len(preds))
-    return {**counts, "segment_precision": segment["precision"], "segment_recall": segment["recall"], "segment_f1": segment["f1"], "semantic_match_rate": temporal_passes / len(temporal) if temporal else None, "joint_precision": both["precision"], "joint_recall": both["recall"], "joint_f1": both["f1"], "candidate_judgments": candidates, "temporal_matches": [vars(m) for m in temporal], "joint_matches": [vars(m) for m in joint], "unmatched_reference_indices": [i for i in range(len(refs)) if i not in {m.reference_index for m in temporal}], "unmatched_prediction_indices": [j for j in range(len(preds)) if j not in {m.prediction_index for m in temporal}], "reference_events_detail": [e.model_dump(mode="json") for e in refs], "prediction_events_detail": [e.model_dump(mode="json") for e in preds]}
+    temporal_ref = {m.reference_index for m in temporal}
+    temporal_pred = {m.prediction_index for m in temporal}
+    joint_ref = {m.reference_index for m in joint}
+    joint_pred = {m.prediction_index for m in joint}
+    return {
+        "reference_events": len(refs), "prediction_events": len(preds),
+        "temporal_match_count": len(temporal),
+        "semantic_passes_on_temporal_matches": temporal_passes,
+        "joint_match_count": len(joint),
+        "segment_precision": segment["precision"], "segment_recall": segment["recall"],
+        "segment_f1": segment["f1"],
+        "semantic_match_rate": temporal_passes / len(temporal) if temporal else None,
+        "joint_precision": both["precision"], "joint_recall": both["recall"],
+        "joint_f1": both["f1"],
+        "candidate_judgments": candidates,
+        "temporal_matches": [vars(m) for m in temporal],
+        "joint_matches": [vars(m) for m in joint],
+        "unmatched_temporal_reference_indices": [i for i in range(len(refs)) if i not in temporal_ref],
+        "unmatched_temporal_prediction_indices": [j for j in range(len(preds)) if j not in temporal_pred],
+        "unmatched_joint_reference_indices": [i for i in range(len(refs)) if i not in joint_ref],
+        "unmatched_joint_prediction_indices": [j for j in range(len(preds)) if j not in joint_pred],
+        "reference_events_detail": [e.model_dump(mode="json") for e in refs],
+        "prediction_events_detail": [e.model_dump(mode="json") for e in preds],
+    }
+
 
 
 def aggregate(scores: list[dict]) -> dict:

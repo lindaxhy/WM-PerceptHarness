@@ -38,13 +38,13 @@ class ActionAnnotationTests(unittest.TestCase):
             self.addCleanup(artifacts.close)
             runner = SyncRunner(FakeVideoModel(), settings, model_alias='fake',
                                 cv_executor=SyncCvExecutor(FakeCvEvidenceProvider(), artifacts))
-            first = list(run_batch(runner, [video], 'embodied_action_captioning', root / 'out'))
+            first = list(run_batch(runner, [video], 'embodied_action_captioning', root / 'out', log=lambda message: None))
             self.assertEqual(first[0].status, 'completed', first[0].error)
             data = first[0].data
             self.assertEqual(set(data), {'duration', 'events'})
             self.assertTrue(data['events'])
             self.assertEqual(data['events'][0]['description'], 'A hand moves the red container.')
-            second = list(run_batch(runner, [video], 'embodied_action_captioning', root / 'out'))
+            second = list(run_batch(runner, [video], 'embodied_action_captioning', root / 'out', log=lambda message: None))
             # CV execution identity is not yet reusable; rerun honestly, with CV cache.
             self.assertEqual(second[0].status, 'completed')
             self.assertTrue(second[0].metadata['evidence'][0]['cache_hit'])

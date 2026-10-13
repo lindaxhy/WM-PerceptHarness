@@ -56,6 +56,33 @@ class GroundedAnnotationTests(unittest.TestCase):
         self.assertEqual(result.metadata['phases'], ['entity_nomination', 'baseline_sam', 'grounded_draft',
                                                      'evidence_review', 'local_sam_rechecks', 'grounded_revision'])
 
+    def test_successful_zero_detection_preserves_no_tracks_provenance(self):
+        class ZeroDetectionProvider(FakeCvEvidenceProvider):
+            def analyze(self, request, staging):
+                from percept_harness.cv.contracts import CvEvidenceArtifact, EvidenceStatus
+                return CvEvidenceArtifact(schema_version='cv_evidence_v1', status=EvidenceStatus.AVAILABLE,
+                    provider=request.provider, model_identity=request.model_identity,
+                    video_sha256=request.video_sha256, checkpoint_sha256=request.checkpoint_sha256,
+                    processed_timeline=request.timeline, entities=request.entities,
+                    tracks=(), files=(), overlay_records=())
+        self.executor = SyncCvExecutor(ZeroDetectionProvider(), self.artifacts)
+        model = RecordingModel()
+        result = self.run_model(model)
+        self.assertEqual(result.status, 'completed', result.error)
+        self.assertTrue(result.metadata['evidence'][0]['no_tracks'])
+        self.assertEqual(result.metadata['evidence'][0]['overlay_count'], 0)
+        self.assertEqual(model.requests[1].visual_evidence, ())
+        self.assertEqual(model.requests[1].video_path, self.video)
+        self.assertIn('no_tracks', model.requests[1].prompt)
+
+    def test_recheck_budget_reports_selected_windows(self):
+        model = RecordingModel(failure_script={'evidence_review': [{'concerns': [
+            {'reason': 'Check boundary', 'event_indices': [0], 'start': 1, 'end': 2, 'new_entities': []}], 'unresolved': []}]})
+        result = self.run_model(model)
+        self.assertEqual(result.status, 'completed', result.error)
+        self.assertEqual(result.metadata['recheck_budget']['selected_windows'], 1)
+        self.assertNotIn('requested_windows', result.metadata['recheck_budget'])
+
     def test_missing_mandatory_cv_fails_instead_of_degrading(self):
         result = self.run_model(FakeVideoModel(), executor=False)
         self.assertEqual(result.status, 'failed')
@@ -126,6 +153,7 @@ class GroundedAnnotationTests(unittest.TestCase):
 
     def test_settings_default_does_not_preflight_gpu_assets(self):
         self.assertEqual(Settings().cv_provider, 'sam31')
+        self.assertEqual(Settings().cv_bpe_path, Settings().cv_repository_path / 'sam3/assets/bpe_simple_vocab_16e6.txt.gz')
 
 
 if __name__ == '__main__':

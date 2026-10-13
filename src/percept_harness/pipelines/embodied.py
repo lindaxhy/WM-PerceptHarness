@@ -85,5 +85,5 @@ class EmbodiedActionPipeline:
                 audit['unresolved_concerns'].append(f'Local SAM recheck {ordinal} unavailable: {type(error).__name__}')
         audit['phases'].append('local_sam_rechecks')
         final = stage('grounded_revision', GroundedEvents, draft=draft, review=review_data)
-        audit['recheck_budget'] = {'rounds': 1, 'requested_windows': len(windows), 'completed_windows': len(evidence)-1}
+        audit['recheck_budget'] = {'rounds': 1, 'selected_windows': len(windows), 'completed_windows': len(evidence)-1}
         return final
