@@ -6,7 +6,7 @@ from test_grounded_annotation import RecordingModel, concern
 def draft(confidence=0.9, kind='object_identity', target=True):
     return {'duration': 4.0, 'events': [{'start': 0.0, 'end': 4.0,
         'description': 'A hand moves the red container.', 'confidence': confidence,
-        'uncertainty': concern(kind, target) if confidence <= 0.6 or target else None}]}
+        'uncertainty': {k: v for k, v in concern(kind, target).items() if k != 'event_indices'} if confidence <= 0.6 else None}]}
 
 
 class ConfidenceAnnotationTests(unittest.TestCase):
@@ -36,16 +36,16 @@ class ConfidenceAnnotationTests(unittest.TestCase):
         self.assertTrue(model.requests[1].visual_evidence)
         self.assertEqual(result.metadata['recheck_budget']['sam_calls'], 2)
 
-    def test_above_threshold_never_uses_candidate(self):
-        data = draft(0.6); data['events'][0]['confidence'] = 0.60001
+    def test_high_confidence_question_still_checks_candidate(self):
+        data = draft(0.6); data['events'][0]['confidence'] = 0.92
         result, model = self.run_draft(data)
-        self.assertFalse(self.cv_requests)
-        self.assertEqual(len(model.requests), 1)
+        self.assertEqual([r.mode for r in self.cv_requests], ['probe', 'track'])
+        self.assertEqual(len(model.requests), 3)
 
     def test_low_confidence_editorial_question_is_preserved_without_sam(self):
         result, model = self.run_draft(draft(0.4, 'event_boundary', False))
         self.assertFalse(self.cv_requests)
-        self.assertEqual(len(model.requests), 1)
+        self.assertEqual([r.stage for r in model.requests], ['confidence_draft', 'grounded_revision'])
         self.assertTrue(result.metadata['unresolved_concerns'])
 
     def test_rejected_mask_never_tracks_but_revises(self):
@@ -82,7 +82,6 @@ class ConfidenceAnnotationTests(unittest.TestCase):
         import copy
         data['events'] = [copy.deepcopy(data['events'][0]) for _ in range(4)]
         for i, e in enumerate(data['events']):
-            e['uncertainty']['event_indices'] = [i]
             e['uncertainty']['target']['bbox_xyxy'][0] = 0.1 + i * 0.1
         result, model = self.run_draft(data)
         self.assertEqual(len(self.cv_requests), 6)
@@ -134,3 +133,31 @@ class ConfidenceAnnotationTests(unittest.TestCase):
         self.assertEqual(output['events'][0]['uncertainty']['target']['reference_time'], 4.0)
         data['events'][0]['uncertainty']['end'] = 4.001
         with self.assertRaises(ValueError): validate_stage(ConfidenceDraft, data, {'duration': 4.0})
+
+    def test_high_confidence_without_target_still_revises(self):
+        data = draft(0.4, 'event_boundary', False)
+        data['events'][0]['confidence'] = 0.9
+        result, model = self.run_draft(data)
+        self.assertEqual([r.stage for r in model.requests], ['confidence_draft', 'grounded_revision'])
+        self.assertFalse(self.cv_requests)
+        self.assertEqual(result.metadata['confidence_gate']['route'], 'revision_only')
+        self.assertEqual(result.metadata['confidence_gate']['uncertain_event_indices'], [0])
+        from percept_harness.batch import required_event_phases
+        self.assertIn('grounded_revision', required_event_phases(result.metadata))
+
+    def test_revision_failure_without_sam_is_not_successful_draft(self):
+        data = draft(0.4, 'event_boundary', False)
+        data['events'][0]['confidence'] = 0.9
+        model = RecordingModel(failure_script={'confidence_draft': [data],
+            'grounded_revision': [RuntimeError('failed revision')]})
+        result = self.run_model(model)
+        self.assertEqual(result.status, 'failed')
+        self.assertEqual(result.metadata['draft'], data)
+        self.assertFalse(self.cv_requests)
+
+    def test_nested_question_gets_event_index_from_its_parent(self):
+        data = draft(0.4)
+        data['events'][0]['uncertainty'].pop('event_indices', None)
+        result, model = self.run_draft(data)
+        self.assertEqual(result.metadata['confidence_gate']['uncertain_event_indices'], [0])
+        self.assertEqual([r.mode for r in self.cv_requests], ['probe', 'track'])

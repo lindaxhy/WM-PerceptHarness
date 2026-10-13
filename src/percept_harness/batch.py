@@ -229,7 +229,8 @@ def _verify_cv_archive(root: Path, expected_manifest: str):
 def required_event_phases(metadata):
     if metadata.get('event_workflow') == 'confidence-gated':
         required = {'confidence_draft'}
-        if metadata.get('recheck_budget', {}).get('selected_windows', 0):
+        if (metadata.get('recheck_budget', {}).get('selected_windows', 0)
+                or metadata.get('confidence_gate', {}).get('requires_revision', False)):
             required.add('grounded_revision')
         return required
     return {'grounded_draft', 'evidence_review', 'grounded_revision'}

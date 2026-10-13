@@ -9,7 +9,7 @@ from ..execution import wait_for_jobs
 from .base import SafePipelineError
 from .event_evidence import EvidenceOrchestrator, targeted_windows
 from .event_prompts import VERSION, CONFIDENCE_VERSION, prompt
-from .event_schemas import EvidenceReview, SamPromptReview, SpatialTarget, validate_stage, GroundedEvents, ConfidenceDraft, SAM_CONFIDENCE_THRESHOLD
+from .event_schemas import EvidenceReview, SamPromptReview, SpatialTarget, validate_stage, GroundedEvents, ConfidenceDraft, Concern, SAM_CONFIDENCE_THRESHOLD
 from .output_validation import DEFAULT_OUTPUT_SCHEMAS
 
 EMBODIED_PROMPT_VERSION = VERSION
@@ -63,12 +63,15 @@ class EmbodiedActionPipeline:
             draft = stage('confidence_draft', ConfidenceDraft)
             audit['draft'] = draft
             assessed = ConfidenceDraft.model_validate(draft)
-            questions = [e.uncertainty for e in assessed.events
-                         if e.confidence <= SAM_CONFIDENCE_THRESHOLD]
+            questions = [Concern.model_validate({**e.uncertainty.model_dump(mode='json'), 'event_indices': [i]})
+                         for i, e in enumerate(assessed.events) if e.uncertainty is not None]
             review = SimpleNamespace(concerns=questions, unresolved=[])
             review_data = {'source': 'initial_self_assessment',
                            'concerns': [q.model_dump(mode='json') for q in questions]}
             audit['confidence_gate'] = {'threshold': SAM_CONFIDENCE_THRESHOLD,
+                'policy': 'all_explicit_uncertainties',
+                'uncertain_event_indices': [i for i, e in enumerate(assessed.events) if e.uncertainty is not None],
+                'requires_revision': bool(questions),
                 'low_confidence_event_indices': [i for i, e in enumerate(assessed.events)
                                                 if e.confidence <= SAM_CONFIDENCE_THRESHOLD]}
         else:
@@ -139,9 +142,9 @@ class EmbodiedActionPipeline:
                 audit['unresolved_concerns'].append(f'Targeted SAM unavailable for {window["question"]}: {type(error).__name__}')
         audit['recheck_budget'] = {'selected_windows': len(windows), 'completed_windows': completed,
                                  'sam_calls': calls, 'max_prompt_attempts_per_target': 2}
-        if confidence_gated and not windows:
+        if confidence_gated and not review.concerns:
             audit['confidence_gate']['route'] = 'draft_only'
             return assessed.public_annotation()
         if confidence_gated:
-            audit['confidence_gate']['route'] = 'sam_then_revision'
+            audit['confidence_gate']['route'] = 'sam_then_revision' if windows else 'revision_only'
         return stage('grounded_revision', GroundedEvents, draft=draft, review=review_data)

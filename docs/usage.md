@@ -122,15 +122,20 @@ in run provenance so the two workflows cannot resume each other's results.
 
 In the experiment, the first VLM call (`confidence_draft`) generates each event,
 a confidence in [0, 1], and a concrete uncertainty with an optional SAM candidate.
-Confidence <= 0.6 is inclusive. Only an actionable object question with a valid
-target can enter the existing three-window / 30-second SAM budget. Confidence is
+Confidence <= 0.6 requires an explicit uncertainty, but confidence no longer
+suppresses a reported question. Every non-null uncertainty requires final VLM
+revision. Only an actionable object question with a valid target can enter the
+existing three-window / 30-second SAM budget, regardless of confidence. Confidence is
 self-reported and uncalibrated; confident errors can bypass checking.
 
-If no window is selected, the public annotation is the draft after removing
-confidence and uncertainty fields: one VLM call, no SAM. Low-confidence questions
-without targets or outside the budget remain in the audit and are **not** marked
-resolved. This route also skips independent review; temporal or camera-only
-uncertainty does not acquire new visual evidence automatically.
+If no uncertainty is reported, the public annotation is the draft after removing
+confidence and uncertainty fields: one VLM call, no SAM. Questions without targets
+or outside the SAM budget instead reach a final revision (two VLM calls when no
+SAM mask checks occur). All questions remain in the audit; revision does not
+certify their resolution. Camera/boundary or off-screen questions are revised
+conservatively using existing frames, without automatically acquiring new evidence.
+For occlusion/trajectory checks, the prompt nominates the moving object at a visible
+reference frame rather than only its occluder. SAM cannot reveal fully hidden paths.
 
 For a selected target: single-frame SAM probe → VLM mask check → accepted SAM
 tracking → final VLM revision. One accepted target normally costs three VLM calls

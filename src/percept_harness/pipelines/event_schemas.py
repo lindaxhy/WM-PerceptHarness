@@ -61,11 +61,10 @@ class SpatialTarget(StrictModel):
 SAM_KINDS = frozenset(('object_identity', 'object_location', 'occlusion', 'trajectory'))
 
 
-class Concern(StrictModel):
+class EventUncertainty(StrictModel):
     kind: Literal['object_identity', 'object_location', 'occlusion', 'trajectory',
                   'event_boundary', 'description', 'missing_event', 'camera_motion']
     reason: Text
-    event_indices: Annotated[tuple[Annotated[int, Field(ge=0, strict=True)], ...], Field(max_length=2000)]
     start: Timestamp
     end: PositiveTimestamp
     target: SpatialTarget | None
@@ -81,12 +80,16 @@ class Concern(StrictModel):
         return self
 
 
+class Concern(EventUncertainty):
+    event_indices: Annotated[tuple[Annotated[int, Field(ge=0, strict=True)], ...], Field(max_length=2000)]
+
+
 SAM_CONFIDENCE_THRESHOLD = 0.6
 
 
 class ConfidenceEvent(Event):
     confidence: Fraction
-    uncertainty: Concern | None
+    uncertainty: EventUncertainty | None
 
     @model_validator(mode='after')
     def explain_low_confidence(self):
@@ -100,10 +103,10 @@ class ConfidenceDraft(GroundedEvents):
 
     @model_validator(mode='after')
     def questions(self):
-        for index, event in enumerate(self.events):
+        for event in self.events:
             question = event.uncertainty
-            if question and (question.event_indices != (index,) or question.end > self.duration):
-                raise ValueError('uncertainty must reference its event and original video window')
+            if question and question.end > self.duration:
+                raise ValueError('uncertainty must stay within the original video window')
         return self
 
     def public_annotation(self):
