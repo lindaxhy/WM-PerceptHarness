@@ -1,27 +1,24 @@
 # WM-PerceptHarness
 
-Video annotation and evaluation tools for world models and embodied agents.
+Annotate videos, compare real and generated action timelines, and evaluate video quality with individual metrics.
 
-The repository provides three complementary workflows:
+[Quick start](#quick-start) · [Compare videos](#compare-real-and-generated-videos) · [Video metrics](#evaluate-video-quality) · [Documentation](#documentation)
 
-| Workflow | Input → output | Entry point |
-|---|---|---|
-| Video annotation | Video → captions, active objects, or action timelines | `percept annotate` |
-| Event-timeline fidelity | Real/generated video annotations → temporal and semantic comparisons | `percept score fidelity` |
-| Video quality | Video → CLIP-IQA+ or VBench Motion Smoothness score | `percept score clipiqa` / `motion` |
+## What can I run?
 
-Annotation uses sampled visual frames through an OpenAI-compatible VLM endpoint; it does not use audio. Direct quality metrics use their own model checkpoints and do not require VLM API credentials. The [metric catalog](docs/metrics.md) distinguishes implemented entry points, validation evidence, and planned integrations.
+| Task | Input | Output | Requirements |
+|---|---|---|---|
+| Video annotation | One video or a directory of videos | Captions, active objects, or action timelines in JSON | FFmpeg + a vision-capable OpenAI-compatible API |
+| Event fidelity | Matching real/generated action annotations | Temporal event agreement; optional semantic similarity | Core package; `fidelity` extra for semantic scoring |
+| Video quality | One video | A score for the selected metric | The metric's runtime and model weights |
 
-```text
-Real video ────── annotate ── reference timeline ─┐
-                                                ├── fidelity report
-Generated video ─ annotate ── predicted timeline ─┘
-       └──────────────────── video quality metrics
-```
+Annotation uses sampled video frames; it does not use audio. You supply the videos and, for fidelity, their real/generated pairing. Metrics produce separate results; the repository does not compute a unified benchmark score. See the [metric guide](docs/metrics.md) for implementation and validation status.
 
-## Install
+## Quick start
 
-Use Python 3.12+ and install FFmpeg/FFprobe for annotation.
+### 1. Install
+
+Use **Python 3.12+**. Install **FFmpeg and FFprobe** with your system package manager, then:
 
 ```bash
 git clone https://github.com/lindaxhy/WM-PerceptHarness.git
@@ -29,128 +26,162 @@ cd WM-PerceptHarness
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e .
+
+python scripts/verify_install.py
 ```
 
-Optional video metrics have separate environments: see [installation](docs/installation.md). `uv.lock` is available for the core project's reproducibility workflow; ordinary pip installation does not require uv.
+This installs the annotation client and temporal fidelity scorer. GPU metrics have separate [runtime requirements](docs/usage.md#optional-metric-environments). `pip install` installs code and dependencies; it does not download model weights.
 
-## Try annotation
+### 2. Configure the annotation model
 
-Set the URL, model ID, and key for your chosen vision-capable endpoint:
+Set your endpoint URL, provider model ID and API key in the same terminal:
 
 ```bash
 export PERCEPT_OPENAI_BASE_URL="https://your-provider.example/v1"
 export PERCEPT_OPENAI_MODEL="your-vision-model-id"
 export PERCEPT_OPENAI_API_KEY="your-api-key"
-
-percept annotate --videos ./my_videos \
-  --template embodied_action_captioning --output outputs/actions
 ```
 
-The default backend is OpenAI-compatible; `--backend openai` remains an explicit option. Alternative providers and optional SAM3.1 evidence are described in [advanced configuration](docs/installation.md#annotation-configuration).
+Choose a model that accepts image inputs through the chat completions API. More options, including multiple model aliases and optional SAM3.1 evidence, are documented in [configuration](docs/usage.md#annotation-configuration). `.env` files are not loaded automatically.
 
-| Template | Output |
+### 3. Annotate your video
+
+```bash
+percept annotate \
+  --videos ./videos/sample_001.mp4 \
+  --template embodied_action_captioning \
+  --output ./outputs/actions
+```
+
+Pass a directory to `--videos` to process its videos recursively. Select a template for your task:
+
+| Template | Produces |
 |---|---|
 | `general_video_captioning` | Video summary and timestamped events |
 | `embodied_active_object_detection` | Visibly interacted object inventory |
-| `embodied_action_captioning` | Task summary and time-bounded action segments |
+| `embodied_action_captioning` | Task description and time-bounded action segments |
 
-Results use `<video_stem>.json`, with a source-path suffix when that name belongs to another video. `results.jsonl` records the exact result filenames. Verified built-in runs resume only when input bytes, model, prompts, configuration and code/runtime fingerprints match. Use `--force` for an independent repeat; displaced results and run manifests are retained under `.percept/`. See [input/output conventions](docs/evaluation.md) for conservative custom/CV behavior.
+### 4. Read the results
+
+For the example above, a fresh output directory contains:
+
+```text
+outputs/actions/
+├── sample_001.json    # Annotation and per-video metadata
+└── results.jsonl      # Batch summary, status and result filenames
+```
+
+Read `status` and `error` to check success, then `data` for the annotation. Timestamps are seconds on the original video. The directory also contains `.percept/` run records used for resume and history. If video filenames collide, use the `result_file` recorded in `results.jsonl` to locate the correct JSON.
+
+Matching completed built-in runs can resume. Add `--force` for an independent repeat. See [outputs and resume](docs/usage.md#result-identity-and-resume) for the exact reuse rules.
 
 ## Compare real and generated videos
 
-Prepare matching annotations under `reference/<id>/<id>.json` and `generated/<id>/<id>.json`:
+Name matching videos with the same sample ID and annotate each into its own sample directory. With the API settings above:
 
 ```bash
+percept annotate --videos ./videos/real/sample_001.mp4 \
+  --template embodied_action_captioning --output outputs/reference/sample_001
+percept annotate --videos ./videos/generated/sample_001.mp4 \
+  --template embodied_action_captioning --output outputs/generated/sample_001
+
 percept score fidelity \
   --reference outputs/reference \
   --system model=outputs/generated \
   --out outputs/fidelity.json
 ```
 
-Temporal scoring works with the core installation. For semantic similarity and statistical tests, install `python -m pip install -e '.[fidelity]'` and add `--semantic`. Use two independent real-video annotation runs with `--self-agreement` to estimate annotator self-agreement. See the [evaluation guide](docs/evaluation.md) for the full workflow and interpretation.
+The scorer pairs this layout by sample ID:
 
-## Score video quality
+```text
+outputs/
+├── reference/sample_001/sample_001.json
+├── generated/sample_001/sample_001.json
+└── fidelity.json
+```
 
-Install the corresponding [metric environment](docs/metrics.md), download its checkpoints, then score. `pip install` installs code and dependencies only; it does not download model weights. For CLIP-IQA+ (after installing a compatible PyTorch/TorchVision build):
+Repeat the annotation steps for each pair. A flat folder of annotation JSON files is not accepted. The output reports temporal event-family overlap, event F1 and outcome agreement. Check `paired_samples` against the number of pairs you intended to evaluate.
+
+Temporal scoring needs no API calls or local model weights. For semantic similarity, install `python -m pip install -e '.[fidelity]'` and add `--semantic`; its embedding model is downloaded/cached separately. See [fidelity evaluation](docs/usage.md#event-timeline-fidelity) for input exclusions, actionless-case limitations and repeated-reference evaluation.
+
+## Evaluate video quality
+
+Video metrics run independently of annotation and do not need VLM API credentials. Use the environment for the metric you select; one environment is not expected to contain every upstream evaluator.
+
+### CLIP-IQA+
+
+Create a dedicated environment and install a hardware-compatible PyTorch/TorchVision build as described in the [CLIP-IQA+ setup](docs/metrics.md#clip-iqa). Then install the metric, prepare its weights, and score:
 
 ```bash
+python3.12 -m venv .venv-clipiqa
+source .venv-clipiqa/bin/activate
+# Install the appropriate PyTorch/TorchVision build before the next step.
 python -m pip install -e '.[clipiqa]'
 percept download clipiqa --cache-dir ./weights
-percept score clipiqa --video example.mp4 --cache-dir ./weights \
-  --output outputs/example.clipiqa.json
+python scripts/verify_install.py --metric clipiqa --cache-dir ./weights
+percept score clipiqa --video ./videos/sample_001.mp4 \
+  --cache-dir ./weights --output outputs/sample_001.clipiqa.json
 ```
 
-For Motion Smoothness, install the [motion environment](docs/metrics.md#motion-smoothness), then:
+The JSON includes the score, sampled-frame count, sampling settings and input checksum. `--device auto` selects CUDA when available, otherwise CPU. CLIP-IQA+ measures sampled-frame image quality.
+
+### Motion Smoothness
+
+Use a separate CUDA environment with a compatible PyTorch/TorchVision build; follow the [motion runtime notes](docs/metrics.md#motion-smoothness), including the reason for `--no-deps`:
 
 ```bash
+python3.12 -m venv .venv-motion
+source .venv-motion/bin/activate
+# Install the appropriate PyTorch/TorchVision build before the next step.
+python -m pip install -e '.[motion]'
+python -m pip install --only-binary=:all: --no-deps vbench==0.1.5
 percept download motion --cache-dir ./weights
-percept score motion --video example.mp4 \
-  --cache-dir ./weights --gpu 0 \
-  --output outputs/example.motion.json
+python scripts/verify_install.py --metric motion --cache-dir ./weights
+percept score motion --video ./videos/sample_001.mp4 \
+  --cache-dir ./weights --gpu 0 --output outputs/sample_001.motion.json
 ```
 
-The downloader currently supports `clipiqa` and `motion`. It verifies SHA-256, reuses matching files, and replaces corrupt files only after a verified download. Downloads default to `./weights`; pass the same directory to scoring. Interrupted downloads can be rerun (partial files are discarded). Other external evaluators retain their [official setup requirements](docs/metrics.md#vbench-and-external-evaluators).
+The JSON includes the score and paths to the official evaluator result and log. Motion Smoothness measures local interpolation smoothness; a smooth video can still depict an incorrect action.
 
-CLIP-IQA+ measures sampled-frame image quality; Motion Smoothness measures local interpolation smoothness. Neither establishes action correctness. Both preserve their existing scoring protocols and output fields.
+**Weights:** `percept download` currently supports `clipiqa` and `motion`. It verifies SHA-256 and reuses valid files. Use the same `--cache-dir` for downloading and scoring; `./weights` is relative to the current directory. Other metrics require their own [checkpoint preparation](docs/metrics.md#checkpoint-preparation).
+
+### Other individual metrics
+
+These commands select a metric directly:
+
+| Command | Measures |
+|---|---|
+| `percept imaging-quality` | Image quality with MUSIQ |
+| `percept aesthetic-quality` | Aesthetic quality |
+| `percept temporal-flickering` | Temporal flickering on static/near-static inputs |
+| `percept dynamic-degree` | Dynamic degree |
+| `percept subject-consistency` | Subject consistency |
+| `percept background-consistency` | Background consistency |
+| `percept overall-consistency` | Video-text consistency with ViCLIP |
+
+They share the official VBench implementation internally. Prepare the [pinned source checkout, runtime and per-metric weight manifest](docs/metrics.md#individual-metric-commands) first. For example:
+
+```bash
+percept imaging-quality \
+  --vbench-root /path/to/VBench \
+  --videos-path ./videos/sample_001.mp4 \
+  --cache-dir /path/to/vbench-cache \
+  --weights-manifest /path/to/imaging_quality.weights.json \
+  --gpu 0 --output-dir outputs/sample_001.imaging-quality
+```
+
+Add `--check-only` to verify inputs, source and weights without starting inference. Use `percept <metric> --help` for options. `overall-consistency` also needs `--prompt` or `--prompt-file`; `temporal-flickering` needs `--static-subset-ack` after checking the input subset. Results retain the official metric identifiers.
+
+CLIPScore, DOVER and other external evaluators have separate entries in the [metric guide](docs/metrics.md#vbench-and-external-evaluators). Their availability as commands does not imply a completed full-benchmark validation.
 
 ## Documentation
 
-- [Installation and configuration](docs/installation.md)
-- [Evaluation workflows and outputs](docs/evaluation.md)
-- [Metric commands and protocols](docs/metrics.md)
-- [Reproduction and validation](docs/reproduction.md)
-- [Frozen benchmark selection](docs/benchmark.md)
-- [Third-party notices and license](docs/third-party-notices.md)
-
-The current release does not provide an end-to-end reproduction of every metric in the frozen selection. Per-metric limitations are listed in the metric guide.
-
-## Development
-
-Use Python 3.12+ and FFmpeg/FFprobe. Run the regression suite from the repository root:
-
-```bash
-python -m pip install -e '.[dev]'
-python -m pytest -q
-```
-
-The suite uses synthetic media, fake models and mocked external evaluators to check software behavior; it does not establish real-model quality. Optional runtime tests skip when their dependencies are unavailable.
-
-### Repository layout
-
-| Path | Responsibility |
+| Guide | Contents |
 |---|---|
-| `src/percept_harness/` | Installable Python package and the public `percept` CLI |
-| `src/percept_harness/pipelines/` | Annotation stages and output validation |
-| `src/percept_harness/evaluation/` | Event-fidelity scoring and shared temporal event matching |
-| `src/percept_harness/video_metrics/` | Video scorers, official evaluator wrappers and VideoPhy aggregation |
-| `scripts/` | Input preparation and manifest validation |
-| `tests/` | Python regression tests and small fixtures; retained in source control, excluded from the wheel |
-| `pyproject.toml` | Core dependencies and optional `dev`, `fidelity`, `clipiqa`, `motion` extras |
-| `docs/` | Current user guides, metric protocols and reproduction instructions |
+| [Usage](docs/usage.md) | Installation checks, configuration, annotation/fidelity workflows and outputs |
+| [Metrics](docs/metrics.md) | Metric protocols, weights, input examples and reporting scope |
+| [Third-party notices](docs/third-party-notices.md) | Upstream sources and component licenses |
 
-Reusable logic lives in the package; `scripts/` contains only input preparation tools. Model interfaces and endpoint adapters live in `src/percept_harness/models/`; configure the provider/model through environment variables, not source constants.
+`python scripts/verify_install.py` checks the local installation and a few basic behaviors. It does not call APIs, run model inference or establish benchmark validity. See [verification](docs/usage.md#verify-the-installation) for optional metric profiles.
 
-The VBench-backed metrics have direct commands: `percept imaging-quality`, `percept aesthetic-quality`, `percept temporal-flickering`, `percept dynamic-degree`, `percept subject-consistency`, `percept background-consistency`, and `percept overall-consistency`. Each selects one metric without `--dimension`; VBench is the shared implementation, not an additional metric or total score. See the [metric commands](docs/metrics.md#individual-metric-commands) for required source and weight paths.
-
-Other scorers use `percept score`: `fidelity`, `clipiqa`, `motion`, `vbench-clip`, `dover`, `external`, and `videophy-joint`. The former scorer scripts and `percept score vbench --dimension ...` entry point have been replaced by the documented commands.
-
-Keep regression tests for scoring, timestamp boundaries, model-output validation, resume identity and command behavior. Add real-model validation separately with its environment and evidence, rather than making ordinary tests require API credentials or GPU checkpoints.
-
-Local agent state (`.superpowers/`, `.claude/`, `docs/superpowers/`), caches, generated outputs and model weights are ignored. Keep current usage and design guidance in `docs/`; historical implementation notes remain available in Git history. Do not commit agent task transcripts. Existing files must also be removed from Git tracking before ignore rules take effect.
-
-## Project history and license
-
-The fixed two-sample Doubao semantic re-verification operator and its experiment-only tests were removed from active development. Their [last pre-cleanup version](https://github.com/lindaxhy/WM-PerceptHarness/tree/a201286f2b5b4deb55b2e99aaff0303e588f2295) remains available for historical reproduction. Current annotation uses the configurable OpenAI-compatible backend.
-
-The old five-video LAS comparison viewer, machine-generated references, dated SAM3.1 evaluation results, LAS-specific evaluator and server-specific smoke script are preserved together on [`archive/las-comparison-viewer`](https://github.com/lindaxhy/WM-PerceptHarness/tree/archive/las-comparison-viewer). They are historical diagnostics, not inputs required by current annotation or fidelity scoring. To inspect them without changing your checkout:
-
-```bash
-git fetch origin
-git worktree add ../WM-PerceptHarness-viewer origin/archive/las-comparison-viewer
-```
-
-Follow `evaluation/viewer/README.md` in that worktree. Its ignored video files must still be supplied locally. The old `scripts/evaluate_las_alignment.py`, `scripts/build_comparison_viewer_data.py` and `scripts/sam31_smoke.py` commands are available only on the archive branch; current scoring uses `percept score fidelity` with caller-supplied annotations.
-
-The former LAS-compatible service is preserved by the [`legacy-las-service` tag](https://github.com/lindaxhy/WM-PerceptHarness/tree/legacy-las-service). The tag remains usable if the old development branch is deleted. Historical deployment notes are not prerequisites for current annotation.
-
-No project-wide open-source license has been granted yet. Add an appropriate license before public release. Third-party components retain their own license terms. Paper citation information will be added when available.
+No project-wide open-source license has been granted yet. Third-party components retain their own license terms.

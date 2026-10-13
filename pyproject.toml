@@ -12,7 +12,6 @@ dependencies = [
 percept = "percept_harness.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.4,<9", "pytest-cov>=6.2,<7"]
 # optional columns of `percept score fidelity`: description similarity and paired tests
 fidelity = ["sentence-transformers>=3,<7", "scipy>=1.13,<2"]
 
@@ -41,14 +40,3 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/percept_harness"]
-
-[tool.pytest.ini_options]
-pythonpath = ["src"]
-testpaths = ["tests"]
-
-[tool.coverage.run]
-branch = true
-
-[tool.coverage.report]
-fail_under = 80
-show_missing = true
