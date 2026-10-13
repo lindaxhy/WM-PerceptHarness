@@ -13,6 +13,7 @@ import stat
 import subprocess
 from typing import Callable
 
+from ..media import playback_origin
 from .contracts import FrameTimeline, FrameTimestamp, SamplingPolicy
 
 
@@ -52,7 +53,7 @@ def probe_frame_timeline(
     *,
     run: Callable[..., object] = subprocess.run,
 ) -> FrameTimeline:
-    """Return decoder-order source PTS without deriving timestamps from FPS."""
+    """Return decoder-order PTS on the zero-based container playback clock."""
     descriptor, source_identity = _open_pinned_regular_file(path)
     try:
         completed = run(
@@ -65,7 +66,8 @@ def probe_frame_timeline(
                 "-select_streams",
                 "v:0",
                 "-show_entries",
-                "frame=best_effort_timestamp_time",
+                "frame=best_effort_timestamp_time:format=start_time",
+                "-show_format",
                 "-show_frames",
                 _descriptor_path(descriptor),
             ],
@@ -79,10 +81,11 @@ def probe_frame_timeline(
         frames = payload["frames"]
         if not isinstance(frames, list) or not frames:
             raise ValueError
+        origin = playback_origin(payload.get("format", {}))
         points = tuple(
             FrameTimestamp(
                 frame_index=index,
-                timestamp_seconds=_timestamp_seconds(frame),
+                timestamp_seconds=_timestamp_seconds(frame, origin),
             )
             for index, frame in enumerate(frames)
         )
@@ -142,13 +145,13 @@ def _descriptor_path(descriptor: int) -> str:
     return f"/dev/fd/{descriptor}"
 
 
-def _timestamp_seconds(frame: object) -> float:
+def _timestamp_seconds(frame: object, origin: Decimal = Decimal(0)) -> float:
     if not isinstance(frame, dict):
         raise ValueError
     value = frame.get("best_effort_timestamp_time")
     if not isinstance(value, str) or not value:
         raise ValueError
-    timestamp = Decimal(value)
+    timestamp = Decimal(value) - origin
     if not timestamp.is_finite() or timestamp < 0:
         raise ValueError
     seconds = float(timestamp)

@@ -101,6 +101,7 @@ class EvidenceOrchestrator:
         # Zero detections can be valid. Record this explicitly; original imagery
         # is still supplied and absence of tracks never establishes object absence.
         audit = {**result, 'scope': scope, 'provider': artifact.provider, 'video_sha256': self.video_sha,
+                 'time_basis': 'container-relative playback seconds; original decoder frame indices',
                  'window': [window['start'], window['end']] if window else [0.0, self.duration],
                  'empty_nomination_scene_probe': empty, 'no_tracks': not bool(artifact.tracks),
                  'entities': [e.model_dump(mode='json') for e in artifact.entities],

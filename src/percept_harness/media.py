@@ -6,7 +6,7 @@ import json
 import math
 import subprocess
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -90,6 +90,7 @@ def probe_video(path: Path) -> VideoMetadata:
         TypeError,
         ValueError,
         ZeroDivisionError,
+        InvalidOperation,
     ):
         raise MediaProbeError("unable to probe video") from None
     if (
@@ -105,15 +106,32 @@ def probe_video(path: Path) -> VideoMetadata:
     return VideoMetadata(duration, width, height, fps)
 
 
+def playback_origin(container: Any) -> Decimal:
+    """FFmpeg input seeking is relative to the container start, not raw PTS."""
+    value = container.get("start_time") if isinstance(container, dict) else None
+    if value in (None, "N/A"):
+        return Decimal(0)
+    if isinstance(value, bool):
+        raise ValueError("invalid playback origin")
+    origin = Decimal(str(value))
+    if not origin.is_finite():
+        raise ValueError("invalid playback origin")
+    return origin
+
+
 def _video_duration(video: dict[str, Any], container: Any) -> float | None:
-    timestamp_duration = _timestamp_duration(video)
-    if timestamp_duration is not None:
-        return timestamp_duration
-
-    direct = _positive_finite_float(video.get("duration"))
-    if direct is not None:
-        return direct
-
+    duration = _timestamp_duration(video)
+    if duration is None:
+        duration = _positive_finite_float(video.get("duration"))
+    if duration is not None:
+        origin = playback_origin(container)
+        start = video.get("start_time")
+        video_start = origin if start in (None, "N/A") else Decimal(str(start))
+        if not video_start.is_finite() or video_start < origin:
+            raise ValueError("invalid video stream start")
+        # Duration is an interval length. The annotation end also includes a
+        # possible initial video delay relative to audio/container playback.
+        return float(Decimal(str(duration)) + video_start - origin)
     if isinstance(container, dict):
         return _positive_finite_float(container.get("duration"))
     return None
