@@ -134,7 +134,10 @@ or outside the SAM budget instead reach a final revision (two VLM calls when no
 SAM mask checks occur). All questions remain in the audit; revision does not
 certify their resolution. Camera/boundary or off-screen questions are revised
 conservatively using existing frames, without automatically acquiring new evidence.
-For occlusion/trajectory checks, the prompt nominates the moving object at a visible
+Malformed optional SAM targets (including reference times outside their question
+window) are discarded and recorded in `discarded_sam_targets`. The valid question
+still reaches VLM revision without that target; malformed event data or question
+text/type/window remain errors. For occlusion/trajectory checks, the prompt nominates the moving object at a visible
 reference frame rather than only its occluder. SAM cannot reveal fully hidden paths.
 
 For a selected target: single-frame SAM probe → VLM mask check → accepted SAM

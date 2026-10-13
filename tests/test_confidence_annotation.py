@@ -96,7 +96,7 @@ class ConfidenceAnnotationTests(unittest.TestCase):
                 validate_stage(ConfidenceDraft, data, {'duration': 4.0})
         data = draft(0.4); data['events'][0]['uncertainty'] = None
         with self.assertRaises(ValueError): validate_stage(ConfidenceDraft, data, {'duration': 4.0})
-        data = draft(0.4); data['events'][0]['uncertainty']['target']['reference_time'] = 3.5
+        data = draft(0.4); data['events'][0]['end'] = 4.1
         with self.assertRaises(ValueError): validate_stage(ConfidenceDraft, data, {'duration': 4.0})
 
     def test_draft_response_schema_compiles_for_real_backend(self):
@@ -161,3 +161,32 @@ class ConfidenceAnnotationTests(unittest.TestCase):
         result, model = self.run_draft(data)
         self.assertEqual(result.metadata['confidence_gate']['uncertain_event_indices'], [0])
         self.assertEqual([r.mode for r in self.cv_requests], ['probe', 'track'])
+
+    def test_outside_reference_drops_only_target_and_revises_valid_events(self):
+        data = draft(0.4)
+        data['events'][0]['uncertainty']['target']['reference_time'] = 3.5
+        result, model = self.run_draft(data)
+        self.assertFalse(self.cv_requests)
+        self.assertEqual([r.stage for r in model.requests], ['confidence_draft', 'grounded_revision'])
+        self.assertIsNone(result.metadata['draft']['events'][0]['uncertainty']['target'])
+        skipped = result.metadata['discarded_sam_targets'][0]
+        self.assertEqual(skipped['event_index'], 0)
+        self.assertEqual(skipped['target']['reference_time'], 3.5)
+        self.assertEqual(skipped['reason'], 'invalid_optional_sam_target')
+
+    def test_bad_target_does_not_suppress_other_valid_request(self):
+        import copy
+        data = draft(0.4)
+        data['events'].append(copy.deepcopy(data['events'][0]))
+        data['events'][0]['uncertainty']['target']['bbox_xyxy'] = [0.8, 0.1, 0.2, 0.9]
+        result, model = self.run_draft(data)
+        self.assertEqual([r.mode for r in self.cv_requests], ['probe', 'track'])
+        self.assertEqual(len(result.metadata['discarded_sam_targets']), 1)
+        self.assertEqual(result.metadata['sam_checks'][0]['concern_index'], 1)
+
+    def test_invalid_question_is_not_hidden_by_target_fallback(self):
+        from percept_harness.pipelines.event_schemas import ConfidenceDraft, validate_stage
+        data = draft(0.4)
+        data['events'][0]['uncertainty']['end'] = 0.5
+        with self.assertRaises(ValueError):
+            validate_stage(ConfidenceDraft, data, {'duration': 4.0})

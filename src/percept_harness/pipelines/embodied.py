@@ -53,7 +53,8 @@ class EmbodiedActionPipeline:
                 [data] = self._wait_jobs(context.store, task.task_id, [job.job_id], self._wait_timeout)
                 if DEFAULT_OUTPUT_SCHEMAS.failure_codes(schema.__name__, data) is not None:
                     raise SafePipelineError(f'Invalid structured output from {name}')
-                result = validate_stage(schema, data, ctx)
+                result = validate_stage(schema, data, ctx, discarded_targets=(
+                    audit.setdefault('discarded_sam_targets', []) if schema is ConfidenceDraft else None))
                 audit['phases'].append(name)
                 return result
             finally:

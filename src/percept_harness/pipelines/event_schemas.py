@@ -139,7 +139,7 @@ class EvidenceReview(StrictModel):
         return values
 
 
-def validate_stage(schema, data, context):
+def validate_stage(schema, data, context, *, discarded_targets=None):
     # Media metadata is authoritative; tolerate decimal serialization at <=1 µs,
     # never rescale a model's event timeline or accept a materially wrong duration.
     if schema in (GroundedEvents, ConfidenceDraft) and isinstance(data, dict):
@@ -168,6 +168,27 @@ def validate_stage(schema, data, context):
                             event = {**event, 'uncertainty': question}
                     events.append(event)
                 data['events'] = events
+    if schema is ConfidenceDraft and isinstance(data, dict) and isinstance(data.get('events'), (list, tuple)):
+        events = []
+        for index, event in enumerate(data['events']):
+            question = event.get('uncertainty') if isinstance(event, dict) else None
+            if isinstance(question, dict) and question.get('target') is not None:
+                # Only optional target errors are recoverable. Invalid events,
+                # confidence, question text/type/window still fail closed.
+                without_target = {**question, 'target': None}
+                valid_question = EventUncertainty.model_validate(without_target)
+                if valid_question.end > context['duration']:
+                    raise ValueError('uncertainty outside original video')
+                try:
+                    EventUncertainty.model_validate(question)
+                except ValueError:
+                    if discarded_targets is not None:
+                        discarded_targets.append({'event_index': index,
+                            'reason': 'invalid_optional_sam_target', 'target': question['target'],
+                            'question': question['reason']})
+                    event = {**event, 'uncertainty': without_target}
+            events.append(event)
+        data = {**data, 'events': events}
     value = schema.model_validate(data)
     if isinstance(value, GroundedEvents) and value.duration != context['duration']:
         raise ValueError('duration must match original video')
@@ -187,7 +208,10 @@ def register_event_schemas(registry):
     for schema in (EntityNomination, GroundedEvents, ConfidenceDraft, EvidenceReview, SamPromptReview):
         def validator(data, context, schema=schema):
             try:
-                return validate_stage(schema, data, context or {})
+                validated = validate_stage(schema, data, context or {})
+                # Preserve recoverable raw target data through the job store;
+                # pipeline validation records discarded targets in its audit.
+                return dict(data) if schema is ConfidenceDraft else validated
             except (ValueError, TypeError, KeyError, ValidationError):
                 raise DeclaredSchemaOutputError(('GROUNDED_SCHEMA_INVALID',)) from None
         def response_contract(context, schema=schema):
