@@ -81,6 +81,36 @@ class Concern(StrictModel):
         return self
 
 
+SAM_CONFIDENCE_THRESHOLD = 0.6
+
+
+class ConfidenceEvent(Event):
+    confidence: Fraction
+    uncertainty: Concern | None
+
+    @model_validator(mode='after')
+    def explain_low_confidence(self):
+        if self.confidence <= SAM_CONFIDENCE_THRESHOLD and self.uncertainty is None:
+            raise ValueError('low-confidence event requires a concrete uncertainty')
+        return self
+
+
+class ConfidenceDraft(GroundedEvents):
+    events: Annotated[tuple[ConfidenceEvent, ...], Field(max_length=2000)]
+
+    @model_validator(mode='after')
+    def questions(self):
+        for index, event in enumerate(self.events):
+            question = event.uncertainty
+            if question and (question.event_indices != (index,) or question.end > self.duration):
+                raise ValueError('uncertainty must reference its event and original video window')
+        return self
+
+    def public_annotation(self):
+        return {'duration': self.duration, 'events': [
+            {'start': e.start, 'end': e.end, 'description': e.description} for e in self.events]}
+
+
 class SamPromptReview(StrictModel):
     accepted: StrictBool
     reason: Text
@@ -109,7 +139,7 @@ class EvidenceReview(StrictModel):
 def validate_stage(schema, data, context):
     # Media metadata is authoritative; tolerate decimal serialization at <=1 µs,
     # never rescale a model's event timeline or accept a materially wrong duration.
-    if schema is GroundedEvents and isinstance(data, dict):
+    if schema in (GroundedEvents, ConfidenceDraft) and isinstance(data, dict):
         actual, reported = context['duration'], data.get('duration')
         if type(reported) in (int, float) and math.isfinite(reported) and abs(reported - actual) <= 1e-6:
             data = {**data, 'duration': actual}
@@ -120,6 +150,19 @@ def validate_stage(schema, data, context):
                         end = event.get('end')
                         if type(end) in (int, float) and math.isfinite(end) and actual < end <= actual + 1e-6:
                             event = {**event, 'end': actual}
+                    if schema is ConfidenceDraft and isinstance(event, dict):
+                        question = event.get('uncertainty')
+                        if isinstance(question, dict):
+                            question = dict(question)
+                            end = question.get('end')
+                            if type(end) in (int, float) and math.isfinite(end) and actual < end <= actual + 1e-6:
+                                question['end'] = actual
+                            target = question.get('target')
+                            if isinstance(target, dict):
+                                reference = target.get('reference_time')
+                                if type(reference) in (int, float) and math.isfinite(reference) and actual < reference <= actual + 1e-6:
+                                    question['target'] = {**target, 'reference_time': actual}
+                            event = {**event, 'uncertainty': question}
                     events.append(event)
                 data['events'] = events
     value = schema.model_validate(data)
@@ -138,7 +181,7 @@ def validate_stage(schema, data, context):
 def register_event_schemas(registry):
     from .output_validation import DeclaredSchemaOutputError
     from pydantic import ValidationError
-    for schema in (EntityNomination, GroundedEvents, EvidenceReview, SamPromptReview):
+    for schema in (EntityNomination, GroundedEvents, ConfidenceDraft, EvidenceReview, SamPromptReview):
         def validator(data, context, schema=schema):
             try:
                 return validate_stage(schema, data, context or {})

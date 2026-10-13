@@ -113,6 +113,8 @@ def _parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--request-concurrency", type=int, default=9)
     evaluate.add_argument("--shard-index", type=int, default=0)
     evaluate.add_argument("--shard-count", type=int, default=1)
+    evaluate.add_argument("--event-workflow", choices=("reviewed", "confidence-gated"),
+                          default=None, help="event workflow (default: PERCEPT_EVENT_WORKFLOW, reviewed)")
     evaluate.add_argument("--force", action="store_true", help="rerun matching results; archive displaced files")
     evaluate.add_argument(
         "--model",
@@ -169,9 +171,11 @@ def _eval(arguments: argparse.Namespace) -> int:
 
     cv_provider = arguments.cv if arguments.cv is not None else settings.cv_provider
     overrides = {"cv_provider": cv_provider}
+    if arguments.event_workflow is not None:
+        overrides["event_workflow"] = arguments.event_workflow
     if arguments.cv_device is not None:
         overrides["cv_device"] = arguments.cv_device
-    if cv_provider != settings.cv_provider or arguments.cv_device is not None:
+    if cv_provider != settings.cv_provider or arguments.cv_device is not None or arguments.event_workflow is not None:
         # Validate typed configuration here; GPU assets are annotation-only.
         try:
             settings = type(settings).model_validate({**settings.model_dump(), **overrides})

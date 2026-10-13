@@ -28,7 +28,7 @@ class FakeVideoModel(VideoModel):
     copied so callers cannot alter later results by mutation.
     """
 
-    _STAGES = frozenset({'entity_nomination', 'grounded_draft', 'evidence_review', 'grounded_revision', 'sam_prompt_review'})
+    _STAGES = frozenset({'confidence_draft', 'entity_nomination', 'grounded_draft', 'evidence_review', 'grounded_revision', 'sam_prompt_review'})
 
     def __init__(
         self,
@@ -61,6 +61,11 @@ class FakeVideoModel(VideoModel):
         return copy.deepcopy(self._fixture(request))
 
     def _fixture(self, request: ModelRequest) -> dict[str, Any]:
+        if request.stage == 'confidence_draft':
+            return {'duration': request.span.end, 'events': [
+                {'start': request.span.start, 'end': request.span.end,
+                 'description': 'A hand moves the red container.',
+                 'confidence': 0.9, 'uncertainty': None}]}
         if request.stage == 'entity_nomination':
             return {'entities': [{'name': 'red container', 'aliases': [], 'role': 'manipulated_object'}]}
         if request.stage == 'sam_prompt_review':

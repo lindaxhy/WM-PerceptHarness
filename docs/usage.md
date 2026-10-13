@@ -109,6 +109,38 @@ Each successful `<video_stem>.json` is exactly `{ "duration": number, "events": 
 
 The validator canonicalizes model duration rounding within one microsecond to authoritative media metadata (including an endpoint overshoot within that tolerance); larger duration discrepancies still fail. Times are finite seconds relative to the original container playback start and lie within the video endpoint. Initial video-stream delays are preserved; trailing audio does not extend an available video-stream duration. SAM uses decoded frame PTS on this clock and preserves original decoder indices. Each event is an independently describable visible process or change, bounded by meaningful completion, interruption or a different activity. Long events, gaps, overlaps and unfinished actions are valid. Segmentation follows the original event-boundary rules: independently describable phases may remain separate, with no requirement to merge a continuous manipulation into one event or to exhaustively cover the timeline. There are no event categories or fixed event-length limits.
 
+Experimental confidence-gated annotation is available on the experiment branch:
+
+```bash
+percept annotate --videos video.mp4 --cv sam31 \
+  --event-workflow confidence-gated --output outputs/confidence
+```
+
+The default remains `--event-workflow reviewed` for comparison. The selector also
+works with `--manifest` or `PERCEPT_EVENT_WORKFLOW=confidence-gated`; it is included
+in run provenance so the two workflows cannot resume each other's results.
+
+In the experiment, the first VLM call (`confidence_draft`) generates each event,
+a confidence in [0, 1], and a concrete uncertainty with an optional SAM candidate.
+Confidence <= 0.6 is inclusive. Only an actionable object question with a valid
+target can enter the existing three-window / 30-second SAM budget. Confidence is
+self-reported and uncalibrated; confident errors can bypass checking.
+
+If no window is selected, the public annotation is the draft after removing
+confidence and uncertainty fields: one VLM call, no SAM. Low-confidence questions
+without targets or outside the budget remain in the audit and are **not** marked
+resolved. This route also skips independent review; temporal or camera-only
+uncertainty does not acquire new visual evidence automatically.
+
+For a selected target: single-frame SAM probe → VLM mask check → accepted SAM
+tracking → final VLM revision. One accepted target normally costs three VLM calls
+in total. Each additional target/retry adds a mask-check call. Empty masks skip
+that check and tracking; SAM failures/rejections still reach final revision with
+unresolved concerns, without treating rejected masks as evidence. Public JSON
+remains `{duration, events}`; `draft`, `confidence_gate`, `sam_checks`,
+`recheck_budget` and `phases` are audit-only. Event granularity follows the same
+original boundary rules as the reviewed workflow.
+
 The `grounded-events-v3` prompts restore the original segmentation rules while retaining the targeted SAM workflow:
 
 1. `grounded_draft`: VLM observes original frames and drafts events.
