@@ -104,6 +104,44 @@ Read `sample_001.json` directly for the annotation; execution `status`, `error`,
 
 Grounded runs currently rerun because CV execution identity is not yet reusable. Add `--force` for an independent repeat that also disables the request cache. See [outputs and resume](docs/usage.md#result-identity-and-resume) for the exact rules.
 
+## Annotate across multiple GPUs
+
+Use `--manifest` to annotate multiple videos in parallel across GPUs. Ordinary
+`--videos` runs process videos sequentially. Configure the VLM API and local
+SAM3.1 runtime as above, then create `corpus.jsonl` with one unique relative
+`job_id` and an absolute `video_path` per line:
+
+```jsonl
+{"job_id":"video_001","video_path":"/data/videos/video_001.mp4"}
+{"job_id":"video_002","video_path":"/data/videos/video_002.mp4"}
+```
+
+```bash
+percept annotate --manifest corpus.jsonl \
+  --cv sam31 --cv-devices 0,1,2,3 \
+  --workers-per-gpu 2 --request-concurrency 9 \
+  --output outputs/annotations
+```
+
+- `--cv-devices` selects physical GPUs. Each GPU has one SAM process, which
+  loads the model on its first targeted request and reuses it for later requests.
+  Different GPUs can process different videos concurrently; one video's SAM
+  inference uses one GPU.
+- `--workers-per-gpu` controls CPU threads running video workflows, each with its
+  own VLM client. Two threads can overlap VLM calls and SAM work, but share one
+  SAM instance and serialize SAM requests on their GPU.
+- `--request-concurrency` caps concurrent VLM API calls across this invocation.
+  The limit starts at two, increases after successful calls, and decreases when
+  HTTP 429 responses are observed.
+
+The example uses four GPUs and eight video workflow threads. SAM remains
+conditional on the annotation workflow's questions. Add
+`--event-workflow confidence-gated` to use the experimental workflow.
+Results are written under `outputs/annotations/<job_id>/`, with progress in
+`shard-00.status.json` at the output root. See
+[multi-GPU manifest annotation](docs/usage.md#multi-gpu-manifest-annotation)
+for multi-host sharding and retry behavior.
+
 ## Compare real and generated videos
 
 Annotate each side with the SAM setup above. Name paired videos with the same sample ID and use matching sample directories:
