@@ -235,6 +235,9 @@ Other upstream evaluators use `percept score` commands listed in the [catalog](m
 
 ## Multi-GPU manifest annotation
 
+Manifest mode requires SAM3.1 (`--cv sam31`); fake CV is only available in the
+single-process offline test path (`--videos`).
+
 A JSONL manifest supplies one absolute `video_path` and a unique relative
 `job_id` per line. Optional `expected_sha256` binds an input to a known version.
 Each job writes normal annotation results under `<output>/<job_id>/`.

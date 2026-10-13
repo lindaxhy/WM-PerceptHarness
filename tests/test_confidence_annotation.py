@@ -111,7 +111,7 @@ class ConfidenceAnnotationTests(unittest.TestCase):
         manifest.write_text(json.dumps({'job_id': 'one', 'video_path': str(self.video)}) + '\n')
         process = subprocess.run([sys.executable, '-m', 'percept_harness.cli', 'annotate',
             '--manifest', str(manifest), '--event-workflow', 'confidence-gated',
-            '--output', str(self.root/'out'), '--backend', 'fake', '--model', 'fake', '--cv', 'fake',
+            '--output', str(self.root/'out'), '--backend', 'fake', '--model', 'fake', '--cv', 'sam31',
             '--cv-devices', '0', '--workers-per-gpu', '1', '--request-concurrency', '1'],
             env={**os.environ, 'PYTHONPATH': str(Path('src').resolve()),
                  'PERCEPT_WORK_ROOT': str(self.root/'batch-work'), 'PERCEPT_CV_CACHE_ROOT': str(self.root/'batch-cv')},

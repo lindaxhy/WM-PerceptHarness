@@ -130,7 +130,7 @@ class AnnotationPersistenceTests(unittest.TestCase):
                 self.closed = True
         connection = Connection()
         with patch.dict(os.environ), patch('percept_harness.cli._cv_executor', side_effect=AssertionError('SAM initialized without a target')):
-            _cv_worker(connection, {'cv_provider': 'fake'}, 0)
+            _cv_worker(connection, {'cv_provider': 'sam31'}, 0)
         self.assertEqual(connection.messages[0][0], 'ready')
         self.assertTrue(connection.closed)
 

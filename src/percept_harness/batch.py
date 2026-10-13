@@ -118,7 +118,7 @@ def _cv_worker(connection, cv_settings, gpu):
                 try:
                     if execute is None:
                         execute = stack.enter_context(_cv_executor(settings.cv_provider, SimpleNamespace(
-                            cv_device=gpu, backend="fake" if settings.cv_provider == "fake" else "openai"), settings))
+                            cv_device=gpu, backend="openai"), settings))
                     result, metrics = execute(payload)
                     connection.send(("ok", (result, metrics)))
                 except Exception as error:
@@ -264,8 +264,8 @@ def run_manifest(arguments) -> int:
         raise ValueError("invalid shard index or count")
     settings = Settings.from_env()
     provider = arguments.cv or settings.cv_provider
-    if provider not in {"sam31", "fake"}:
-        raise ValueError("manifest annotation requires --cv sam31 or --cv fake")
+    if provider != "sam31":
+        raise ValueError("manifest annotation requires --cv sam31")
     annotation_cv_preflight(provider, arguments.backend, settings, check_assets=False)
     devices = [int(s) for s in (arguments.cv_devices or str(settings.cv_device)).split(",")]
     if any(g < 0 for g in devices) or len(set(devices)) != len(devices):
