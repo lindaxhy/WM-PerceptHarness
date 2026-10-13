@@ -99,7 +99,7 @@ def result_path(output: Path, video: Path) -> Path:
 
 
 def completed_result(path: Path, video: Path) -> dict[str, Any] | None:
-    """Explicit resume checks completion, source path and annotation structure."""
+    """Check completion, source path and annotation structure for result reuse."""
     from .pipelines.event_schemas import GroundedEvents
     try:
         record = annotation_record(path)

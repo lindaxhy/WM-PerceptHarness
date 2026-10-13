@@ -116,7 +116,7 @@ percept annotate --videos video.mp4 --cv sam31 \
 ```
 
 The default remains `--event-workflow reviewed` for comparison. The selector also
-works with `--manifest` or `PERCEPT_EVENT_WORKFLOW=confidence-gated`; use a separate output directory for each workflow when using `--resume`.
+works with `--manifest` or `PERCEPT_EVENT_WORKFLOW=confidence-gated`; use a separate output directory for each workflow or pass `--force` to rerun.
 
 In the experiment, the first VLM call (`confidence_draft`) generates each event,
 a confidence in [0, 1], and a concrete uncertainty with an optional SAM candidate.
@@ -165,14 +165,14 @@ Same-name videos use numeric suffixes such as `clip--1.json`; the audit records
 which resolved source path owns a result. Use `result_file` in `results.jsonl`
 to locate it. Existing unreadable files are preserved and a free suffix is used.
 
-Videos are evaluated again by default. `--resume` skips a result only when its
+A result is skipped by default when its
 source path matches, its status is completed, and its annotation passes schema
 validation. Failed, incomplete or malformed results are retried. Legacy result
 envelopes can still be read. There are no content checksums, code/environment
 fingerprints, automatic history archives or per-run manifests.
 
 ```bash
-percept annotate --videos video.mp4 --output outputs/actions --resume
+percept annotate --videos video.mp4 --output outputs/actions
 ```
 
 Resume does not detect changed video bytes, models, prompts or settings. Use a
@@ -187,7 +187,7 @@ A separate VLM request cache is enabled by `PERCEPT_SEMANTIC_RESULT_CACHE=true`
 under `<PERCEPT_WORK_ROOT>/semantic-cache`. It uses the video path, file size,
 modification time and request settings to identify requests, and validates cached
 responses against the current schema. `--force` disables this cache for an
-independent annotation repeat and cannot be combined with `--resume`. Merely
+independent annotation repeat and also bypasses completed-result skipping. Merely
 changing the output directory does not disable request caching. SAM evidence has
 its own cache. Internal hashes name cache entries and assign jobs to shards;
 they are not file integrity checks.
@@ -262,7 +262,7 @@ shard. All hosts must see the input and output paths.
 
 Shard status files record worker PIDs, active jobs, accepted results, failures,
 and observed request concurrency. Missing SAM evidence or a missing full review
-is not accepted as a successful manifest job. With `--resume`, completed annotations can be reused; request and CV-artifact
+is not accepted as a successful manifest job. Completed annotations are reused by default; request and CV-artifact
 caches are independent of this option. To retry a subset,
 create a manifest of failed/pending jobs after checking the prior worker is no
 longer running. Do not restart a live shard just because an observation timed

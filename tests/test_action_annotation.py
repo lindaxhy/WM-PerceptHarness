@@ -20,6 +20,11 @@ class ActionAnnotationTests(unittest.TestCase):
         args = _parser().parse_args(['annotate', '--videos', 'clip.mp4', '--output', 'out'])
         self.assertFalse(hasattr(args, 'template'))
 
+    def test_resume_flag_is_removed(self):
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit) as error:
+            _parser().parse_args(['annotate', '--videos', 'clip.mp4', '--output', 'out', '--resume'])
+        self.assertEqual(error.exception.code, 2)
+
     def test_retired_templates_rejected_by_cli(self):
         for template in ('embodied_action_captioning', 'general_video_captioning', 'embodied_active_object_detection'):
             with self.subTest(template=template), redirect_stderr(StringIO()):
@@ -45,8 +50,7 @@ class ActionAnnotationTests(unittest.TestCase):
             self.assertTrue(data['events'])
             self.assertEqual(data['events'][0]['description'], 'A hand moves the red container.')
             second = list(run_batch(runner, [video], root / 'out', log=lambda message: None))
-            # CV execution identity is not yet reusable; rerun honestly, with CV cache.
-            self.assertEqual(second[0].status, 'completed')
+            self.assertEqual(second[0].status, 'skipped')
             self.assertFalse(second[0].metadata['evidence'])
             stored = json.loads((root / 'out' / 'clip.json').read_text())
             self.assertEqual(stored['events'], data['events'])

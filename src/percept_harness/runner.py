@@ -159,13 +159,10 @@ def run_batch(
     output_dir: Path,
     *,
     prompt_context: str | None = None,
-    resume: bool = False,
     force: bool = False,
     log=print,
 ) -> list[EvalOutcome]:
-    """Write each video result; skip completed files only with explicit resume."""
-    if resume and force:
-        raise ValueError("resume and force cannot be combined")
+    """Skip completed valid results by default; force explicitly reruns them."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     if force:
@@ -174,7 +171,7 @@ def run_batch(
     for index, source in enumerate(videos, start=1):
         video = Path(source).resolve()
         path = result_store.result_path(output_dir, video)
-        previous = result_store.completed_result(path, video) if resume and video.is_file() else None
+        previous = result_store.completed_result(path, video) if not force and video.is_file() else None
         if previous is not None:
             outcome = EvalOutcome(video_path=video, status="skipped", data=previous["data"],
                                   result_file=path.name, metadata=previous.get("metadata"))

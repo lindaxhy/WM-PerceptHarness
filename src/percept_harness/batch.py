@@ -338,11 +338,11 @@ def run_manifest(arguments) -> int:
                     video = Path(row["video_path"])
                     job_root = root / jid
                     outcomes = run_batch(runner, [video], job_root,
-                                         force=arguments.force, resume=arguments.resume, log=lambda message: None)
+                                         force=arguments.force, log=lambda message: None)
                     outcome = outcomes[0]
                     if outcome.status not in {"completed", "skipped"}:
                         raise RuntimeError(outcome.error or "annotation failed")
-                    # Explicit resume reuses completed, structurally valid annotations.
+                    # Completed, structurally valid annotations are reused by default.
                     metadata = outcome.metadata or {}
                     evidence = metadata.get('evidence', [])
                     if not required_event_phases(metadata).issubset(metadata.get('phases', [])):

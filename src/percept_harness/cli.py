@@ -103,9 +103,7 @@ def _parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--shard-count", type=int, default=1)
     evaluate.add_argument("--event-workflow", choices=("reviewed", "confidence-gated"),
                           default=None, help="event workflow (default: PERCEPT_EVENT_WORKFLOW, reviewed)")
-    reuse = evaluate.add_mutually_exclusive_group()
-    reuse.add_argument("--resume", action="store_true", help="skip completed results; use a new output directory when inputs/settings change")
-    reuse.add_argument("--force", action="store_true", help="rerun videos without reusing VLM request cache")
+    evaluate.add_argument("--force", action="store_true", help="rerun videos without reusing VLM request cache")
     evaluate.add_argument(
         "--model",
         default=None,
@@ -189,7 +187,6 @@ def _eval(arguments: argparse.Namespace) -> int:
                 arguments.output,
                 prompt_context=arguments.prompt_context,
                 force=arguments.force,
-                resume=arguments.resume,
             )
     except (ValueError, RuntimeError) as error:
         print(f"error: {error}", file=sys.stderr)

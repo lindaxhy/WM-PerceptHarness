@@ -57,24 +57,23 @@ class AnnotationPersistenceTests(unittest.TestCase):
         result_store.audit_path(self.path).unlink()
         self.assertEqual(result_store.result_path(self.root, other), second)
 
-    def test_batch_only_skips_with_explicit_resume(self):
+    def test_batch_skips_by_default_force_reruns_and_invalid_results_retry(self):
         from percept_harness.runner import run_batch
         from unittest.mock import Mock
         self.video.write_bytes(b'video')
         runner = Mock()
         runner.evaluate.return_value = self.outcome()
         run_batch(runner, [self.video], self.root, log=lambda _: None)
-        run_batch(runner, [self.video], self.root, log=lambda _: None)
-        self.assertEqual(runner.evaluate.call_count, 2)
-        skipped = run_batch(runner, [self.video], self.root, resume=True, log=lambda _: None)
+        skipped = run_batch(runner, [self.video], self.root, log=lambda _: None)
         self.assertEqual(skipped[0].status, 'skipped')
+        self.assertEqual(runner.evaluate.call_count, 1)
+        run_batch(runner, [self.video], self.root, force=True, log=lambda _: None)
         self.assertEqual(runner.evaluate.call_count, 2)
+        self.assertIsNone(runner.semantic_cache)
         self.path.write_text('{')
-        run_batch(runner, [self.video], self.root, resume=True, log=lambda _: None)
+        run_batch(runner, [self.video], self.root, log=lambda _: None)
         self.assertEqual(runner.evaluate.call_count, 3)
         self.assertFalse((self.root / '.percept').exists())
-        with self.assertRaises(ValueError):
-            run_batch(runner, [self.video], self.root, resume=True, force=True)
 
     def test_plain_ground_truth_and_audited_prediction_score_empty_as_valid(self):
         ref = self.root / 'ref'; pred = self.root / 'pred'

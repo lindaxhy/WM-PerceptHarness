@@ -102,7 +102,7 @@ outputs/actions/
 
 Read `sample_001.json` directly for the annotation; execution `status`, `error` and intermediate review live in `sample_001.audit.json`. Failed runs have an audit file and no successful annotation file. Timestamps are seconds on the original video. If video filenames collide, use the `result_file` recorded in `results.jsonl` to locate the correct JSON.
 
-Videos are evaluated again by default. Add `--resume` to skip completed results for the same source path, or `--force` for a repeat without the VLM request cache. Use a new output directory when changing videos, models or workflow settings; resume does not compare their contents or configuration. See [outputs and resume](docs/usage.md#result-identity-and-resume) for the exact rules.
+Completed, structurally valid results for the same source path are skipped by default. Add `--force` to rerun them without the VLM request cache. Use a new output directory when changing videos, models or workflow settings; resume does not compare their contents or configuration. See [outputs and resume](docs/usage.md#result-identity-and-resume) for the exact rules.
 
 ## Annotate across multiple GPUs
 
