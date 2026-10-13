@@ -8,7 +8,7 @@ Annotate videos, compare real and generated action timelines, and evaluate video
 
 | Task | Input | Output | Requirements |
 |---|---|---|---|
-| Video annotation | One video or a directory of videos | Captions, active objects, or action timelines in JSON | FFmpeg + a vision-capable OpenAI-compatible API |
+| Video annotation | One video or a directory of videos | Task descriptions and action timelines in JSON | FFmpeg + a vision-capable OpenAI-compatible API |
 | Event fidelity | Matching real/generated action annotations | Temporal event agreement; optional semantic similarity | Core package; `fidelity` extra for semantic scoring |
 | Video quality | One video | A score for the selected metric | The metric's runtime and model weights |
 
@@ -53,13 +53,14 @@ percept annotate \
   --output ./outputs/actions
 ```
 
-Pass a directory to `--videos` to process its videos recursively. Select a template for your task:
+Pass a directory to `--videos` to process its videos recursively. Annotation uses
+`embodied_action_captioning`, the only supported template, and produces a task
+description and time-bounded action segments. You can omit `--template`; existing
+commands that specify it explicitly remain valid.
 
-| Template | Produces |
-|---|---|
-| `general_video_captioning` | Video summary and timestamped events |
-| `embodied_active_object_detection` | Visibly interacted object inventory |
-| `embodied_action_captioning` | Task description and time-bounded action segments |
+The action pipeline identifies coarse actions and relevant entities (Pass A),
+refines temporal boundaries (Pass B), enriches segment attributes, and adds scene
+semantics. Optional SAM3.1 evidence supports tracking and occlusion review.
 
 ### 4. Read the results
 

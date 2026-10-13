@@ -47,7 +47,6 @@ from .validators import (
     BoundaryPlan,
     CoarsePlan,
     EnrichmentResult,
-    ObjectInventory,
     TemporalIssue,
     TemporalValidationError,
     validate_coarse_plan,
@@ -64,7 +63,6 @@ WaitJobs = Callable[
 
 _PROMPT_PACKAGE = "percept_harness.prompts"
 _PROMPT_FILES = {
-    "active_objects": "active_objects.txt",
     "embodied_pass_a": "embodied_pass_a.txt",
     "embodied_pass_b": "embodied_pass_b.txt",
     "embodied_enrichment": "embodied_enrichment.txt",
@@ -103,10 +101,6 @@ class _TrustedCanonicalJSON:
     """Internally generated JSON whose exact numeric lexemes must be preserved."""
 
     text: str
-
-
-class ActiveObjectPipelineError(SafePipelineError):
-    """A stable active-object stage failure safe for persistence."""
 
 
 class EmbodiedActionPipelineError(SafePipelineError):
@@ -182,7 +176,7 @@ class EmbodiedActionPipeline:
             _action_positive_finite(metadata.duration, "duration"),
         )
         fps = _action_sampling_fps(task.payload)
-        prompt_context = _action_prompt_context(task.payload)
+        prompt_context = _prompt_context(task.payload)
 
         coarse_data, pass_a_job, _ = self._run_validated_stage(
             task,
@@ -708,21 +702,6 @@ class PromptRenderer:
                 raise PromptRenderError("prompt asset contains an unconsumed marker")
         return rendered
 
-    def active_objects(
-        self,
-        prompt_context: str | None = None,
-        *,
-        repair: Mapping[str, Any] | None = None,
-    ) -> str:
-        """Render active-object instructions with context isolated as JSON data."""
-        return self.render(
-            "active_objects",
-            {
-                "NAMING_HINTS_JSON": _naming_hint_data(prompt_context),
-                "VALIDATION_REPAIR_JSON": repair,
-            },
-        )
-
     def pass_a(
         self,
         prompt_context: str | None = None,
@@ -945,105 +924,6 @@ class PromptRenderer:
         )
 
 
-class EmbodiedActiveObjectsPipeline:
-    """Run complete-video active-object inference with one schema repair."""
-
-    def __init__(
-        self,
-        *,
-        renderer: PromptRenderer | None = None,
-        probe: Probe = probe_video,
-        wait_jobs: WaitJobs = wait_for_jobs,
-        wait_timeout: float = 300.0,
-    ) -> None:
-        self._renderer = renderer or PromptRenderer()
-        self._probe = probe
-        self._wait_jobs = wait_jobs
-        self._wait_timeout = _positive_finite(wait_timeout, "wait_timeout")
-
-    def run(self, task: TaskRecord, context: PipelineContext) -> dict[str, Any]:
-        """Return only the validated object inventory for the complete video."""
-        media_path = _media_path(context)
-        metadata = self._probe(media_path)
-        span = TimeSpan(0.0, _positive_finite(metadata.duration, "duration"))
-        fps = _sampling_fps(task.payload)
-        prompt_context = _prompt_context(task.payload)
-        first_job: InferenceJob | None = None
-        repair: dict[str, Any] | None = None
-
-        for ordinal in range(2):
-            affinity_worker_id, affinity_fallback_seconds = _repair_affinity(
-                first_job,
-                context,
-                self._wait_timeout,
-            )
-            prompt = self._renderer.active_objects(prompt_context, repair=repair)
-            [job] = context.store.create_inference_jobs(
-                task.task_id,
-                [
-                    InferenceJobSpec(
-                        stage="active_objects",
-                        ordinal=ordinal,
-                        payload=_job_payload(
-                            task,
-                            media_path,
-                            span,
-                            fps,
-                            prompt,
-                            metadata=metadata,
-                        ),
-                        affinity_worker_id=affinity_worker_id,
-                        affinity_fallback_seconds=affinity_fallback_seconds,
-                    )
-                ],
-            )
-            try:
-                [result] = self._wait_jobs(
-                    context.store,
-                    task.task_id,
-                    [job.job_id],
-                    self._wait_timeout,
-                )
-            except InferenceJobFailed as error:
-                detail = f" ({error.job_error})" if error.job_error else ""
-                raise ActiveObjectPipelineError(
-                    f"active object inference failed{detail}"
-                ) from None
-            except JobWaitTimeout:
-                raise ActiveObjectPipelineError("active object inference timed out") from None
-
-            completed = context.store.get_inference_job(job.job_id)
-            if ordinal == 0:
-                first_job = completed
-            issue_codes = DEFAULT_OUTPUT_SCHEMAS.failure_codes(
-                "ObjectInventory",
-                result,
-            )
-            sanitized = result
-            if issue_codes is None:
-                sanitized = DEFAULT_OUTPUT_SCHEMAS.sanitize(
-                    "ObjectInventory",
-                    result,
-                )
-                issue_codes = DEFAULT_OUTPUT_SCHEMAS.failure_codes(
-                    "ObjectInventory",
-                    sanitized,
-                )
-            if issue_codes is not None:
-                if ordinal == 1:
-                    raise ActiveObjectPipelineError(
-                        "active object result schema is invalid after repair"
-                    ) from None
-                repair = {
-                    "issue_codes": list(issue_codes),
-                }
-                continue
-            inventory = ObjectInventory.model_validate(sanitized, strict=True)
-            return inventory.model_dump(mode="json")
-
-        raise AssertionError("active-object repair loop did not terminate")
-
-
 def _canonical_json(value: Any) -> str:
     if isinstance(value, _TrustedCanonicalJSON):
         return value.text
@@ -1233,31 +1113,17 @@ def _model_or_mapping(value: Any, name: str) -> Mapping[str, Any]:
     raise PromptRenderError(f"{name} must be a model or mapping")
 
 
-def _media_path(context: PipelineContext) -> Path:
-    path = context.media_path
-    if path is None or not path.is_absolute() or not path.is_file():
-        raise ActiveObjectPipelineError("active object media is unavailable")
-    return path.resolve()
-
-
-def _sampling_fps(payload: Mapping[str, Any]) -> float:
-    try:
-        return _positive_finite(payload.get("fps", 2.0), "fps")
-    except (TypeError, ValueError):
-        raise ActiveObjectPipelineError("active object request has invalid fps") from None
-
-
 def _prompt_context(payload: Mapping[str, Any]) -> str | None:
     task_context = payload.get("task_context")
     if task_context is None:
         return None
     if not isinstance(task_context, Mapping):
-        raise ActiveObjectPipelineError("active object naming context is invalid")
+        raise EmbodiedActionPipelineError("embodied action naming context is invalid")
     value = task_context.get("prompt_context")
     if value is None:
         return None
     if not isinstance(value, str):
-        raise ActiveObjectPipelineError("active object naming context is invalid")
+        raise EmbodiedActionPipelineError("embodied action naming context is invalid")
     return value
 
 
@@ -1268,7 +1134,7 @@ def _job_payload(
     fps: float,
     prompt: str,
     *,
-    schema_name: str = "ObjectInventory",
+    schema_name: str,
     schema_context: Mapping[str, Any] | None = None,
     metadata: VideoMetadata,
 ) -> dict[str, Any]:
@@ -1298,22 +1164,6 @@ def _job_payload(
     return payload
 
 
-def _repair_affinity(
-    first_job: InferenceJob | None,
-    context: PipelineContext,
-    wait_timeout: float,
-) -> tuple[str | None, float | None]:
-    if first_job is None:
-        return None, None
-    if first_job.completed_by is None:
-        raise ActiveObjectPipelineError("active object inference completion is invalid")
-    grace = min(
-        _positive_finite(context.settings.lease_seconds, "lease_seconds") / 3.0,
-        wait_timeout / 3.0,
-    )
-    return first_job.completed_by, grace
-
-
 def _positive_finite(value: Any, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, Real):
         raise ValueError(f"{name} must be finite and positive")
@@ -1324,7 +1174,6 @@ def _positive_finite(value: Any, name: str) -> float:
     if not math.isfinite(result) or result <= 0:
         raise ValueError(f"{name} must be finite and positive")
     return result
-
 
 
 _ENTITY_PIN_SCHEMA = "cv_entity_pin_v1"
@@ -1408,15 +1257,6 @@ def _action_sampling_fps(payload: Mapping[str, Any]) -> float:
     except (TypeError, ValueError):
         raise EmbodiedActionPipelineError(
             "embodied action request has invalid fps"
-        ) from None
-
-
-def _action_prompt_context(payload: Mapping[str, Any]) -> str | None:
-    try:
-        return _prompt_context(payload)
-    except ActiveObjectPipelineError:
-        raise EmbodiedActionPipelineError(
-            "embodied action naming context is invalid"
         ) from None
 
 

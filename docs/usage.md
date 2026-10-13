@@ -129,7 +129,7 @@ A free `<video_stem>.json` is used for the first source claiming that name. Anot
 A result is skipped only when all of these match:
 
 - Resolved input path and SHA-256 of the video bytes.
-- Template, model alias, effective built-in backend settings, query and prompt context.
+- Template, model alias, effective built-in backend settings and prompt context.
 - Run settings, packaged Python/prompt asset digest, dependency versions, and FFmpeg/FFprobe version fingerprints.
 - Completed status and intact annotation payload digest.
 
@@ -148,7 +148,7 @@ There is also a separate request-level cache for the OpenAI-compatible backend, 
 
 A writer lock prevents overlapping batches from using the same output directory. A normal exit or exception releases it. After an abrupt process/machine termination, inspect `.percept/writer.lock` (host/PID) and remove it only after confirming the original writer has stopped. The last manifest may remain `running` after an abrupt termination. Use separate output directories for parallel jobs. Each `results.jsonl` describes the most recent completed batch, while the per-run manifests retain earlier mappings.
 
-For wrist/main-camera annotation, first run `embodied_active_object_detection` on the wrist video, then pass confirmed object names to the main-video action annotation using `--prompt-context`. This is naming guidance, not a prescribed action sequence.
+Annotation supports only `embodied_action_captioning`, which is selected by default when `--template` is omitted. Pass confirmed object names using `--prompt-context` when helpful. This is naming guidance, not a prescribed action sequence; the action pipeline identifies relevant entities directly from the video.
 
 ## Scene visibility labels
 

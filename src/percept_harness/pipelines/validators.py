@@ -128,20 +128,6 @@ class SchemaModel(BaseModel):
         return value
 
 
-class ObjectInstance(SchemaModel):
-    name: str
-    description: str
-
-
-class ObjectGroup(SchemaModel):
-    category: str
-    instances: list[ObjectInstance]
-
-
-class ObjectInventory(SchemaModel):
-    objects: list[ObjectGroup]
-
-
 class CoarseAction(SchemaModel):
     action_index: NonnegativeIndex
     start: Timestamp

@@ -23,7 +23,6 @@ from .validators import (
     BoundaryPlan,
     CoarsePlan,
     EnrichmentResult,
-    ObjectInventory,
     TemporalValidationError,
     validate_boundary_plan,
     validate_coarse_plan,
@@ -33,21 +32,6 @@ from .validators import (
 
 
 SCHEMA_VALIDATION_FIELD = "_schema_validation"
-_INVENTORY_GENERIC_REPAIR_CODE = "OBJECT_INVENTORY_SCHEMA_INVALID"
-_INVENTORY_REPAIR_CODE_BY_ERROR_TYPE = (
-    ("missing", "OBJECT_INVENTORY_MISSING_FIELD"),
-    ("extra_forbidden", "OBJECT_INVENTORY_EXTRA_FIELD"),
-    ("list_type", "OBJECT_INVENTORY_LIST_TYPE"),
-    ("model_type", "OBJECT_INVENTORY_OBJECT_TYPE"),
-    ("dict_type", "OBJECT_INVENTORY_OBJECT_TYPE"),
-    ("string_type", "OBJECT_INVENTORY_STRING_TYPE"),
-    ("value_error", "OBJECT_INVENTORY_BLANK_STRING"),
-)
-_INVENTORY_REPAIR_CODES = tuple(
-    dict.fromkeys(
-        code for _, code in _INVENTORY_REPAIR_CODE_BY_ERROR_TYPE
-    )
-) + (_INVENTORY_GENERIC_REPAIR_CODE,)
 
 _SCHEMA_ERROR_SUFFIX_BY_ERROR_TYPE = (
     ("missing", "MISSING_FIELD"),
@@ -206,14 +190,6 @@ _BOUNDARY_NORMALIZABLE_CODES = (
     "SEGMENT_BOUNDARY_NOT_ADJACENT",
     "SEGMENT_DESCRIPTION_INVALID",
 )
-_GENERAL_SEGMENT_TEMPORAL_CODES = (
-    "GENERAL_SEGMENT_TIMESTAMP_OUT_OF_SPAN",
-)
-_GENERAL_SUMMARY_TEMPORAL_CODES = (
-    "GENERAL_SUMMARY_TIMELINE_OUT_OF_SPAN",
-    "GENERAL_SUMMARY_TIMELINE_ORDER",
-    "GENERAL_SUMMARY_TIMELINE_MISMATCH",
-)
 
 
 class DeclaredSchemaOutputError(ValueError):
@@ -252,8 +228,7 @@ class OutputSchemaRegistry:
     """Validate known schemas and pass unknown schemas through unchanged.
 
     Validators are registered here so invalid raw model data is replaced before
-    it reaches durable storage. Pipeline modules are imported lazily by the two
-    general validators to avoid a worker/orchestrator import cycle.
+    it reaches durable storage.
     """
 
     def __init__(self) -> None:
@@ -614,42 +589,6 @@ def _normalized_occlusion_envelope(
         )
     except Exception:
         return None
-
-
-def _validate_object_inventory(
-    result: Mapping[str, Any], validation_context: Mapping[str, Any] | None
-) -> dict[str, Any]:
-    if validation_context is not None:
-        raise ValueError("ObjectInventory validation context is invalid")
-    try:
-        inventory = _model_from_json(ObjectInventory, result)
-    except ValidationError as error:
-        raise DeclaredSchemaOutputError(_inventory_issue_codes(error)) from None
-    except (TypeError, ValueError, OverflowError, RecursionError):
-        raise DeclaredSchemaOutputError((_INVENTORY_GENERIC_REPAIR_CODE,)) from None
-    return inventory.model_dump(mode="json")
-
-
-def _inventory_issue_codes(error: ValidationError) -> tuple[str, ...]:
-    """Map Pydantic types to constants without retaining model keys or values."""
-    error_types = {
-        str(issue["type"])
-        for issue in error.errors(
-            include_url=False,
-            include_context=False,
-            include_input=False,
-        )
-    }
-    codes: list[str] = []
-    for error_type, code in _INVENTORY_REPAIR_CODE_BY_ERROR_TYPE:
-        if error_type in error_types and code not in codes:
-            codes.append(code)
-    known_types = {
-        error_type for error_type, _ in _INVENTORY_REPAIR_CODE_BY_ERROR_TYPE
-    }
-    if error_types - known_types:
-        codes.append(_INVENTORY_GENERIC_REPAIR_CODE)
-    return tuple(codes or [_INVENTORY_GENERIC_REPAIR_CODE])
 
 
 def _schema_codes(prefix: str) -> tuple[str, ...]:
@@ -1546,92 +1485,12 @@ def _normalize_enrichment_enums(
     )
 
 
-def _validate_general_segment_output(
-    result: Mapping[str, Any], validation_context: Mapping[str, Any] | None
-) -> dict[str, Any]:
-    from .general import GeneralSegmentResult
-
-    start, end = _context_span(validation_context, {"span"})
-    try:
-        parsed = _model_from_json(GeneralSegmentResult, result)
-    except ValidationError as error:
-        raise DeclaredSchemaOutputError(
-            _pydantic_issue_codes(error, "GENERAL_SEGMENT")
-        ) from None
-    except (TypeError, ValueError, OverflowError, RecursionError):
-        raise DeclaredSchemaOutputError(("GENERAL_SEGMENT_SCHEMA_INVALID",)) from None
-    if any(
-        event.start_time < start or event.end_time > end
-        for event in parsed.segments
-    ):
-        raise DeclaredSchemaOutputError(
-            ("GENERAL_SEGMENT_TIMESTAMP_OUT_OF_SPAN",)
-        )
-    return parsed.model_dump(mode="json")
-
-
-def _validate_general_summary_output(
-    result: Mapping[str, Any], validation_context: Mapping[str, Any] | None
-) -> dict[str, Any]:
-    from .general import GeneralSegmentResult, GeneralSummaryResult
-
-    context = _exact_context(validation_context, {"span", "expected_timeline"})
-    start, end = _span_value(context["span"])
-    expected_value = context["expected_timeline"]
-    if not isinstance(expected_value, list):
-        raise ValueError("general summary validation context is invalid")
-    try:
-        expected = _model_from_json(
-            GeneralSegmentResult,
-            {"segments": expected_value, "warnings": []},
-        ).model_dump(mode="json")["segments"]
-    except (ValidationError, TypeError, ValueError, OverflowError, RecursionError):
-        raise ValueError("general summary validation context is invalid") from None
-    try:
-        parsed = _model_from_json(GeneralSummaryResult, result)
-    except ValidationError as error:
-        raise DeclaredSchemaOutputError(
-            _pydantic_issue_codes(error, "GENERAL_SUMMARY")
-        ) from None
-    except (TypeError, ValueError, OverflowError, RecursionError):
-        raise DeclaredSchemaOutputError(("GENERAL_SUMMARY_SCHEMA_INVALID",)) from None
-    timeline = parsed.model_dump(mode="json")["timeline"]
-    if any(item["start_time"] < start or item["end_time"] > end for item in timeline):
-        raise DeclaredSchemaOutputError(
-            ("GENERAL_SUMMARY_TIMELINE_OUT_OF_SPAN",)
-        )
-    if any(
-        timeline[index]["start_time"] < timeline[index - 1]["start_time"]
-        for index in range(1, len(timeline))
-    ):
-        raise DeclaredSchemaOutputError(("GENERAL_SUMMARY_TIMELINE_ORDER",))
-    if timeline != expected:
-        raise DeclaredSchemaOutputError(("GENERAL_SUMMARY_TIMELINE_MISMATCH",))
-    return parsed.model_dump(mode="json")
-
-
 def _exact_context(
     value: Mapping[str, Any] | None, expected_keys: set[str]
 ) -> Mapping[str, Any]:
     if not isinstance(value, Mapping) or set(value) != expected_keys:
         raise ValueError("declared output validation context is invalid")
     return value
-
-
-def _context_span(
-    context: Mapping[str, Any] | None, expected_keys: set[str]
-) -> tuple[float, float]:
-    return _span_value(_exact_context(context, expected_keys)["span"])
-
-
-def _span_value(value: Any) -> tuple[float, float]:
-    if not isinstance(value, Mapping) or set(value) != {"start", "end"}:
-        raise ValueError("declared output validation context is invalid")
-    start = _finite_real(value["start"], positive=False)
-    end = _finite_real(value["end"], positive=True)
-    if start < 0 or start >= end:
-        raise ValueError("declared output validation context is invalid")
-    return start, end
 
 
 def _context_finite_number(
@@ -1682,12 +1541,6 @@ def _finite_json_text(result: Mapping[str, Any]) -> str:
 
 
 DEFAULT_OUTPUT_SCHEMAS = OutputSchemaRegistry()
-DEFAULT_OUTPUT_SCHEMAS.register(
-    "ObjectInventory",
-    _validate_object_inventory,
-    allowed_issue_codes=_INVENTORY_REPAIR_CODES,
-    generic_issue_code=_INVENTORY_GENERIC_REPAIR_CODE,
-)
 DEFAULT_OUTPUT_SCHEMAS.register(
     "CoarsePlan",
     _validate_coarse_output,
@@ -1773,20 +1626,6 @@ DEFAULT_OUTPUT_SCHEMAS.register(
     allowed_issue_codes=_schema_codes("OCCLUSION_DECISION_SET")
     + _OCCLUSION_TEMPORAL_CODES,
     generic_issue_code="OCCLUSION_DECISION_SET_SCHEMA_INVALID",
-)
-DEFAULT_OUTPUT_SCHEMAS.register(
-    "general_segment",
-    _validate_general_segment_output,
-    allowed_issue_codes=_schema_codes("GENERAL_SEGMENT")
-    + _GENERAL_SEGMENT_TEMPORAL_CODES,
-    generic_issue_code="GENERAL_SEGMENT_SCHEMA_INVALID",
-)
-DEFAULT_OUTPUT_SCHEMAS.register(
-    "general_summary",
-    _validate_general_summary_output,
-    allowed_issue_codes=_schema_codes("GENERAL_SUMMARY")
-    + _GENERAL_SUMMARY_TEMPORAL_CODES,
-    generic_issue_code="GENERAL_SUMMARY_SCHEMA_INVALID",
 )
 
 

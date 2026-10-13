@@ -21,8 +21,6 @@ from .models.base import VideoModel
 from .pipelines.base import PipelineContext, PipelineRegistry, SafePipelineError
 
 SUPPORTED_TEMPLATES = (
-    "general_video_captioning",
-    "embodied_active_object_detection",
     "embodied_action_captioning",
 )
 
@@ -44,12 +42,9 @@ class EvalOutcome:
 
 
 def default_pipeline_registry() -> PipelineRegistry:
-    from .pipelines.embodied import EmbodiedActionPipeline, EmbodiedActiveObjectsPipeline
-    from .pipelines.general import GeneralCaptionPipeline
+    from .pipelines.embodied import EmbodiedActionPipeline
 
     registry = PipelineRegistry()
-    registry.register("general_video_captioning", GeneralCaptionPipeline)
-    registry.register("embodied_active_object_detection", EmbodiedActiveObjectsPipeline)
     registry.register("embodied_action_captioning", EmbodiedActionPipeline)
     return registry
 
@@ -90,7 +85,6 @@ class SyncRunner:
         template: str,
         *,
         prompt_context: str | None = None,
-        query: str | None = None,
     ) -> EvalOutcome:
         """Evaluate one video end-to-end and return its terminal outcome."""
         started = time.monotonic()
@@ -100,7 +94,7 @@ class SyncRunner:
             if not resolved.is_file():
                 raise ValueError("video path must be a regular file")
             task = _task_record(resolved, template, self.model_alias,
-                                prompt_context=prompt_context, query=query)
+                                prompt_context=prompt_context)
             pipeline = self.registry.create(template)
             store = SyncJobStore(
                 self.model,
@@ -177,14 +171,13 @@ def run_batch(
     output_dir: Path,
     *,
     prompt_context: str | None = None,
-    query: str | None = None,
     force: bool = False,
     log=print,
 ) -> list[EvalOutcome]:
     """Serialize writers and reuse only results from the same verified experiment."""
     with result_store.output_lock(Path(output_dir)):
         return _run_batch(runner, videos, template, output_dir,
-                          prompt_context=prompt_context, query=query, force=force, log=log)
+                          prompt_context=prompt_context, force=force, log=log)
 
 
 def _run_batch(
@@ -194,7 +187,6 @@ def _run_batch(
     output_dir: Path,
     *,
     prompt_context: str | None = None,
-    query: str | None = None,
     force: bool = False,
     log=print,
 ) -> list[EvalOutcome]:
@@ -205,7 +197,7 @@ def _run_batch(
         # --force asks for an independent repeat; replaying cached per-request
         # results would silently reproduce the previous run instead.
         runner.semantic_cache = None
-    run = result_store.run_identity(runner, template, prompt_context, query)
+    run = result_store.run_identity(runner, template, prompt_context)
     manifest = output_dir / ".percept" / "runs" / f"{uuid.uuid4().hex}.json"
     run_record = {"run": run, "run_fingerprint": result_store.json_digest(run),
                   "force": force, "status": "running", "results": [],
@@ -241,7 +233,7 @@ def _run_batch(
             else:
                 log(f"[{index}/{len(videos)}] eval {video.name} ...")
                 outcome = runner.evaluate(
-                    video, template, prompt_context=prompt_context, query=query
+                    video, template, prompt_context=prompt_context
                 )
                 if outcome.status == "completed":
                     try:
@@ -249,7 +241,7 @@ def _run_batch(
                     except OSError:
                         unchanged = False
                     unchanged = unchanged and result_store.run_identity(
-                        runner, template, prompt_context, query
+                        runner, template, prompt_context
                     ) == run
                     if not unchanged:
                         outcome = EvalOutcome(video_path=video, template=template, status="failed",
@@ -280,7 +272,6 @@ def _task_record(
     model_alias: str,
     *,
     prompt_context: str | None,
-    query: str | None,
 ) -> TaskRecord:
     if template not in SUPPORTED_TEMPLATES:
         raise ValueError(
@@ -291,8 +282,6 @@ def _task_record(
         "task_template": template,
         "model_name": model_alias,
     }
-    if query is not None:
-        payload["query"] = query
     if prompt_context is not None:
         payload["task_context"] = {"prompt_context": prompt_context}
     return TaskRecord(
