@@ -21,7 +21,7 @@ from .runner import (
 
 _BACKENDS = ("openai", "fake")
 _SCORE_MODULES = {
-    "fidelity": ".evaluation.fidelity_cli",
+    "events": ".evaluation.events_cli",
     "clipiqa": ".video_metrics.clipiqa",
     "motion": ".video_metrics.motion",
     "vbench-clip": ".video_metrics.vbench_clip",

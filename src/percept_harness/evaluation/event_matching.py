@@ -1,5 +1,4 @@
-"""Deterministic, cardinality-first temporal matching shared by fidelity scores."""
-
+"""Deterministic cardinality-first matching for eligible event edges."""
 from __future__ import annotations
 
 import math
@@ -13,16 +12,12 @@ def _number(value):
     return value
 
 
-
 def _text(value):
     if type(value) is not str or not value.strip():
         raise ValueError("invalid text")
-    if re.search(r"(?i)\.(?:npz|npy|mask)\b", value) or (
-        "mask" in value.casefold() and any(c in value for c in "[]{}")
-    ):
+    if re.search(r"(?i)\.(?:npz|npy|mask)\b", value) or ("mask" in value.casefold() and any(c in value for c in "[]{}")):
         raise ValueError("prohibited raw evidence content")
     return value
-
 
 
 @dataclass(frozen=True)
@@ -42,17 +37,9 @@ class Event:
         if not 0 <= _number(self.start) < _number(self.end):
             raise ValueError("invalid positive event interval")
         _text(self.event_type)
-        for label in (
-            self.actor,
-            self.target,
-            self.state,
-            self.result,
-            self.target_entity_id,
-            self.occluder_entity_id,
-        ):
+        for label in (self.actor, self.target, self.state, self.result, self.target_entity_id, self.occluder_entity_id):
             if label is not None:
                 _text(label)
-
 
 
 @dataclass(frozen=True)
@@ -62,40 +49,28 @@ class Match:
     iou: float
 
 
-
-def temporal_iou(a: Event, b: Event) -> float:
+def temporal_iou(a, b) -> float:
     intersection = max(0, min(a.end, b.end) - max(a.start, b.start))
     return intersection / ((a.end - a.start) + (b.end - b.start) - intersection)
 
 
-
-def match_events(references, predictions, temporal_iou_threshold=0.3) -> list[Match]:
-    """Rectangular Hungarian minimization, with one dummy per reference.
-
-    Eligible weight is 1,000,000 + IoU. Ordered scans choose deterministic
-    ties. Bound sample size so IoU sums cannot dominate cardinality.
-    """
-    if not 0 < _number(temporal_iou_threshold) <= 1:
+def match_weight_matrix(scores, threshold=0.75) -> list[Match]:
+    """Maximize eligible pair count, then summed IoU, using one dummy per row."""
+    if not 0 < _number(threshold) <= 1:
         raise ValueError("invalid temporal IoU threshold")
-    n, real = len(references), len(predictions)
+    n = len(scores)
+    real = len(scores[0]) if n else 0
     if max(n, real) >= 1_000_000:
         raise ValueError("too many events")
+    if any(len(row) != real for row in scores):
+        raise ValueError("ragged IoU matrix")
+    for row in scores:
+        for value in row:
+            if not 0 <= _number(value) <= 1:
+                raise ValueError("invalid IoU")
     if not n or not real:
         return []
-    scores = [
-        [
-            temporal_iou(r, p)
-            if r.event_type == p.event_type and r.event_type != "unknown"
-            else -1
-            for p in predictions
-        ]
-        for r in references
-    ]
-    weights = [
-        [1_000_000 + iou if iou >= temporal_iou_threshold else 0 for iou in row]
-        + [0] * n
-        for row in scores
-    ]
+    weights = [[1_000_000 + value if value >= threshold else 0 for value in row] + [0] * n for row in scores]
     m = real + n
     u, v, p, way = [0.0] * (n + 1), [0.0] * (m + 1), [0] * (m + 1), [0] * (m + 1)
     for i in range(1, n + 1):
@@ -126,11 +101,9 @@ def match_events(references, predictions, temporal_iou_threshold=0.3) -> list[Ma
             j0 = j1
             if not j0:
                 break
-    return sorted(
-        (
-            Match(p[j] - 1, j - 1, scores[p[j] - 1][j - 1])
-            for j in range(1, real + 1)
-            if p[j] and weights[p[j] - 1][j - 1] > 0
-        ),
-        key=lambda x: x.reference_index,
-    )
+    return sorted((Match(p[j] - 1, j - 1, scores[p[j] - 1][j - 1]) for j in range(1, real + 1) if p[j] and weights[p[j] - 1][j - 1] > 0), key=lambda x: x.reference_index)
+
+
+def match_events(references, predictions, temporal_iou_threshold=0.3) -> list[Match]:
+    """Legacy category-aware API retained for existing callers."""
+    return match_weight_matrix([[temporal_iou(r, p) if r.event_type == p.event_type and r.event_type != "unknown" else 0 for p in predictions] for r in references], temporal_iou_threshold)
