@@ -51,7 +51,7 @@ class GroundedAnnotationTests(unittest.TestCase):
     def run_model(self, model, executor=True):
         return SyncRunner(model, self.settings, model_alias='fake',
                           cv_executor=self.executor if executor else None).evaluate(
-                              self.video, 'embodied_action_captioning')
+                              self.video)
 
     def test_clear_video_needs_no_sam_executor_or_visual_evidence(self):
         model = RecordingModel()

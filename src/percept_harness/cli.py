@@ -13,7 +13,6 @@ from pathlib import Path
 from .result_store import OutputBusyError
 from .config import Settings
 from .runner import (
-    SUPPORTED_TEMPLATES,
     SyncRunner,
     collect_videos,
     run_batch,
@@ -88,12 +87,6 @@ def _parser() -> argparse.ArgumentParser:
         nargs="+",
         type=Path,
         help="video files and/or directories (searched recursively)",
-    )
-    evaluate.add_argument(
-        "--template",
-        default="embodied_action_captioning",
-        choices=SUPPORTED_TEMPLATES,
-        help="annotation template (default: embodied_action_captioning)",
     )
     evaluate.add_argument(
         "--backend",
@@ -196,7 +189,6 @@ def _eval(arguments: argparse.Namespace) -> int:
             outcomes = run_batch(
                 runner,
                 videos,
-                arguments.template,
                 arguments.output,
                 prompt_context=arguments.prompt_context,
                 force=arguments.force,

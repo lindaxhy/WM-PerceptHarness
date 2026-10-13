@@ -59,7 +59,7 @@ def _runtime() -> dict[str, Any]:
     return {"packages": versions, "media_tools": tools}
 
 
-def run_identity(runner, template: str, prompt_context: str | None) -> dict[str, Any]:
+def run_identity(runner, prompt_context: str | None) -> dict[str, Any]:
     """Snapshot the built-in execution path; unverifiable integrations cannot resume."""
     from .models.fake import FakeVideoModel
     from .models.openai_compat import OpenAICompatVideoModel
@@ -73,7 +73,7 @@ def run_identity(runner, template: str, prompt_context: str | None) -> dict[str,
     settings.pop("work_root")
     settings.pop("cv_cache_root")
     model = runner.model
-    reusable = not runner.custom_registry
+    reusable = True
     if type(model) is FakeVideoModel:
         backend = {"kind": "fake"}
     elif type(model) is OpenAICompatVideoModel:
@@ -88,7 +88,6 @@ def run_identity(runner, template: str, prompt_context: str | None) -> dict[str,
         reusable = False
     identity = {
         "schema_version": SCHEMA_VERSION,
-        "template": template,
         "model_alias": runner.model_alias,
         "backend": backend,
         "settings": settings,
@@ -204,7 +203,6 @@ def completed_result(path: Path, expected: dict[str, Any]) -> dict[str, Any] | N
         return None
     if (not expected["run"]["reusable"] or not record
             or record.get("status") != "completed"
-            or record.get("template") != expected["run"]["template"]
             or record.get("video_path") != expected["input"]["path"]
             or record.get("provenance") != expected
             or not isinstance(record.get("data"), dict)):

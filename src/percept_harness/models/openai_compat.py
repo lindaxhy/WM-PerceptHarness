@@ -26,7 +26,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 from ..media import FrameRef, TimeSpan, extract_frames
-from ..model_alias import validate_model_alias
+from .base import validate_model_alias
 from .base import ModelOutputError, ModelRequest, parse_strict_json
 from .response_contract import canonical
 

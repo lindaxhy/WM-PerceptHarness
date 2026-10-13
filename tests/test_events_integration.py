@@ -35,7 +35,7 @@ class OfflineEventIntegrationTests(unittest.TestCase):
                 reference, prediction = root/'reference', root/'prediction'
                 for output in (reference, prediction):
                     with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
-                        result = list(run_batch(runner, [video], 'embodied_action_captioning', output/'job-1', log=lambda message: None))[0]
+                        result = list(run_batch(runner, [video], output/'job-1', log=lambda message: None))[0]
                     self.assertEqual(result.status, 'completed', result.error)
                     self.assertEqual(result.metadata['recheck_budget']['selected_windows'], 1)
                     evidence = result.metadata['evidence']

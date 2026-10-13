@@ -347,7 +347,7 @@ def run_manifest(arguments) -> int:
                         if digest != expected:
                             raise ValueError("input SHA-256 differs from manifest")
                     job_root = root / jid
-                    outcomes = run_batch(runner, [video], arguments.template, job_root,
+                    outcomes = run_batch(runner, [video], job_root,
                                          force=arguments.force, log=lambda message: None)
                     outcome = outcomes[0]
                     if outcome.status not in {"completed", "skipped"}:

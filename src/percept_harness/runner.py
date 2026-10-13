@@ -18,11 +18,8 @@ from .config import Settings
 from .domain import TaskRecord
 from .execution import SyncJobStore
 from .models.base import VideoModel
-from .pipelines.base import PipelineContext, PipelineRegistry, SafePipelineError
-
-SUPPORTED_TEMPLATES = (
-    "embodied_action_captioning",
-)
+from .pipelines.base import PipelineContext, SafePipelineError
+from .pipelines.embodied import EmbodiedActionPipeline
 
 _VIDEO_SUFFIXES = frozenset({".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"})
 
@@ -32,7 +29,6 @@ class EvalOutcome:
     """The terminal record of one evaluated video."""
 
     video_path: Path
-    template: str
     status: str  # "completed" | "failed" | "skipped"
     data: dict[str, Any] | None = None
     error: str | None = None
@@ -40,14 +36,6 @@ class EvalOutcome:
     provenance: dict[str, Any] | None = None
     result_file: str | None = None
     metadata: dict[str, Any] | None = None
-
-
-def default_pipeline_registry() -> PipelineRegistry:
-    from .pipelines.embodied import EmbodiedActionPipeline
-
-    registry = PipelineRegistry()
-    registry.register("embodied_action_captioning", EmbodiedActionPipeline)
-    return registry
 
 
 class SyncRunner:
@@ -59,15 +47,12 @@ class SyncRunner:
         settings: Settings,
         *,
         model_alias: str,
-        registry: PipelineRegistry | None = None,
         cv_executor=None,
         work_root: Path | None = None,
     ) -> None:
         self.model = model
         self.settings = settings
         self.model_alias = model_alias
-        self.custom_registry = registry is not None
-        self.registry = registry if registry is not None else default_pipeline_registry()
         self.cv_executor = cv_executor
         self.work_root = work_root if work_root is not None else settings.work_root
         self.semantic_cache = None
@@ -83,7 +68,6 @@ class SyncRunner:
     def evaluate(
         self,
         video_path: Path,
-        template: str,
         *,
         prompt_context: str | None = None,
     ) -> EvalOutcome:
@@ -92,18 +76,17 @@ class SyncRunner:
         video_path = Path(video_path)
         context = None
         try:
-            if not self.custom_registry:
-                from .models.fake import FakeVideoModel
-                if self.settings.cv_provider == 'disabled':
-                    raise SafePipelineError('Annotation requires SAM; disabled CV is not supported')
-                if self.settings.cv_provider == 'fake' and not isinstance(self.model, FakeVideoModel):
-                    raise SafePipelineError('Fake CV is allowed only with an explicit fake model')
+            from .models.fake import FakeVideoModel
+            if self.settings.cv_provider == 'disabled':
+                raise SafePipelineError('Annotation requires SAM; disabled CV is not supported')
+            if self.settings.cv_provider == 'fake' and not isinstance(self.model, FakeVideoModel):
+                raise SafePipelineError('Fake CV is allowed only with an explicit fake model')
             resolved = video_path.resolve(strict=True)
             if not resolved.is_file():
                 raise ValueError("video path must be a regular file")
-            task = _task_record(resolved, template, self.model_alias,
+            task = _task_record(resolved, self.model_alias,
                                 prompt_context=prompt_context)
-            pipeline = self.registry.create(template)
+            pipeline = EmbodiedActionPipeline()
             store = SyncJobStore(
                 self.model,
                 default_model_alias=self.model_alias,
@@ -126,7 +109,6 @@ class SyncRunner:
                 raise TypeError("pipeline result must be a mapping")
             return EvalOutcome(
                 video_path=resolved,
-                template=template,
                 status="completed",
                 data=dict(result),
                 metadata=dict(context.metadata),
@@ -135,7 +117,6 @@ class SyncRunner:
         except SafePipelineError as error:
             return EvalOutcome(
                 video_path=video_path,
-                template=template,
                 status="failed",
                 metadata=dict(context.metadata) if context is not None else None,
                 error=str(error),
@@ -144,7 +125,6 @@ class SyncRunner:
         except Exception as error:
             return EvalOutcome(
                 video_path=video_path,
-                template=template,
                 status="failed",
                 metadata=dict(context.metadata) if context is not None else None,
                 error=f"{type(error).__name__}: {error}",
@@ -178,7 +158,6 @@ def collect_videos(sources: list[Path]) -> list[Path]:
 def run_batch(
     runner: SyncRunner,
     videos: list[Path],
-    template: str,
     output_dir: Path,
     *,
     prompt_context: str | None = None,
@@ -187,14 +166,13 @@ def run_batch(
 ) -> list[EvalOutcome]:
     """Serialize writers and reuse only results from the same verified experiment."""
     with result_store.output_lock(Path(output_dir)):
-        return _run_batch(runner, videos, template, output_dir,
+        return _run_batch(runner, videos, output_dir,
                           prompt_context=prompt_context, force=force, log=log)
 
 
 def _run_batch(
     runner: SyncRunner,
     videos: list[Path],
-    template: str,
     output_dir: Path,
     *,
     prompt_context: str | None = None,
@@ -208,7 +186,7 @@ def _run_batch(
         # --force asks for an independent repeat; replaying cached per-request
         # results would silently reproduce the previous run instead.
         runner.semantic_cache = None
-    run = result_store.run_identity(runner, template, prompt_context)
+    run = result_store.run_identity(runner, prompt_context)
     manifest = output_dir / ".percept" / "runs" / f"{uuid.uuid4().hex}.json"
     run_record = {"run": run, "run_fingerprint": result_store.json_digest(run),
                   "force": force, "status": "running", "results": [],
@@ -237,14 +215,14 @@ def _run_batch(
                     identity = None
             if previous is not None:
                 outcome = EvalOutcome(
-                    video_path=video, template=template, status="skipped",
+                    video_path=video, status="skipped",
                     data=previous["data"], provenance=identity, result_file=path.name, metadata=previous.get("metadata"),
                 )
                 log(f"[{index}/{len(videos)}] skip {video.name} (matching input and run)")
             else:
                 log(f"[{index}/{len(videos)}] eval {video.name} ...")
                 outcome = runner.evaluate(
-                    video, template, prompt_context=prompt_context
+                    video, prompt_context=prompt_context
                 )
                 if outcome.status == "completed":
                     try:
@@ -252,10 +230,10 @@ def _run_batch(
                     except OSError:
                         unchanged = False
                     unchanged = unchanged and result_store.run_identity(
-                        runner, template, prompt_context
+                        runner, prompt_context
                     ) == run
                     if not unchanged:
-                        outcome = EvalOutcome(video_path=video, template=template, status="failed",
+                        outcome = EvalOutcome(video_path=video, status="failed",
                                               error="Input or run configuration changed during annotation; result discarded")
                 outcome = replace(outcome, provenance=identity, result_file=path.name)
                 result_store.archive_result(path, output_dir)
@@ -279,18 +257,12 @@ def _run_batch(
 
 def _task_record(
     video_path: Path,
-    template: str,
     model_alias: str,
     *,
     prompt_context: str | None,
 ) -> TaskRecord:
-    if template not in SUPPORTED_TEMPLATES:
-        raise ValueError(
-            f"unsupported template {template!r}; expected one of {SUPPORTED_TEMPLATES}"
-        )
     payload: dict[str, Any] = {
         "video_url": str(video_path),
-        "task_template": template,
         "model_name": model_alias,
     }
     if prompt_context is not None:
@@ -318,7 +290,6 @@ def _task_dir(work_root: Path, task_id: str) -> Iterator[Path]:
 def _write_result(result_path: Path, outcome: EvalOutcome) -> None:
     record = {
         "video_path": str(outcome.video_path),
-        "template": outcome.template,
         "status": outcome.status,
         "data": outcome.data,
         "metadata": outcome.metadata,
@@ -334,7 +305,6 @@ def _write_result(result_path: Path, outcome: EvalOutcome) -> None:
 def _write_aggregate(jsonl_path: Path, outcomes: list[EvalOutcome]) -> None:
     lines = [json.dumps({
         "video_path": str(outcome.video_path),
-        "template": outcome.template,
         "status": outcome.status,
         "data": outcome.data,
         "metadata": outcome.metadata,

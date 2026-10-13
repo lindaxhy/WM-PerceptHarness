@@ -21,16 +21,19 @@ class VisualEvidenceTests(unittest.TestCase):
             frame = root / 'frame.jpg'; frame.write_bytes(b'jpeg-test')
             png = b'\x89PNG\r\n\x1a\nfixture-a'
             ev = base.VisualEvidence(png_bytes=png, timestamp=1.25, entity_id='cup', track_id='baseline:cup_1', source='baseline')
+            from percept_harness.config import Settings
+            registry = Settings(openai_model='vendor/model-v1', openai_model_registry={}).openai_model_aliases
             request = base.ModelRequest(stage='grounded_draft', video_path=video, span=TimeSpan(0, 4), fps=2,
-                prompt='inspect', schema_name='GroundedEvents', video_session_id=None, model_name='test', visual_evidence=(ev,))
+                prompt='inspect', schema_name='GroundedEvents', video_session_id=None, model_name='vendor-model-v1', visual_evidence=(ev,))
             received = []
             def handle(req):
                 received.append(json.loads(req.content))
                 return httpx.Response(200, json={'choices': [{'message': {'role': 'assistant', 'content': '{"duration":4,"events":[]}'}}]})
-            model = OpenAICompatVideoModel(base_url='https://example.test/v1', api_key='test', model_registry={'test':'test'},
+            model = OpenAICompatVideoModel(base_url='https://example.test/v1', api_key='test', model_registry=registry,
                 transport=httpx.MockTransport(handle), frame_extractor=lambda *a: [FrameRef(timestamp=0.0, path=frame)])
             self.addCleanup(model.close)
             self.assertEqual(model.generate(request)['events'], [])
+            self.assertEqual(received[0]['model'], 'vendor/model-v1')
             content = received[0]['messages'][0]['content']
             images = [x['image_url']['url'] for x in content if x['type'] == 'image_url']
             self.assertEqual(images, ['data:image/jpeg;base64,' + base64.b64encode(b'jpeg-test').decode(),

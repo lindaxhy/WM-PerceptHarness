@@ -150,9 +150,10 @@ class Settings(BaseSettings):
         if self.openai_model_registry:
             return dict(self.openai_model_registry)
         if self.openai_model:
-            from .model_alias import alias_for_model_id
+            from .models.base import validate_model_alias
 
-            return {alias_for_model_id(self.openai_model): self.openai_model}
+            alias = re.sub(r"[^A-Za-z0-9._-]+", "-", self.openai_model).lstrip("._-")[:128]
+            return {validate_model_alias(alias): self.openai_model}
         return {}
 
     @property

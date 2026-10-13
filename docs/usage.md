@@ -102,7 +102,7 @@ The core install neither installs this runtime nor validates a live GPU run. Run
 
 ```bash
 percept annotate --videos video.mp4 \
-  --template embodied_action_captioning --output outputs/actions
+  --output outputs/actions
 ```
 
 Each successful `<video_stem>.json` is exactly `{ "duration": number, "events": [{ "start": number, "end": number, "description": string }] }`. The sibling `<video_stem>.audit.json` contains execution status, errors, metadata, provenance and the annotation digest. A failure writes its audit without a public annotation; an empty successful event list remains a valid annotation. `results.jsonl` summarizes the batch.
@@ -173,11 +173,11 @@ A result is skipped only when all of these match:
 
 Legacy records without provenance are rerun. Changed settings or input bytes trigger evaluation. Credentials are included only as a digest: changing API keys conservatively reruns because an account may route a model ID differently. Raw API keys, endpoint URLs, proxies and extra request dictionaries/headers are not persisted; digests distinguish their values without writing credentials into manifests. Record the non-secret provider/model configuration separately for publication: a hash is not a recoverable configuration file.
 
-Custom models, custom pipeline registries, custom transports/frame extractors, and any CV execution currently disable resume because the loaded external implementation/weights cannot yet be verified completely. They still receive provenance and run manifests, but run again each time. Local fingerprints cannot detect a provider silently changing the remote model behind an unchanged ID.
+Custom models, custom transports/frame extractors, and any CV execution currently disable resume because the loaded external implementation/weights cannot yet be verified completely. They still receive provenance and run manifests, but run again each time. Local fingerprints cannot detect a provider silently changing the remote model behind an unchanged ID.
 
 ```bash
 percept annotate --videos video.mp4 \
-  --template embodied_action_captioning --output outputs/actions --force
+  --output outputs/actions --force
 ```
 
 `--force` reruns even a matching result, for independent repeats or changed remote model behavior. Before replacing a current annotation and audit, their exact bytes are archived in `.percept/history/<record-sha256>.json`. `.percept/runs/<run-id>.json` records the run settings, timestamps, input/result mapping, status, and result-file digest; that digest also identifies a later archived record. Each file is replaced atomically. The audit is the commit marker: its digest must match the public annotation; interrupted or mismatched pairs cannot resume or score as successful. Inputs or configuration that change during evaluation produce a failed record, not a reusable success.
@@ -186,7 +186,7 @@ There is also a separate request-level cache for the OpenAI-compatible backend, 
 
 A writer lock prevents overlapping batches from using the same output directory. A normal exit or exception releases it. After an abrupt process/machine termination, inspect `.percept/writer.lock` (host/PID) and remove it only after confirming the original writer has stopped. The last manifest may remain `running` after an abrupt termination. Use separate output directories for parallel jobs. Each `results.jsonl` describes the most recent completed batch, while the per-run manifests retain earlier mappings.
 
-Annotation supports only `embodied_action_captioning`, which is selected by default when `--template` is omitted. Pass confirmed object names using `--prompt-context` when helpful. This is naming guidance, not a prescribed action sequence; the action pipeline identifies relevant entities directly from the video.
+Annotation uses one event pipeline; the obsolete `--template` option is no longer accepted. Python callers use `runner.evaluate(video_path)` and `run_batch(runner, videos, output_dir)` without a template argument. New audit and run records omit the template field; legacy annotation envelopes remain readable. Model requests and inference jobs require an explicit model name from configuration. Pass confirmed object names using `--prompt-context` when helpful. This is naming guidance, not a prescribed action sequence; the action pipeline identifies relevant entities directly from the video.
 
 ## Grounded event scoring
 
@@ -240,7 +240,7 @@ A JSONL manifest supplies one absolute `video_path` and a unique relative
 Each job writes normal annotation results under `<output>/<job_id>/`.
 
 ```bash
-percept annotate --manifest corpus.jsonl --template embodied_action_captioning \
+percept annotate --manifest corpus.jsonl \
   --cv sam31 --cv-devices 0,1,2,3 --workers-per-gpu 2 \
   --request-concurrency 9 --output outputs/annotations
 ```

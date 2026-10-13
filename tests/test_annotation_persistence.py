@@ -23,7 +23,7 @@ class AnnotationPersistenceTests(unittest.TestCase):
         self.data = {'duration': 2, 'events': []}
 
     def outcome(self, **changes):
-        values = dict(video_path=self.video, template='embodied_action_captioning',
+        values = dict(video_path=self.video,
                       status='completed', data=self.data, provenance=self.identity,
                       metadata={'phases': ['grounded_draft', 'evidence_review', 'grounded_revision'], 'evidence': []})
         values.update(changes)

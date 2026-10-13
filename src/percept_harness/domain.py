@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Mapping
 
-from .model_alias import DEFAULT_MODEL_ALIAS
 
 
 class TaskStatus(StrEnum):
@@ -59,7 +58,7 @@ class InferenceJob:
     stage: str
     ordinal: int
     payload: dict[str, Any]
-    model_name: str = DEFAULT_MODEL_ALIAS
+    model_name: str
     status: InferenceStatus = InferenceStatus.PENDING
     created_at: float = 0.0
     updated_at: float = 0.0

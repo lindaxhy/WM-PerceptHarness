@@ -14,7 +14,13 @@ from typing import Any, Literal, Protocol, runtime_checkable
 from .response_contract import ModelResponseContract
 
 from ..media import FrameRef, TimeSpan, VideoMetadata
-from ..model_alias import DEFAULT_MODEL_ALIAS, validate_model_alias
+
+
+def validate_model_alias(value: Any) -> str:
+    """Validate the local name used to select a configured provider model."""
+    if not isinstance(value, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value) is None:
+        raise ValueError("model alias must be an opaque local name")
+    return value
 
 
 DEFAULT_MAX_MODEL_OUTPUT_CHARS = 1_000_000
@@ -92,7 +98,7 @@ class ModelRequest:
     prompt: str
     schema_name: str
     video_session_id: str | None
-    model_name: str = DEFAULT_MODEL_ALIAS
+    model_name: str
     media_resolution: TuningLevel | None = None
     reasoning_effort: TuningLevel | None = None
     clip_context: TuningLevel | None = None

@@ -49,14 +49,13 @@ Choose a model that accepts image inputs through the chat completions API. Confi
 ```bash
 percept annotate \
   --videos ./videos/sample_001.mp4 \
-  --template embodied_action_captioning \
   --output ./outputs/actions
 ```
 
-Pass a directory to `--videos` to process its videos recursively. Annotation uses
-`embodied_action_captioning`, the only supported template, and produces
-event descriptions and bounds on the original video clock. You can omit `--template`; existing
-commands that specify it explicitly remain valid.
+Pass a directory to `--videos` to process its videos recursively. Annotation
+produces event descriptions and bounds on the original video clock through a
+single event annotation pipeline. The obsolete `--template` option has been removed;
+omit it from older commands.
 
 By default (`--event-workflow reviewed`), the VLM drafts events and independently reviews the original video. Only concrete object identity, location, occlusion or trajectory questions trigger SAM: a text + candidate box prompt is checked on one reference frame before tracking that object within the relevant window. There is no unconditional baseline SAM pass. Camera-motion doubts and editorial changes stay in the existing visual review. Tracking supports review but does not prove an action, outcome or boundary.
 

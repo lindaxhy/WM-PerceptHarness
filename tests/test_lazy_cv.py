@@ -134,7 +134,7 @@ class LazyCvTests(unittest.TestCase):
             with self.subTest(provider=provider):
                 settings = self.settings.model_copy(update={'cv_provider': provider})
                 result = SyncRunner(ProductionModel(), settings, model_alias='production').evaluate(
-                    self.root / 'source.mp4', 'embodied_action_captioning')
+                    self.root / 'source.mp4')
                 self.assertEqual(result.status, 'failed')
                 self.assertIn(message, result.error)
 
