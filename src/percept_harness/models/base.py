@@ -9,18 +9,11 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol
 
 from .response_contract import ModelResponseContract
 
 from ..media import TimeSpan
-
-
-def validate_model_alias(value: Any) -> str:
-    """Validate the local name used to select a configured provider model."""
-    if not isinstance(value, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value) is None:
-        raise ValueError("model alias must be an opaque local name")
-    return value
 
 
 DEFAULT_MAX_MODEL_OUTPUT_CHARS = 1_000_000
@@ -79,8 +72,8 @@ class VisualEvidence:
 class ModelRequest:
     """Internal stage input, constructed with typed paths/spans by the runner.
 
-    Validate inference budgets and evidence alignment here; configuration owns
-    model aliases, and the pipeline owns stage/schema names and prompt text.
+    Validate inference budgets and evidence alignment here; the pipeline owns
+    stage/schema names, model selection, and prompt text.
     """
 
     stage: str
@@ -116,7 +109,6 @@ class ModelRequest:
             raise ModelRequestError("fps must be a finite positive number")
 
 
-@runtime_checkable
 class VideoModel(Protocol):
     """A self-hosted backend that returns one validated structured result."""
 
@@ -128,7 +120,6 @@ def parse_strict_json(
     text: str,
     *,
     max_chars: int = DEFAULT_MAX_MODEL_OUTPUT_CHARS,
-    forbid_duplicate_keys: bool = False,
 ) -> dict[str, Any]:
     """Parse exactly one JSON object, optionally wrapped in one JSON fence.
 
@@ -154,8 +145,10 @@ def parse_strict_json(
         payload = fenced.group("body")
 
     payload = payload.lstrip()
-    decoder = (json.JSONDecoder(object_pairs_hook=_reject_duplicate_pairs)
-               if forbid_duplicate_keys else json.JSONDecoder())
+    decoder = json.JSONDecoder(
+        object_pairs_hook=_reject_duplicate_pairs,
+        parse_float=_finite_float, parse_constant=_finite_float,
+    )
     try:
         value, end = decoder.raw_decode(payload)
     except ModelOutputError:
@@ -166,10 +159,6 @@ def parse_strict_json(
         raise ModelOutputError("model output contains trailing prose or multiple JSON values")
     if not isinstance(value, dict):
         raise ModelOutputError("model output must be a JSON object")
-    try:
-        _require_finite_numbers(value)
-    except RecursionError:
-        raise ModelOutputError("model output is not valid JSON") from None
     return value
 
 
@@ -182,15 +171,8 @@ def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def _require_finite_numbers(value: Any) -> None:
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ModelOutputError("model output numeric fields must be finite")
-        return
-    if isinstance(value, dict):
-        for child in value.values():
-            _require_finite_numbers(child)
-        return
-    if isinstance(value, list):
-        for child in value:
-            _require_finite_numbers(child)
+def _finite_float(value: str) -> float:
+    number = float(value)
+    if not math.isfinite(number):
+        raise ModelOutputError("model output numeric fields must be finite")
+    return number

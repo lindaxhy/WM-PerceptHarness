@@ -99,12 +99,9 @@ def test_configuration_and_request_boundaries_reject_invalid_values(tmp_path):
     import pytest
     from percept_harness.config import Settings
     from percept_harness.runner import _model_request
-    for config in ({'openai_base_url': 'ftp://host'},
-                   {'openai_response_format': 'unsupported'},
+    for config in ({'openai_response_format': 'unsupported'},
                    {'openai_timeout_seconds': float('inf')},
-                   {'openai_timeout_seconds': 0},
-                   {'openai_model_registry': {'valid': ' '}},
-                   {'openai_model_registry': {'bad alias': 'model'}}):
+                   {'openai_timeout_seconds': 0}):
         with pytest.raises(ValueError):
             Settings(**config)
     video = tmp_path / 'video'; video.write_bytes(b'video')

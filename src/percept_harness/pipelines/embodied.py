@@ -1,6 +1,5 @@
 """Natural events with independent visual review and targeted SAM verification."""
 import time
-from types import SimpleNamespace
 
 from ..media import probe_video
 from .base import SafePipelineError
@@ -11,16 +10,9 @@ from .output_validation import DEFAULT_OUTPUT_SCHEMAS
 
 
 class EmbodiedActionPipeline:
-    def __init__(self, *, probe=probe_video):
-        self._probe = probe
-
     def run(self, context, *, prompt_context=None):
-        if context.settings.cv_provider == 'disabled':
-            raise SafePipelineError('Annotation requires SAM capability; disabled CV is not supported')
         media_path = context.media_path
-        if media_path is None:
-            raise SafePipelineError('Annotation requires a local original video')
-        duration = self._probe(media_path).duration
+        duration = probe_video(media_path).duration
         confidence_gated = context.settings.event_workflow == 'confidence-gated'
         context.metadata.update({'event_workflow': context.settings.event_workflow,
                                  'annotation_version': CONFIDENCE_VERSION if confidence_gated else VERSION,
@@ -56,15 +48,14 @@ class EmbodiedActionPipeline:
             draft = stage('confidence_draft', ConfidenceDraft)
             audit['draft'] = draft
             assessed = ConfidenceDraft.model_validate(draft)
-            questions = [Concern.model_validate({**e.uncertainty.model_dump(mode='json'), 'event_indices': [i]})
-                         for i, e in enumerate(assessed.events) if e.uncertainty is not None]
-            review = SimpleNamespace(concerns=questions, unresolved=[])
+            concerns = [Concern.model_validate({**e.uncertainty.model_dump(mode='json'), 'event_indices': [i]})
+                        for i, e in enumerate(assessed.events) if e.uncertainty is not None]
             review_data = {'source': 'initial_self_assessment',
-                           'concerns': [q.model_dump(mode='json') for q in questions]}
+                           'concerns': [q.model_dump(mode='json') for q in concerns]}
             audit['confidence_gate'] = {'threshold': SAM_CONFIDENCE_THRESHOLD,
                 'policy': 'all_explicit_uncertainties',
                 'uncertain_event_indices': [i for i, e in enumerate(assessed.events) if e.uncertainty is not None],
-                'requires_revision': bool(questions),
+                'requires_revision': bool(concerns),
                 'low_confidence_event_indices': [i for i, e in enumerate(assessed.events)
                                                 if e.confidence <= SAM_CONFIDENCE_THRESHOLD]}
         else:
@@ -72,16 +63,17 @@ class EmbodiedActionPipeline:
             audit['draft'] = draft
             review_data = stage('evidence_review', EvidenceReview, draft=draft)
             review = EvidenceReview.model_validate(review_data)
+            concerns = review.concerns
             audit['review'] = review_data
-        windows, omitted = targeted_windows(review, duration)
-        audit['unresolved_concerns'].extend(review.unresolved)
+            audit['unresolved_concerns'].extend(review.unresolved)
+        windows, omitted = targeted_windows(concerns, duration)
         audit['unresolved_concerns'].extend(omitted)
         # A revised generation is not an independent certification of resolution.
-        audit['unresolved_concerns'].extend(c.reason for c in review.concerns)
+        audit['unresolved_concerns'].extend(c.reason for c in concerns)
         if confidence_gated:
             audit['confidence_gate']['skipped_without_target'] = [
                 {'event_indices': list(q.event_indices), 'kind': q.kind, 'reason': q.reason}
-                for q in review.concerns if q.target is None]
+                for q in concerns if q.target is None]
         orchestrator = None
         calls, completed = 0, 0
         for index, window in enumerate(windows):
@@ -134,7 +126,7 @@ class EmbodiedActionPipeline:
                 audit['unresolved_concerns'].append(f'Targeted SAM unavailable for {window["question"]}: {type(error).__name__}')
         audit['recheck_budget'] = {'selected_windows': len(windows), 'completed_windows': completed,
                                  'sam_calls': calls, 'max_prompt_attempts_per_target': 2}
-        if confidence_gated and not review.concerns:
+        if confidence_gated and not concerns:
             audit['confidence_gate']['route'] = 'draft_only'
             return assessed.public_annotation()
         if confidence_gated:

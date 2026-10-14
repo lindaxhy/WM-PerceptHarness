@@ -26,7 +26,9 @@ import httpx
 logger = logging.getLogger(__name__)
 
 from ..media import FrameRef, TimeSpan, extract_frames
-from .base import ModelOutputError, ModelRequest, parse_strict_json
+from .base import (
+    DEFAULT_MAX_MODEL_OUTPUT_CHARS, ModelOutputError, ModelRequest, parse_strict_json,
+)
 from .response_contract import canonical
 
 # Provider statuses worth one more attempt: throttling, and transient
@@ -55,7 +57,7 @@ class OpenAICompatVideoModel:
     TRANSPORT_RETRIES = 3
     RETRY_BACKOFF_SECONDS = 5.0
     MAX_REQUEST_BYTES = 32 * 1024 * 1024
-    MAX_OUTPUT_CHARS = 1_000_000
+    MAX_OUTPUT_CHARS = DEFAULT_MAX_MODEL_OUTPUT_CHARS
     OUTPUT_TOKENS = {
         "confidence_draft": 16384, "grounded_draft": 16384, "evidence_review": 8192,
         "sam_prompt_review": 4096, "grounded_revision": 16384,
@@ -87,12 +89,10 @@ class OpenAICompatVideoModel:
         self.response_format = response_format
         self._extra_body = extra_body
         self._extra_headers = dict(extra_headers or {})
-        self.timeout_seconds = timeout_seconds
         self._extract = frame_extractor
         self._client = httpx.Client(timeout=timeout_seconds, proxy=proxy,
                                     transport=transport, trust_env=False,
                                     follow_redirects=False)
-        self._metrics: dict[str, int] = {}
 
 
     def semantic_cache_identity(self, request: ModelRequest) -> dict[str, Any]:
@@ -117,7 +117,6 @@ class OpenAICompatVideoModel:
         }
 
     def generate(self, request: ModelRequest) -> dict[str, Any]:
-        self._metrics = {}
         if request.max_output_tokens is None and request.stage not in self.OUTPUT_TOKENS:
             raise OpenAICompatBackendError("stage has no configured output budget")
         temporary = Path(tempfile.mkdtemp(prefix="percept-frames-"))
@@ -188,8 +187,7 @@ class OpenAICompatVideoModel:
                 with self._client.stream("POST", self._endpoint,
                     headers={"Authorization": f"Bearer {self._key}",
                              "Content-Type": "application/json", **self._extra_headers},
-                    content=encoded, timeout=self.timeout_seconds,
-                    follow_redirects=False) as response:
+                    content=encoded) as response:
                     if response.status_code == 200:
                         return self._bounded_body(response)
                     if response.status_code in _RETRYABLE_STATUS_CODES:
@@ -269,25 +267,7 @@ class OpenAICompatVideoModel:
         text = message.get("content")
         if not isinstance(text, str) or not text.strip():
             raise ModelOutputError("response message content must be non-empty text")
-        metrics: dict[str, int] = {}
-        usage = envelope.get("usage")
-        if isinstance(usage, dict):
-            for source, target in (("prompt_tokens", "input_tokens"),
-                                   ("completion_tokens", "output_tokens")):
-                value = usage.get(source)
-                if value is None:
-                    continue  # some compatible servers report partial usage
-                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-                    raise ModelOutputError("response usage is invalid")
-                metrics[target] = value
-        result = parse_strict_json(text, max_chars=self.MAX_OUTPUT_CHARS,
-                                   forbid_duplicate_keys=True)
-        self._metrics = metrics
-        return result
-
-    def request_metrics(self) -> dict[str, int]:
-        return dict(self._metrics)
+        return parse_strict_json(text, max_chars=self.MAX_OUTPUT_CHARS)
 
     def close(self) -> None:
-        self._metrics = {}
         self._client.close()

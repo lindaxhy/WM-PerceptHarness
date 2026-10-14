@@ -48,10 +48,10 @@ class Evidence:
     images: tuple[VisualEvidence, ...]
 
 
-def targeted_windows(review, duration):
+def targeted_windows(concerns, duration):
     """Budget only actionable object questions, never editorial/camera issues."""
     selected, unresolved, spent = [], [], 0.0
-    for index, concern in enumerate(review.concerns):
+    for index, concern in enumerate(concerns):
         if concern.target is None:
             continue
         start = max(0.0, concern.start - CONTEXT_SECONDS)
@@ -93,13 +93,8 @@ class EvidenceOrchestrator:
         scope = f'{mode}_{ordinal}'
         with CvArtifactStore(settings.cv_cache_root) as store:
             artifact = store.load(handle)
-            if artifact.video_identity != self.video_identity or artifact.entities != request.entities or artifact.provider != request.provider:
-                raise SafePipelineError('SAM artifact does not match the evidence request')
             if artifact.processed_timeline is None:
                 raise SafePipelineError('SAM evidence has no observed source frames')
-            expected = {p.frame_index: p.timestamp_seconds for p in selected.frames}
-            if any(expected.get(p.frame_index) != p.timestamp_seconds for p in artifact.processed_timeline.frames):
-                raise SafePipelineError('SAM frame mapping does not match original video')
             overlay_bytes = store.read_overlays(handle, tuple(record.path for record in artifact.overlay_records))
         tracks = {track.track_id: track for track in artifact.tracks}
         images = []

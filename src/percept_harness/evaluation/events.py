@@ -42,7 +42,7 @@ class OpenAIJudge:
                 response = client.post(f"{self.base_url}/chat/completions", json=payload, headers={"Authorization": f"Bearer {self.api_key}"})
                 response.raise_for_status()
                 content = response.json()["choices"][0]["message"]["content"]
-                return validate_decision(parse_strict_json(content, forbid_duplicate_keys=True))
+                return validate_decision(parse_strict_json(content))
         except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as error:
             raise JudgeError(f"judge request or response failed: {type(error).__name__}" + (f" HTTP {error.response.status_code}" if isinstance(error, httpx.HTTPStatusError) else "")) from error
 

@@ -106,9 +106,7 @@ def _cv_worker(connection, cv_settings, gpu):
     try:
         from .cli import _cv_executor
         settings = Settings(**cv_settings)
-        from contextlib import ExitStack
-        with ExitStack() as stack:
-            execute = None
+        with _cv_executor(settings.cv_provider, SimpleNamespace(cv_device=gpu), settings) as execute:
             connection.send(("ready", {"pid": os.getpid(), "provider": settings.cv_provider,
                                        "initialization": "deferred_until_target"}))
             while True:
@@ -116,9 +114,6 @@ def _cv_worker(connection, cv_settings, gpu):
                 if payload is None:
                     break
                 try:
-                    if execute is None:
-                        execute = stack.enter_context(_cv_executor(settings.cv_provider, SimpleNamespace(
-                            cv_device=gpu, backend="openai"), settings))
                     result, metrics = execute(payload)
                     connection.send(("ok", (result, metrics)))
                 except Exception as error:
@@ -275,7 +270,7 @@ def run_manifest(arguments) -> int:
     provider_logger.addHandler(throttle_handler)
     slots = []
     live_keys = {}
-    archived_keys = {}
+    archived_keys = set()
     archive_lock = threading.Lock()
     start = time.time()
 
@@ -346,7 +341,7 @@ def run_manifest(arguments) -> int:
                             if record.get('status') != 'available':
                                 continue
                             archived = archive_cv_evidence(record, lane_settings.cv_cache_root, root / '.cv-archive')
-                            archived_keys[record['artifact_key']] = archived
+                            archived_keys.add(record['artifact_key'])
                             archives.append({'scope': record['scope'], 'archive_path': str(archived)})
                     write_json(job_root / '.percept' / 'cv-artifact.json', {
                         'artifacts': archives, 'host': os.uname().nodename, 'gpu': gpu})
@@ -379,7 +374,7 @@ def run_manifest(arguments) -> int:
                                     continue
                                 os.replace(source, retired)
                             shutil.rmtree(retired)
-                            del archived_keys[key]
+                            archived_keys.remove(key)
                     tasks.task_done()
         finally:
             closer()

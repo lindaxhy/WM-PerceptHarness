@@ -20,5 +20,5 @@ class PipelineContext:
 
     executor: StageExecutor
     settings: Settings
-    media_path: Path | None = None
+    media_path: Path
     metadata: dict[str, Any] = field(default_factory=dict)

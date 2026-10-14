@@ -8,8 +8,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import math
-import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -98,20 +96,12 @@ class SyncRunner:
                 metadata=dict(context.metadata),
                 elapsed_seconds=time.monotonic() - started,
             )
-        except SafePipelineError as error:
-            return EvalOutcome(
-                video_path=video_path,
-                status="failed",
-                metadata=dict(context.metadata) if context is not None else None,
-                error=str(error),
-                elapsed_seconds=time.monotonic() - started,
-            )
         except Exception as error:
             return EvalOutcome(
                 video_path=video_path,
                 status="failed",
                 metadata=dict(context.metadata) if context is not None else None,
-                error=f"{type(error).__name__}: {error}",
+                error=str(error) if isinstance(error, SafePipelineError) else f"{type(error).__name__}: {error}",
                 elapsed_seconds=time.monotonic() - started,
             )
 
@@ -197,68 +187,6 @@ def _write_aggregate(jsonl_path: Path, outcomes: list[EvalOutcome]) -> None:
     results.atomic_text(jsonl_path, "".join(lines))
 
 
-_MAX_STAGE_METRICS_BYTES = 4096
-_STAGE_METRIC_KEYS = frozenset(
-    {
-        "inference_seconds",
-        "input_tokens",
-        "output_tokens",
-        "peak_allocated_bytes",
-        "processed_frames",
-        "execution_chunk_frames",
-        "entity_prompts",
-        "track_count",
-        "cache_hit",
-        "oom_retry",
-        "semantic_cache_hit",
-        "semantic_cache_published",
-        "semantic_cache_key",
-    }
-)
-_STAGE_BOOLEAN_METRIC_KEYS = frozenset(
-    {"cache_hit", "oom_retry", "semantic_cache_hit", "semantic_cache_published"}
-)
-_STAGE_CACHE_KEY_METRICS = frozenset(
-    {"semantic_cache_key"}
-)
-_STAGE_INTEGER_METRIC_KEYS = (
-    _STAGE_METRIC_KEYS - _STAGE_BOOLEAN_METRIC_KEYS - _STAGE_CACHE_KEY_METRICS
-    - {"inference_seconds"}
-)
-
-
-def validate_stage_metrics(metrics: Mapping[str, Any] | None) -> None:
-    """Validate bounded stage execution metrics."""
-    if metrics is None:
-        return
-    if not isinstance(metrics, Mapping):
-        raise TypeError("metrics must be a mapping or None")
-    values = dict(metrics)
-    unknown = values.keys() - _STAGE_METRIC_KEYS
-    if unknown:
-        raise ValueError("metrics contain unknown keys")
-    if "inference_seconds" in values:
-        duration = values["inference_seconds"]
-        if type(duration) is not float or not math.isfinite(duration) or duration < 0:
-            raise ValueError("metrics inference_seconds must be a finite non-negative float")
-    for key in _STAGE_INTEGER_METRIC_KEYS & values.keys():
-        value = values[key]
-        if type(value) is not int or value < 0:
-            raise ValueError(f"metrics {key} must be a non-negative integer")
-    for key in _STAGE_BOOLEAN_METRIC_KEYS & values.keys():
-        if type(values[key]) is not bool:
-            raise ValueError(f"metrics {key} must be a boolean")
-    for key in _STAGE_CACHE_KEY_METRICS & values.keys():
-        if (not isinstance(values[key], str)
-                or re.fullmatch(r"[0-9a-f]{64}", values[key]) is None):
-            raise ValueError(f"metrics {key} must be a lowercase hexadecimal cache key")
-    encoded = json.dumps(
-        values, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
-    )
-    if len(encoded.encode("utf-8")) > _MAX_STAGE_METRICS_BYTES:
-        raise ValueError("metrics canonical JSON exceeds 4096 bytes")
-
-
 logger = logging.getLogger(__name__)
 
 
@@ -342,7 +270,7 @@ class SemanticResultCache:
     def publish(self, key: str, result: Mapping[str, Any]) -> bool:
         try:
             results.write_json(self._entry_path(key), {
-                "key": key, "format_version": self._FORMAT_VERSION,
+                "format_version": self._FORMAT_VERSION,
                 "result": dict(result),
             })
         except OSError:
@@ -383,14 +311,13 @@ class StageExecutor:
         if stage == "cv_evidence":
             if self._cv_executor is None:
                 raise ExecutionError("no CV executor is configured")
-            result, metrics = self._cv_executor(payload)
+            result, _ = self._cv_executor(payload)
         else:
-            result, metrics = self._execute_model(stage, payload, model_name or self.default_model_alias)
-        validate_stage_metrics(metrics)
+            result = self._execute_model(stage, payload, model_name or self.default_model_alias)
         return result
 
     def _execute_model(self, stage: str, payload: Mapping[str, Any],
-                       model_name: str) -> tuple[dict[str, Any], dict[str, Any]]:
+                       model_name: str) -> dict[str, Any]:
         request = _model_request(stage, payload, model_name)
         context = _schema_validation_context(payload)
         request = replace(
@@ -421,18 +348,10 @@ class StageExecutor:
                     if result is not None and self._output_schemas.failure_codes(
                         request.schema_name, result
                     ) is None:
-                        return result, {
-                            "inference_seconds": 0.0,
-                            "semantic_cache_hit": True,
-                            "semantic_cache_key": cache_key,
-                        }
-        started = time.monotonic()
+                        return result
         cacheable = True
         try:
-            try:
-                generated = self.model.generate(request)
-            finally:
-                inference_seconds = time.monotonic() - started
+            generated = self.model.generate(request)
             if not isinstance(generated, Mapping):
                 raise ModelOutputError("model output must be a structured object")
             raw = dict(generated)
@@ -447,12 +366,9 @@ class StageExecutor:
             if result is None:
                 raise
             cacheable = False  # never replay a malformed-output placeholder
-        metrics = _model_request_metrics(self.model, inference_seconds=inference_seconds)
         if cache_key is not None and cacheable:
-            published = self._semantic_cache.publish(cache_key, raw)
-            metrics["semantic_cache_key"] = cache_key
-            metrics["semantic_cache_published"] = published
-        return result, metrics
+            self._semantic_cache.publish(cache_key, raw)
+        return result
 
 
 def _model_request(stage: str, payload: Mapping[str, Any], model_name: str) -> ModelRequest:
@@ -488,19 +404,6 @@ def _model_request(stage: str, payload: Mapping[str, Any], model_name: str) -> M
         max_output_tokens=payload.get("max_output_tokens"),
         visual_evidence=tuple(VisualEvidence.from_payload(e) for e in payload.get("visual_evidence", ())),
     )
-
-
-def _model_request_metrics(model: VideoModel, *, inference_seconds: float) -> dict[str, Any]:
-    request_metrics = getattr(model, "request_metrics", None)
-    reported = request_metrics() if callable(request_metrics) else None
-    if reported is None:
-        metrics: dict[str, Any] = {}
-    elif isinstance(reported, Mapping):
-        metrics = dict(reported)
-    else:
-        raise TypeError("model request_metrics must return a mapping or None")
-    metrics["inference_seconds"] = inference_seconds
-    return metrics
 
 
 def _schema_validation_context(

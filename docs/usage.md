@@ -235,7 +235,9 @@ Completed annotations still follow the existing resume rules.
 
 Environment numbers and booleans use Pydantic Settings parsing, including
 standard boolean spellings such as `true`/`false` and `1`/`0`. FPS and timeouts
-must remain finite and positive.
+must remain finite and positive. Model aliases are registry keys without a
+restricted naming grammar; connection and provider-model errors are reported
+when requests run. Setting both a single model and a model registry is rejected.
 
 ## Video frame sampling
 
