@@ -104,7 +104,12 @@ class Settings(BaseSettings):
             raise ValueError(
                 "openai_model and openai_model_registry are mutually exclusive"
             )
-        _ = self.openai_model_aliases  # Validate configured aliases.
+        from .models.base import validate_model_alias
+
+        for alias, model in self.openai_model_aliases.items():
+            validate_model_alias(alias)
+            if not model.strip():
+                raise ValueError("OpenAI model ids must be non-empty")
         if self.openai_base_url is not None and not self.openai_base_url.startswith(
             ("https://", "http://")
         ):

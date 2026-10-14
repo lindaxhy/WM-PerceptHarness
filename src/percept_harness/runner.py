@@ -481,11 +481,8 @@ def _model_request(stage: str, payload: Mapping[str, Any], model_name: str) -> M
     return ModelRequest(
         stage=stage,
         video_path=video_path,
-        span=TimeSpan(
-            _finite_number(start, "model stage start"),
-            _finite_number(end, "model stage end"),
-        ),
-        fps=_finite_number(payload.get("fps", 2.0), "model stage fps"),
+        span=TimeSpan(start, end),
+        fps=payload.get("fps", 2.0),
         prompt=payload.get("prompt", ""),
         schema_name=payload.get("schema_name", stage),
         model_name=model_name,
@@ -520,12 +517,3 @@ def _schema_validation_context(
     if not isinstance(context, Mapping):
         raise ValueError("model stage schema context must be an object")
     return context
-
-
-def _finite_number(value: Any, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{name} must be a finite real number")
-    numeric = float(value)
-    if not math.isfinite(numeric):
-        raise ValueError(f"{name} must be a finite real number")
-    return numeric

@@ -48,8 +48,9 @@ class TimeSpan:
     end: float
 
     def __post_init__(self) -> None:
-        if not math.isfinite(self.start) or not math.isfinite(self.end):
-            raise ValueError("time span bounds must be finite")
+        if any(isinstance(value, bool) or not isinstance(value, (int, float))
+               or not math.isfinite(value) for value in (self.start, self.end)):
+            raise ValueError("time span bounds must be finite numbers")
         if self.start < 0 or self.end <= self.start:
             raise ValueError("time span must satisfy 0 <= start < end")
 

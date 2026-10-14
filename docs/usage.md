@@ -76,7 +76,7 @@ Each `ModelRequest` carries `max_frames` (default 128, including SAM overlays)
 and optional `max_output_tokens`. When the token limit is omitted, stage defaults
 are 16,384 for drafts/revision, 8,192 for evidence review and 4,096 for SAM prompt
 review. Stage payloads accept these same fields. Effective budgets enter the
-request-cache identity. The CLI resolves model aliases before creating a client.
+request-cache identity. The CLI resolves model aliases before creating a client. Connection types, formats and numeric ranges are validated by `Settings`; the CLI checks required credentials. Direct Python callers of the internal client are responsible for supplying valid connection values. Reserved request-body overrides and external responses are still checked by the adapter.
 
 `OpenAICompatVideoModel.MAX_REQUEST_BYTES` fixes the encoded request limit at
 32 MiB; `MAX_OUTPUT_CHARS` limits model text to 1,000,000 characters. Oversized

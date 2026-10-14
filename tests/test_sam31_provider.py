@@ -201,7 +201,7 @@ def test_targeted_oom_retry_recomputes_same_source_mapping(tmp_path):
 
 
 @pytest.mark.parametrize("change", ["missing_entity", "missing_spatial", "multiple_entities", "multiple_spatial"])
-def test_provider_rejects_unsupported_untargeted_or_multi_entity_request(tmp_path, change):
+def test_executor_rejects_untargeted_or_multi_entity_request_before_sam(tmp_path, change):
     targeted = request(spatial_prompts=[spatial()])
     updates = {
         "missing_entity": {"entities": ()},
@@ -209,10 +209,15 @@ def test_provider_rejects_unsupported_untargeted_or_multi_entity_request(tmp_pat
         "multiple_entities": {"entities": targeted.entities * 2},
         "multiple_spatial": {"spatial_prompts": targeted.spatial_prompts * 2},
     }
-    tmp_path.chmod(0o700)
-    with pytest.raises(CvProviderError):
-        provider(Predictor()).analyze(targeted.model_copy(update=updates[change]), tmp_path)
-    assert list(tmp_path.iterdir()) == []
+    from unittest.mock import Mock
+    from pydantic import ValidationError
+    from percept_harness.cv.executor import SyncCvExecutor
+    runtime, store = Mock(), Mock()
+    executor = SyncCvExecutor(runtime, store)
+    with pytest.raises(ValidationError):
+        executor({**targeted.model_dump(), **updates[change]})
+    runtime.analyze.assert_not_called()
+    store.lookup.assert_not_called()
 
 
 def test_one_target_can_return_multiple_candidate_masks_and_reference_overlays(tmp_path):

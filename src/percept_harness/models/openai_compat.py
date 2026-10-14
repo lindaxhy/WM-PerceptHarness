@@ -29,7 +29,6 @@ from ..media import FrameRef, TimeSpan, extract_frames
 from .base import ModelOutputError, ModelRequest, parse_strict_json
 from .response_contract import canonical
 
-RESPONSE_FORMAT_MODES = ("json_schema", "json_object", "none")
 # Provider statuses worth one more attempt: throttling, and transient
 # service-side failures. 4xx besides 429 are deterministic and never retried.
 _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
@@ -47,7 +46,11 @@ class OpenAICompatBackendError(RuntimeError):
 
 
 class OpenAICompatVideoModel:
-    """Send explicitly sampled JPEG frames to one OpenAI-compatible endpoint."""
+    """Send sampled frames using connection values validated by Settings/CLI.
+
+    Direct Python callers must provide valid connection settings. The adapter
+    validates provider-specific body overrides and all external responses.
+    """
 
     TRANSPORT_RETRIES = 3
     RETRY_BACKOFF_SECONDS = 5.0
@@ -71,25 +74,13 @@ class OpenAICompatVideoModel:
                  timeout_seconds: float = 180.0,
                  proxy: str | None = None,
                  transport: httpx.BaseTransport | None = None,
-                 client: httpx.Client | None = None,
                  frame_extractor: FrameExtractor = extract_frames) -> None:
-        if not isinstance(api_key, str) or not api_key.strip():
-            raise OpenAICompatBackendError("API credentials are not configured")
-        if (not isinstance(base_url, str)
-                or not base_url.startswith(("https://", "http://"))):
-            raise OpenAICompatBackendError("base_url must be an http(s) URL")
-        if response_format not in RESPONSE_FORMAT_MODES:
-            raise OpenAICompatBackendError("response_format mode is not supported")
         extra_body = dict(extra_body or {})
         reserved = set(extra_body) & _RESERVED_BODY_KEYS
         if reserved:
             raise OpenAICompatBackendError(
                 f"extra_body must not override reserved keys: {sorted(reserved)}"
             )
-        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be finite and positive")
-        if not isinstance(model_name, str) or not model_name.strip():
-            raise ValueError("model_name must be non-empty")
         self._key = api_key
         self._endpoint = base_url.rstrip("/") + "/chat/completions"
         self.model_name = model_name
@@ -98,12 +89,9 @@ class OpenAICompatVideoModel:
         self._extra_headers = dict(extra_headers or {})
         self.timeout_seconds = timeout_seconds
         self._extract = frame_extractor
-        if client is not None and transport is not None:
-            raise ValueError("client and transport are mutually exclusive")
-        self._owns_client = client is None
-        self._client = client or httpx.Client(timeout=timeout_seconds, proxy=proxy,
-                                               transport=transport, trust_env=False,
-                                               follow_redirects=False)
+        self._client = httpx.Client(timeout=timeout_seconds, proxy=proxy,
+                                    transport=transport, trust_env=False,
+                                    follow_redirects=False)
         self._metrics: dict[str, int] = {}
 
 
@@ -311,5 +299,4 @@ class OpenAICompatVideoModel:
 
     def close(self) -> None:
         self._metrics = {}
-        if self._owns_client:
-            self._client.close()
+        self._client.close()

@@ -330,13 +330,8 @@ class Sam31EvidenceProvider:
         """Probe or track one nominated entity within its selected source window."""
         outputs: list[Path] = []
         try:
-            request = CvEvidenceRequest.model_validate(request, strict=True)
-            if (
-                self._closed or request.provider != "sam31"
-                or request.mode not in ("probe", "track")
-                or len(request.entities) != 1 or len(request.spatial_prompts) != 1
-            ):
-                raise ValueError
+            if self._closed:
+                raise ValueError("SAM provider is closed")
             self._metrics = {}
             staging = _prepare_staging_directory(staging_dir)
             _reset_peak_memory(self._torch)

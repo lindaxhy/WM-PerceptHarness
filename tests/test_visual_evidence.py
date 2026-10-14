@@ -96,3 +96,27 @@ def test_call_budgets_cache_identity_and_fixed_timeout(tmp_path):
         assert model.semantic_cache_identity(replace(request, max_output_tokens=None))['max_output_tokens'] == 16384
     finally:
         model.close()
+
+
+def test_configuration_and_request_boundaries_reject_invalid_values(tmp_path):
+    import pytest
+    from percept_harness.config import Settings
+    from percept_harness.runner import _model_request
+    for config in ({'openai_base_url': 'ftp://host'},
+                   {'openai_response_format': 'unsupported'},
+                   {'openai_timeout_seconds': float('inf')},
+                   {'openai_timeout_seconds': 0},
+                   {'openai_model_registry': {'valid': ' '}},
+                   {'openai_model_registry': {'bad alias': 'model'}}):
+        with pytest.raises(ValueError):
+            Settings(**config)
+    video = tmp_path / 'video'; video.write_bytes(b'video')
+    payload = {'video_path': str(video), 'start': 0, 'end': 1, 'fps': 2}
+    for field in ('start', 'end', 'fps'):
+        for value in (True, '1', None, float('nan'), float('inf')):
+            with pytest.raises(ValueError):
+                _model_request('grounded_draft', {**payload, field: value}, 'model')
+    for key in ('model', 'messages', 'max_tokens', 'response_format'):
+        with pytest.raises(RuntimeError, match='reserved keys'):
+            OpenAICompatVideoModel(base_url='https://example.test/v1', api_key='test',
+                model_name='model', extra_body={key: 'override'})
