@@ -261,7 +261,7 @@ def run_manifest(arguments) -> int:
     provider = arguments.cv or settings.cv_provider
     if provider != "sam31":
         raise ValueError("manifest annotation requires --cv sam31")
-    annotation_cv_preflight(provider, arguments.backend, settings, check_assets=False)
+    annotation_cv_preflight(provider, settings, check_assets=False)
     devices = [int(s) for s in (arguments.cv_devices or str(settings.cv_device)).split(",")]
     if any(g < 0 for g in devices) or len(set(devices)) != len(devices):
         raise ValueError("CV devices must be distinct nonnegative integers")

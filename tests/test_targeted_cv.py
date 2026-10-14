@@ -1,6 +1,5 @@
 """Targeted SAM regressions: original clocks, probe masks, and cache isolation."""
 import hashlib
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,7 +12,6 @@ except ImportError:
     numpy = None
 
 from percept_harness.cv.contracts import CvEvidenceRequest, CvEvidenceArtifact
-from percept_harness.cv.base import FakeCvEvidenceProvider
 from percept_harness.cv.artifacts import cv_cache_key, CvArtifactStore, CvArtifactError, _cache_identity, _canonical_json
 from percept_harness.cv.sam31 import Sam31EvidenceProvider
 from percept_harness.cv.timeline import SampledFrame, SampledFrameSet
@@ -97,40 +95,6 @@ class TargetedCvTests(unittest.TestCase):
             request(mode='probe', spatial_prompts=[])
         with self.assertRaises(ValidationError):
             request(spatial_prompts=[spatial(),spatial()])
-
-    def test_fake_probe_uses_reference_and_spatial_box(self):
-        with tempfile.TemporaryDirectory() as root:
-            root=Path(root).resolve()
-            video=root/'clip.mp4'
-            subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i',
-                'color=c=red:s=32x32:r=10:d=5','-c:v','mpeg4',str(video)],check=True)
-            probe=request(provider='fake',video_path=video,mode='probe',spatial_prompts=[spatial()])
-            artifact=FakeCvEvidenceProvider().analyze(probe,root/'stage')
-            self.assertEqual([f.frame_index for f in artifact.processed_timeline.frames],[30])
-            self.assertEqual(artifact.tracks[0].observations[0].bbox_xyxy,(0.25,0.25,0.75,0.75))
-            self.assertEqual([o.frame_index for o in artifact.tracks[0].observations],[30])
-            with CvArtifactStore(root/'cache') as store:
-                key=cv_cache_key(probe)
-                with store.staging(key) as staging:
-                    artifact=FakeCvEvidenceProvider().analyze(probe,staging)
-                    handle=store.publish(probe,staging,artifact)
-                self.assertEqual(store.lookup(key),handle)
-                overlays = tuple(record.path for record in artifact.overlay_records)
-                self.assertTrue(all(value.startswith(b'\x89PNG\r\n\x1a\n')
-                                    for value in store.read_overlays(handle, overlays).values()))
-                with self.assertRaises(CvArtifactError):
-                    store.read_overlays(handle, overlays, max_total_bytes=1)
-                self.assertIsNone(store.lookup(cv_cache_key(request(provider='fake',video_path=video,
-                    mode='track',spatial_prompts=[spatial()]))))
-                self.assertEqual(set(artifact.files[0].model_dump()), {'path', 'size_bytes'})
-                # Same-sized content is accepted; the store enforces structure
-                # and size, without authenticating payloads by checksum.
-                mask = store._entry_path(key) / artifact.files[0].path
-                mask.write_bytes(b'x' * artifact.files[0].size_bytes)
-                self.assertEqual(store.lookup(key), handle)
-                self.assertEqual(store.load(handle), artifact)
-                mask.write_bytes(b'too long' + mask.read_bytes())
-                self.assertIsNone(store.lookup(key))
 
     def test_incomplete_legacy_cache_is_a_miss(self):
         current=request()

@@ -125,7 +125,7 @@ class SpatialPrompt(StrictModel):
 
 class CvEvidenceRequest(StrictModel):
     schema_version: Literal["cv_request_v1"]
-    provider: Literal["fake", "sam31"]
+    provider: Literal["sam31"]
     model_identity: Label
     video_path: Path
     video_identity: CacheIdentity
@@ -266,7 +266,7 @@ class OverlayRecord(StrictModel):
 class CvEvidenceArtifact(StrictModel):
     schema_version: Literal["cv_evidence_v1"]
     status: EvidenceStatus = Field(strict=False)
-    provider: Literal["fake", "sam31"]
+    provider: Literal["sam31"]
     model_identity: Label
     video_identity: CacheIdentity
     checkpoint_identity: CacheIdentity

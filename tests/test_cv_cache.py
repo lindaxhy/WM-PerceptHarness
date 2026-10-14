@@ -11,7 +11,7 @@ from percept_harness.cv.contracts import CvEvidenceArtifact, CvEvidenceRequest
 
 def cache_request():
     return CvEvidenceRequest.model_validate(dict(
-        schema_version='cv_request_v1', provider='fake', model_identity='fixture',
+        schema_version='cv_request_v1', provider='sam31', model_identity='fixture',
         video_path=Path('/tmp/video.mp4'), video_identity='video', checkpoint_identity='weights',
         duration_seconds=1.0, frame_count=1,
         timeline={'frames': [{'frame_index': 0, 'timestamp_seconds': 0.0}]},

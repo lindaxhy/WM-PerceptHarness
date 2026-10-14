@@ -99,11 +99,11 @@ checks the source revision, tokenizer identity and imported module locations;
 it does not create private copies of the source tree or checkpoint. NumPy, Pillow and
 OpenCV belong to the SAM runtime and are imported only when that runtime is used.
 
-The core install neither installs this runtime nor validates a live GPU run. Run a small production annotation and inspect the `.audit.json` sidecar (`status`, `error`, `metadata.evidence`), overlay counts and archived CV manifests before scaling up. `--backend fake --model fake --cv fake` is a synthetic offline test path; fake CV cannot be paired with a production model. A successful zero-detection SAM result may have `no_tracks: true` and no overlays; the reviewer still sees the original video, and missing tracks do not prove absence.
+The core install neither installs this runtime nor validates a live GPU run. Run a small production annotation and inspect the `.audit.json` sidecar (`status`, `error`, `metadata.evidence`), overlay counts and archived CV manifests before scaling up. A successful zero-detection SAM result may have `no_tracks: true` and no overlays; the reviewer still sees the original video, and missing tracks do not prove absence.
 
 ## Annotation
 
-`percept annotate` runs the annotation workflow. The default backend is `openai`; `fake` remains an explicit test option.
+`percept annotate` runs the annotation workflow. The backend is `openai`, for OpenAI-compatible model APIs.
 
 ```bash
 percept annotate --videos video.mp4 \
@@ -273,8 +273,7 @@ Other upstream evaluators use `percept score` commands listed in the [catalog](m
 
 ## Multi-GPU manifest annotation
 
-Manifest mode requires SAM3.1 (`--cv sam31`); fake CV is only available in the
-single-process offline test path (`--videos`).
+Manifest mode requires SAM3.1 (`--cv sam31`).
 
 A JSONL manifest supplies one absolute `video_path` and a unique relative
 `job_id` per line. Input checksum fields are not used.

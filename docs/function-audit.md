@@ -68,7 +68,7 @@
 | `_parser` (63) | 构建参数、默认值及 help | 保留 |
 | `_eval` (131) | 标注入口，区分 manifest/单进程并映射退出码 | 保留 |
 | `_load_backend` (204) | CLI 和批处理线程创建独立模型客户端 | 保留 |
-| `_single_alias` (254) | fake/OpenAI 共用默认模型选择，拒绝歧义 | 保留 |
+| `_single_alias` (254) | OpenAI 默认模型选择，拒绝歧义 | 保留 |
 | `annotation_cv_preflight` (262) | CLI/worker 共用 provider 策略及资源检查 | 保留 |
 | `_cv_executor` (277) | 按需加载 CV 的外层资源生命周期 | 保留 |
 | `_cv_executor.execute` (282) | 首次请求才实例化 CV executor 的闭包回调 | 保留 |

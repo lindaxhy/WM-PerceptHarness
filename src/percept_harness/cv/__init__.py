@@ -6,7 +6,6 @@ from .base import (
     CvEvidenceProvider,
     CvOutOfMemoryError,
     CvProviderError,
-    FakeCvEvidenceProvider,
 )
 from .contracts import (
     ArtifactFile,
@@ -36,7 +35,6 @@ __all__ = [
     "EvidenceThresholds",
     "FrameTimeline",
     "FrameTimestamp",
-    "FakeCvEvidenceProvider",
     "OverlayRecord",
     "SamplingPolicy",
     "Sam31EvidenceProvider",

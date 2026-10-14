@@ -58,11 +58,6 @@ class Settings(BaseSettings):
 
     # Local workspace and model selection.
     work_root: Path = Path("work")
-    # Alias registry for the fake backend and stored-result identity; the
-    # openai backend derives its aliases from PERCEPT_OPENAI_MODEL[_REGISTRY].
-    model_registry: dict[str, Path] = Field(
-        default_factory=lambda: {"qwen3-vl-8b-instruct": Path("models/qwen3-vl-8b-instruct")}
-    )
     # OpenAI-compatible model transport and request limits.
     openai_base_url: str | None = None
     openai_api_key: SecretStr | None = None
@@ -89,7 +84,7 @@ class Settings(BaseSettings):
     event_workflow: Literal["reviewed", "confidence-gated"] = "reviewed"
     # Optional computer-vision evidence.
     cv_device: NonnegativeInteger = 3
-    cv_provider: Literal["disabled", "fake", "sam31"] = "sam31"
+    cv_provider: Literal["disabled", "sam31"] = "sam31"
     cv_model_alias: Literal["sam3.1"] = "sam3.1"
     cv_repository_path: Path = Path("models/sam3")
     cv_checkpoint_path: Path = Path("models/sam3/checkpoints/sam3.pt")
@@ -120,9 +115,7 @@ class Settings(BaseSettings):
             raise ValueError(
                 "openai_model and openai_model_registry are mutually exclusive"
             )
-        openai_aliases = set(self.openai_model_aliases)
-        if openai_aliases & set(self.model_registry):
-            raise ValueError("OpenAI-compatible aliases must not overlap other registries")
+        _ = self.openai_model_aliases  # Validate configured aliases.
         if self.openai_base_url is not None and not self.openai_base_url.startswith(
             ("https://", "http://")
         ):

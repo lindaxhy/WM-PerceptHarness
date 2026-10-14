@@ -17,7 +17,7 @@ from .runner import (
     run_batch,
 )
 
-_BACKENDS = ("openai", "fake")
+_BACKENDS = ("openai",)
 _SCORE_MODULES = {
     "events": ".evaluation.events_cli",
     "clipiqa": ".video_metrics.clipiqa",
@@ -117,7 +117,7 @@ def _parser() -> argparse.ArgumentParser:
     evaluate.add_argument(
         "--cv",
         default=None,
-        choices=("disabled", "fake", "sam31"),
+        choices=("disabled", "sam31"),
         help="CV evidence provider (default: PERCEPT_CV_PROVIDER from the environment)",
     )
     evaluate.add_argument(
@@ -204,14 +204,6 @@ def _eval(arguments: argparse.Namespace) -> int:
 def _load_backend(arguments: argparse.Namespace, settings: Settings):
     """Return (model, model_alias, closer) for the selected backend."""
     backend = arguments.backend
-    if backend == "fake":
-        from .models.fake import FakeVideoModel
-
-        alias = arguments.model or _single_alias(
-            settings.model_registry, "PERCEPT_MODEL_REGISTRY"
-        )
-        return FakeVideoModel(), alias, lambda: None
-
     if backend == "openai":
         if settings.openai_api_key is None or not settings.openai_api_key.get_secret_value().strip():
             raise ValueError("PERCEPT_OPENAI_API_KEY is not configured")
@@ -259,14 +251,12 @@ def _single_alias(registry: dict, name: str) -> str:
     return next(iter(registry))
 
 
-def annotation_cv_preflight(provider_name, backend, settings, *, check_assets=True):
+def annotation_cv_preflight(provider_name, settings, *, check_assets=True):
     if provider_name == 'disabled':
         raise ValueError('Annotation requires SAM; disabled CV is not supported')
-    if provider_name == 'fake' and backend != 'fake':
-        raise ValueError('Fake CV requires an explicit fake model backend')
-    if provider_name not in {'sam31', 'fake'}:
+    if provider_name != 'sam31':
         raise ValueError('Unsupported annotation CV provider')
-    if provider_name == 'sam31' and check_assets:
+    if check_assets:
         for name, kind in (('cv_repository_path', 'directory'), ('cv_checkpoint_path', 'file'), ('cv_bpe_path', 'file')):
             path = getattr(settings, name)
             if not (path.is_dir() if kind == 'directory' else path.is_file()):
@@ -276,7 +266,7 @@ def annotation_cv_preflight(provider_name, backend, settings, *, check_assets=Tr
 @contextmanager
 def _cv_executor(provider_name: str, arguments: argparse.Namespace, settings: Settings):
     """Acquire SAM assets only when annotation requests CV evidence."""
-    annotation_cv_preflight(provider_name, arguments.backend, settings, check_assets=False)
+    annotation_cv_preflight(provider_name, settings, check_assets=False)
     executor = None
     with ExitStack() as resources:
         def execute(payload):
@@ -293,7 +283,7 @@ def _cv_executor(provider_name: str, arguments: argparse.Namespace, settings: Se
 @contextmanager
 def _loaded_cv_executor(provider_name: str, arguments: argparse.Namespace, settings: Settings):
     """Own provider and artifact lifetimes for synchronous CV execution."""
-    annotation_cv_preflight(provider_name, arguments.backend, settings)
+    annotation_cv_preflight(provider_name, settings)
 
     from .cv.artifacts import CvArtifactStore
     from .cv.executor import SyncCvExecutor
@@ -305,32 +295,25 @@ def _loaded_cv_executor(provider_name: str, arguments: argparse.Namespace, setti
     )
     provider = None
     try:
-        if provider_name == "fake":
-            from .cv.base import FakeCvEvidenceProvider
+        cv_device = (
+            int(arguments.cv_device)
+            if arguments.cv_device is not None
+            else settings.cv_device
+        )
+        os.environ.setdefault("CUDA_VISIBLE_DEVICES", str(cv_device))
+        from .cv.sam31 import Sam31EvidenceProvider
 
-            provider = FakeCvEvidenceProvider(
-                execution_chunk_frames=settings.cv_execution_chunk_frames
-            )
-        else:  # sam31 — argparse enforces the closed set.
-            cv_device = (
-                int(arguments.cv_device)
-                if arguments.cv_device is not None
-                else settings.cv_device
-            )
-            os.environ.setdefault("CUDA_VISIBLE_DEVICES", str(cv_device))
-            from .cv.sam31 import Sam31EvidenceProvider
-
-            provider = Sam31EvidenceProvider.load(
-                settings.cv_repository_path,
-                settings.cv_checkpoint_path,
-                bpe_path=settings.cv_bpe_path,
-                compile_model=settings.cv_compile_model,
-                max_artifact_bytes=settings.cv_cache_max_bytes,
-                max_artifact_files=settings.cv_cache_max_files,
-            )
-            _configure_execution_chunk_frames(
-                provider, settings.cv_execution_chunk_frames
-            )
+        provider = Sam31EvidenceProvider.load(
+            settings.cv_repository_path,
+            settings.cv_checkpoint_path,
+            bpe_path=settings.cv_bpe_path,
+            compile_model=settings.cv_compile_model,
+            max_artifact_bytes=settings.cv_cache_max_bytes,
+            max_artifact_files=settings.cv_cache_max_files,
+        )
+        _configure_execution_chunk_frames(
+            provider, settings.cv_execution_chunk_frames
+        )
         yield SyncCvExecutor(provider, artifact_store)
     finally:
         try:

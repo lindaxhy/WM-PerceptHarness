@@ -25,7 +25,7 @@ class EmbodiedActionPipeline:
         duration = self._probe(media_path).duration
         confidence_gated = context.settings.event_workflow == 'confidence-gated'
         context.metadata.update({'event_workflow': context.settings.event_workflow,
-                                 'annotation_version': CONFIDENCE_VERSION if confidence_gated else VERSION, 'synthetic': context.settings.cv_provider == 'fake',
+                                 'annotation_version': CONFIDENCE_VERSION if confidence_gated else VERSION,
                                  'phases': [], 'evidence': [], 'unresolved_concerns': [],
                                  'sam_checks': [], 'stage_timings': []})
         audit = context.metadata

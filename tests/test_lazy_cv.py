@@ -9,7 +9,7 @@ from unittest.mock import patch
 from percept_harness.cli import _cv_executor
 from percept_harness.config import Settings
 from percept_harness.cv.artifacts import CvArtifactStore, CvArtifactError
-from percept_harness.cv.base import FakeCvEvidenceProvider, CvOutOfMemoryError
+from percept_harness.cv.base import CvOutOfMemoryError
 
 
 def payload(root):
@@ -22,9 +22,10 @@ def payload(root):
         thresholds={'min_confidence': 0.1})
 
 
-class CountingProvider(FakeCvEvidenceProvider):
+class CountingProvider:
     def __init__(self, *, oom=False):
-        super().__init__()
+        self.execution_chunk_frames = 1
+        self._metrics = {}
         self.calls = 0
         self.closed = False
         self.oom = oom
@@ -41,6 +42,9 @@ class CountingProvider(FakeCvEvidenceProvider):
             video_identity=request.video_identity, checkpoint_identity=request.checkpoint_identity,
             processed_timeline=request.timeline, entities=request.entities,
             tracks=(), files=(), overlay_records=())
+
+    def request_metrics(self):
+        return dict(self._metrics)
 
     def close(self):
         self.closed = True
@@ -131,12 +135,12 @@ class LazyCvTests(unittest.TestCase):
                 with self.assertRaises(CvArtifactError):
                     store.lookup('source-video')
 
-    def test_runner_rejects_production_fake_cv_and_disabled_settings(self):
+    def test_runner_rejects_unsupported_and_disabled_cv_settings(self):
         from percept_harness.runner import SyncRunner
         class ProductionModel:
             def generate(self, request):
                 raise AssertionError('invalid CV policy must reject before VLM use')
-        for provider, message in (('fake', 'Fake CV'), ('disabled', 'disabled CV')):
+        for provider, message in (('unknown', 'sam31 CV provider'), ('disabled', 'disabled CV')):
             with self.subTest(provider=provider):
                 settings = self.settings.model_copy(update={'cv_provider': provider})
                 result = SyncRunner(ProductionModel(), settings, model_alias='production').evaluate(
