@@ -8,7 +8,7 @@ Use the sections below for [CLIP-IQA+](#clip-iqa), [Motion Smoothness](#motion-s
 
 | Evaluator | Command | Environment | Evidence and scope |
 |---|---|---|---|
-| Grounded event scoring | `percept score events` | Core package and an OpenAI-compatible semantic judge endpoint | Offline tests cover real FFmpeg video with synthetic annotation/CV evidence and an injected judge; hosted judge and live SAM GPU inference remain unvalidated |
+| Grounded event scoring | `percept score events` | Core package and an OpenAI-compatible semantic judge endpoint | Offline tests cover scoring with an injected judge; hosted judge and live SAM GPU inference remain unvalidated |
 | CLIP-IQA+ | `percept score clipiqa` | PyIQA 0.1.16; CPU or CUDA | Implemented sampled-frame scorer; a fresh full dependency installation is not validated by the historical record |
 | VBench Motion Smoothness / AMT-S | `percept score motion` | VBench 0.1.5, CUDA, AMT-S weights | Existing record marks single-video smoke completed; this is not a full-dataset validation |
 

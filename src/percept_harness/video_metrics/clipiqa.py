@@ -101,7 +101,7 @@ def score_video(
     if sample_step < 1 or max_side < 1:
         raise ValueError("sample_step and max_side must be positive")
     if cache_dir is not None:
-        from percept_harness.weights import check_weights
+        from percept_harness.video_metrics import check_weights
         cache_dir = Path(cache_dir).expanduser().resolve()
         check_weights("clipiqa", cache_dir)
     version = importlib.metadata.version("pyiqa")

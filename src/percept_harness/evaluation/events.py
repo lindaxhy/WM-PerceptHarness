@@ -11,7 +11,7 @@ import httpx
 
 from percept_harness.pipelines.event_schemas import GroundedEvents
 from percept_harness.models.base import parse_strict_json
-from percept_harness import result_store
+from percept_harness import results
 from .event_matching import match_weight_matrix, temporal_iou
 
 
@@ -42,7 +42,7 @@ class OpenAIJudge:
                 response = client.post(f"{self.base_url}/chat/completions", json=payload, headers={"Authorization": f"Bearer {self.api_key}"})
                 response.raise_for_status()
                 content = response.json()["choices"][0]["message"]["content"]
-                return validate_decision(parse_strict_json(content, forbid_duplicate_keys=True))
+                return validate_decision(parse_strict_json(content))
         except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as error:
             raise JudgeError(f"judge request or response failed: {type(error).__name__}" + (f" HTTP {error.response.status_code}" if isinstance(error, httpx.HTTPStatusError) else "")) from error
 
@@ -62,7 +62,7 @@ def score_pair(reference: GroundedEvents, prediction: GroundedEvents, judge: Cal
     refs, preds = reference.events, prediction.events
     matrix = [[temporal_iou(a, b) for b in preds] for a in refs]
     temporal = match_weight_matrix(matrix, tiou_threshold)
-    decisions = {}
+    joint_matrix = [[0.0] * len(preds) for _ in refs]
     candidates = []
     for i, row in enumerate(matrix):
         for j, iou in enumerate(row):
@@ -71,11 +71,11 @@ def score_pair(reference: GroundedEvents, prediction: GroundedEvents, judge: Cal
                     decision = validate_decision(judge(refs[i].description, preds[j].description))
                 except Exception as error:
                     raise JudgeError(f"candidate ({i},{j}) failed: {error}") from error
-                decisions[i, j] = decision
+                if decision["match"]:
+                    joint_matrix[i][j] = iou
                 candidates.append({"reference_index": i, "prediction_index": j, "iou": iou, "reference_description": refs[i].description, "prediction_description": preds[j].description, **decision})
-    joint_matrix = [[iou if decisions.get((i, j), {}).get("match", False) else 0 for j, iou in enumerate(row)] for i, row in enumerate(matrix)]
     joint = match_weight_matrix(joint_matrix, tiou_threshold)
-    temporal_passes = sum(decisions[m.reference_index, m.prediction_index]["match"] for m in temporal)
+    temporal_passes = sum(joint_matrix[m.reference_index][m.prediction_index] > 0 for m in temporal)
     segment = _prf(len(temporal), len(refs), len(preds))
     both = _prf(len(joint), len(refs), len(preds))
     temporal_ref = {m.reference_index for m in temporal}
@@ -141,7 +141,7 @@ def load_group(root: Path) -> dict:
         relative = path.relative_to(root)
         if any(part in {".percept", ".cv-archive"} for part in relative.parts) or (len(relative.parts) == 1 and re.fullmatch(r"shard-\d+\.status\.json", path.name)):
             continue
-        if path.name.endswith(".audit.json") and not result_store.is_annotation_record(result_store.read_record(path)):
+        if path.name.endswith(".audit.json") and not results.is_annotation_record(results.read_record(path)):
             path = path.with_name(path.name[:-len(".audit.json")] + ".json")
         candidates.add(path)
     for path in sorted(candidates):
@@ -149,7 +149,7 @@ def load_group(root: Path) -> dict:
         if any(part in {".percept", ".cv-archive"} for part in relative.parts) or (len(relative.parts) == 1 and re.fullmatch(r"shard-\d+\.status\.json", path.name)):
             continue
         try:
-            record = result_store.annotation_record(path)
+            record = results.annotation_record(path)
             if not isinstance(record, dict):
                 raise ValueError("result must be JSON object")
             sample_id = _identity(path, root, record)
@@ -193,6 +193,6 @@ def evaluate(reference_dir: Path, systems: dict[str, Path], judge: Callable, tio
                 rows[sample_id] = {"status": "error", "error": f"{type(error).__name__}: {error}", "reference_path": refs[sample_id]["path"], "prediction_path": preds[sample_id]["path"]}
         invalid = len(rows) - len(valid)
         report["systems"][name] = {"samples": rows, "valid_count": len(valid), "invalid_count": invalid, "aggregate": aggregate(valid) if rows and not invalid else None}
-    if not refs and all(not load_group(directory) for directory in systems.values()):
+    if not refs and not any(system["samples"] for system in report["systems"].values()):
         raise ValueError("completely empty dataset")
     return report

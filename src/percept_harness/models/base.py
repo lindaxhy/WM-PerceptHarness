@@ -7,24 +7,16 @@ import hashlib
 import base64
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, Protocol
 
 from .response_contract import ModelResponseContract
 
-from ..media import FrameRef, TimeSpan, VideoMetadata
-
-
-def validate_model_alias(value: Any) -> str:
-    """Validate the local name used to select a configured provider model."""
-    if not isinstance(value, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value) is None:
-        raise ValueError("model alias must be an opaque local name")
-    return value
+from ..media import TimeSpan
 
 
 DEFAULT_MAX_MODEL_OUTPUT_CHARS = 1_000_000
-TuningLevel = Literal["low", "medium", "high"]
 _COMPLETE_JSON_FENCE = re.compile(
     r"```(?:json)?[ \t]*\r?\n(?P<body>.*?)(?:\r?\n)?```",
     flags=re.IGNORECASE | re.DOTALL,
@@ -37,15 +29,6 @@ class ModelOutputError(ValueError):
 
 class ModelRequestError(ValueError):
     """A worker attempted to construct an invalid local model request."""
-
-
-@dataclass
-class VideoSession:
-    """Worker-local video state reused by all stages for one task."""
-
-    metadata: VideoMetadata
-    sampled_frames: tuple[FrameRef, ...] = ()
-    backend_cache: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -81,14 +64,17 @@ class VisualEvidence:
         encoded = value['png_base64']
         if type(encoded) is not str or len(encoded) > 12 * 1024 * 1024:
             raise ModelRequestError('invalid visual evidence byte budget')
-        result = cls(png_bytes=base64.b64decode(encoded, validate=True), timestamp=value['timestamp'],
+        return cls(png_bytes=base64.b64decode(encoded, validate=True), timestamp=value['timestamp'],
                      entity_id=value['entity_id'], track_id=value['track_id'], source=value['source'])
-        return result
 
 
 @dataclass(frozen=True)
 class ModelRequest:
-    """Immutable visual-only input for one local model inference stage."""
+    """Internal stage input, constructed with typed paths/spans by the runner.
+
+    Validate inference budgets and evidence alignment here; the pipeline owns
+    stage/schema names, model selection, and prompt text.
+    """
 
     stage: str
     video_path: Path
@@ -96,28 +82,24 @@ class ModelRequest:
     fps: float
     prompt: str
     schema_name: str
-    video_session_id: str | None
     model_name: str
-    media_resolution: TuningLevel | None = None
-    reasoning_effort: TuningLevel | None = None
-    clip_context: TuningLevel | None = None
-    video_session: VideoSession | None = None
+    max_frames: int = 128
+    max_output_tokens: int | None = None
     response_contract: ModelResponseContract | None = None
     visual_evidence: tuple[VisualEvidence, ...] = ()
 
     def __post_init__(self) -> None:
-        if type(self.visual_evidence) is not tuple or len(self.visual_evidence) > 96 or any(type(e) is not VisualEvidence for e in self.visual_evidence):
+        for name, value in (("max_frames", self.max_frames), ("max_output_tokens", self.max_output_tokens)):
+            if value is None and name == "max_output_tokens":
+                continue
+            if type(value) is not int or value <= 0:
+                raise ModelRequestError(f"{name} must be a positive integer")
+        if len(self.visual_evidence) > 96:
             raise ModelRequestError('invalid visual evidence collection')
         if sum(len(e.png_bytes) for e in self.visual_evidence) > 64 * 1024 * 1024:
             raise ModelRequestError('visual evidence exceeds byte budget')
         if any(not self.span.start <= e.timestamp < self.span.end for e in self.visual_evidence):
             raise ModelRequestError('visual evidence outside original video span')
-        if not isinstance(self.stage, str) or not self.stage.strip():
-            raise ModelRequestError("stage must be a non-blank string")
-        if not isinstance(self.video_path, Path):
-            raise ModelRequestError("video_path must be a pathlib.Path")
-        if not isinstance(self.span, TimeSpan):
-            raise ModelRequestError("span must be a TimeSpan")
         if (
             isinstance(self.fps, bool)
             or not isinstance(self.fps, (int, float))
@@ -125,34 +107,8 @@ class ModelRequest:
             or self.fps <= 0
         ):
             raise ModelRequestError("fps must be a finite positive number")
-        if not isinstance(self.prompt, str):
-            raise ModelRequestError("prompt must be a string")
-        if not isinstance(self.schema_name, str) or not self.schema_name.strip():
-            raise ModelRequestError("schema_name must be a non-blank string")
-        if self.video_session_id is not None and (
-            not isinstance(self.video_session_id, str) or not self.video_session_id.strip()
-        ):
-            raise ModelRequestError("video_session_id must be a non-blank string or None")
-        try:
-            validate_model_alias(self.model_name)
-        except ValueError:
-            raise ModelRequestError("model_name must be a local model alias") from None
-        if self.video_session is not None and not isinstance(
-            self.video_session,
-            VideoSession,
-        ):
-            raise ModelRequestError("video_session must be a VideoSession or None")
-        for field_name in ("media_resolution", "reasoning_effort", "clip_context"):
-            value = getattr(self, field_name)
-            if value is not None and (
-                not isinstance(value, str) or value not in ("low", "medium", "high")
-            ):
-                raise ModelRequestError(
-                    f"{field_name} must be low, medium, high, or None"
-                )
 
 
-@runtime_checkable
 class VideoModel(Protocol):
     """A self-hosted backend that returns one validated structured result."""
 
@@ -164,7 +120,6 @@ def parse_strict_json(
     text: str,
     *,
     max_chars: int = DEFAULT_MAX_MODEL_OUTPUT_CHARS,
-    forbid_duplicate_keys: bool = False,
 ) -> dict[str, Any]:
     """Parse exactly one JSON object, optionally wrapped in one JSON fence.
 
@@ -190,8 +145,10 @@ def parse_strict_json(
         payload = fenced.group("body")
 
     payload = payload.lstrip()
-    decoder = (json.JSONDecoder(object_pairs_hook=_reject_duplicate_pairs)
-               if forbid_duplicate_keys else json.JSONDecoder())
+    decoder = json.JSONDecoder(
+        object_pairs_hook=_reject_duplicate_pairs,
+        parse_float=_finite_float, parse_constant=_finite_float,
+    )
     try:
         value, end = decoder.raw_decode(payload)
     except ModelOutputError:
@@ -202,10 +159,6 @@ def parse_strict_json(
         raise ModelOutputError("model output contains trailing prose or multiple JSON values")
     if not isinstance(value, dict):
         raise ModelOutputError("model output must be a JSON object")
-    try:
-        _require_finite_numbers(value)
-    except RecursionError:
-        raise ModelOutputError("model output is not valid JSON") from None
     return value
 
 
@@ -218,15 +171,8 @@ def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def _require_finite_numbers(value: Any) -> None:
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ModelOutputError("model output numeric fields must be finite")
-        return
-    if isinstance(value, dict):
-        for child in value.values():
-            _require_finite_numbers(child)
-        return
-    if isinstance(value, list):
-        for child in value:
-            _require_finite_numbers(child)
+def _finite_float(value: str) -> float:
+    number = float(value)
+    if not math.isfinite(number):
+        raise ModelOutputError("model output numeric fields must be finite")
+    return number

@@ -65,21 +65,31 @@ The application does not automatically load `.env`. Keep keys outside committed 
 
 ### Timeouts and transient failures
 
-The OpenAI-compatible backend retries timeouts, transport errors, and HTTP 429, 500, 502, 503 and 504. Other HTTP error statuses fail immediately. The default is three extra attempts, with exponential backoff and jitter starting from a five-second base. Configure these through:
+The OpenAI-compatible backend retries timeouts, transport errors, and HTTP 429,
+500, 502, 503 and 504. Other HTTP errors fail immediately. Client class constants
+set three extra attempts and exponential backoff with jitter from a five-second
+base. Configure the fixed per-request timeout with
+`PERCEPT_OPENAI_TIMEOUT_SECONDS` (default 180 seconds). Dynamic video-length
+scaling and its upper timeout cap have been removed. This is not a batch deadline.
 
-```bash
-export PERCEPT_OPENAI_TRANSPORT_RETRIES=3
-export PERCEPT_OPENAI_RETRY_BACKOFF_SECONDS=5
-export PERCEPT_OPENAI_TIMEOUT_SECONDS=180
-export PERCEPT_OPENAI_TIMEOUT_SECONDS_PER_VIDEO_SECOND=0
-export PERCEPT_OPENAI_MAX_TIMEOUT_SECONDS=1800
-```
+Each `ModelRequest` carries `max_frames` (default 128, including SAM overlays)
+and optional `max_output_tokens`. When the token limit is omitted, stage defaults
+are 16,384 for drafts/revision, 8,192 for evidence review and 4,096 for SAM prompt
+review. Stage payloads accept these same fields. Effective budgets enter the
+request-cache identity. The unused internal hints `media_resolution`,
+`reasoning_effort` and `clip_context` have been removed; they never changed the
+API payload. Provider-specific generation options remain in
+`PERCEPT_OPENAI_EXTRA_BODY`. Removing these hints from cache identity makes old
+request-cache entries miss; completed-result resume is unchanged. The CLI resolves model aliases before creating a client. Connection types, formats and numeric ranges are validated by `Settings`; the CLI checks required credentials. Direct Python callers of the internal client are responsible for supplying valid connection values. Reserved request-body overrides and external responses are still checked by the adapter.
 
-Set retries to `0` to disable transport retries. A positive per-video-second value scales each request's timeout as `min(max_timeout, base_timeout + per_video_second * requested_span_seconds)`; zero keeps the fixed base timeout. These are request settings, not an overall batch deadline. Model-output repair is a separate pipeline step. Check failed result records and retry logs before changing sampling or timeout settings.
-
-For repeatability and the separate request-level cache, see [result identity and resume](usage.md#result-identity-and-resume).
-
-The client limits each encoded JSON request to 32 MiB by default. Full-resolution SAM PNG overlays (from targeted checks) can exceed that limit. If a result reports `request exceeds configured size limit`, inspect the evidence sizes and set `PERCEPT_OPENAI_MAX_REQUEST_BYTES` to a budget supported by your endpoint; for example, `134217728` permits 128 MiB locally. This does not change the provider's limits. The client preserves all authenticated overlays and fails if they cannot fit.
+`OpenAICompatVideoModel.MAX_REQUEST_BYTES` fixes the encoded request limit at
+32 MiB; `MAX_OUTPUT_CHARS` limits model text to 1,000,000 characters. Oversized
+requests thin original video frames while retaining mandatory SAM overlays;
+requests that still exceed the limit fail. These limits and retry behavior are
+internal class constants, not environment settings. The former
+`PERCEPT_OPENAI_MAX_FRAMES`, request/output-size, retry and dynamic-timeout
+settings no longer apply. For repeatability, see
+[result identity and resume](usage.md#result-identity-and-resume).
 
 ### Targeted SAM3.1 grounding
 
@@ -93,11 +103,17 @@ Use the pinned SAM source revision `660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7`, i
 | `PERCEPT_CV_DEVICE` | GPU device index |
 | `PERCEPT_CV_CACHE_ROOT` | Writable evidence cache |
 
-The core install neither installs this runtime nor validates a live GPU run. Run a small production annotation and inspect the `.audit.json` sidecar (`status`, `error`, `metadata.evidence`), overlay counts and archived CV manifests before scaling up. `--backend fake --model fake --cv fake` is a synthetic offline test path; fake CV cannot be paired with a production model. A successful zero-detection SAM result may have `no_tracks: true` and no overlays; the reviewer still sees the original video, and missing tracks do not prove absence.
+SAM loads the clean pinned checkout, checkpoint and tokenizer directly from
+these local paths. Keep them unchanged for the lifetime of a run. The loader
+checks the source revision, tokenizer identity and imported module locations;
+it does not create private copies of the source tree or checkpoint. NumPy, Pillow and
+OpenCV belong to the SAM runtime and are imported only when that runtime is used.
+
+The core install neither installs this runtime nor validates a live GPU run. Run a small production annotation and inspect the `.audit.json` sidecar (`status`, `error`, `metadata.evidence`), overlay counts and archived CV manifests before scaling up. A successful zero-detection SAM result may have `no_tracks: true` and no overlays; the reviewer still sees the original video, and missing tracks do not prove absence.
 
 ## Annotation
 
-`percept annotate` runs the annotation workflow. The default backend is `openai`; `fake` remains an explicit test option.
+`percept annotate` runs the annotation workflow. The backend is `openai`, for OpenAI-compatible model APIs.
 
 ```bash
 percept annotate --videos video.mp4 \
@@ -192,6 +208,52 @@ changing the output directory does not disable request caching. SAM evidence has
 its own cache. Internal hashes name cache entries and assign jobs to shards;
 they are not file integrity checks.
 
+The CV cache is a private, user-owned local directory. Cooperating workers use
+per-key process locks and publish complete artifact directories atomically.
+Each read checks the request identity, frame mapping, registered files, sizes
+and overlay signatures. Do not modify cache entries while a run is using them.
+The simplified internal CV schema accepts one target and one spatial prompt.
+Each request uses the local ID `target` and retains the original target description.
+Request scopes distinguish tracks; the description remains part of the cache key.
+Old CV entries containing retired entity/sampling fields become cache misses and
+are recomputed. Public annotation JSON and completed-result resume rules are
+unchanged; use `--force` to regenerate an already completed annotation.
+
+Targeted tracking samples the selected window at `PERCEPT_CV_MAX_FPS` and always
+includes its reference frame. OOM retries use the same original frame indices.
+Unused full-video scan/refinement settings and area/occlusion thresholds were
+removed. Shared limits cover overlays (24), processed frames (10,000) and total
+observations (64,000). SAM uses its pinned upstream defaults for confidence
+(0.5), compilation (off), and object capacity (16). These defaults are not
+separate environment settings. Artifact byte limits are internal storage
+bounds, not model parameters or limits on the entire cache directory.
+
+The retired `PERCEPT_CV_MIN_CONFIDENCE`, `PERCEPT_CV_MODEL_ALIAS`,
+`PERCEPT_CV_COMPILE_MODEL`, `PERCEPT_CV_EXECUTION_CHUNK_FRAMES`,
+`PERCEPT_CV_CACHE_MAX_FILES`, and `PERCEPT_CV_CACHE_MAX_BYTES` variables are
+ignored; remove them from existing environments. CV requests no longer carry
+a configurable confidence threshold, so previous CV cache keys are not reused.
+Completed annotations still follow the existing resume rules.
+
+Environment numbers and booleans use Pydantic Settings parsing, including
+standard boolean spellings such as `true`/`false` and `1`/`0`. FPS and timeouts
+must remain finite and positive. Model aliases are registry keys without a
+restricted naming grammar; connection and provider-model errors are reported
+when requests run. Setting both a single model and a model registry is rejected.
+
+## Video frame sampling
+
+VLM inputs use one FFmpeg decoding pass per extraction. Sampling intervals start
+at the requested span's beginning; each interval contributes its first source
+frame, and empty intervals contribute none. Timestamps come from the selected
+frames' PTS on the container playback clock. Sampling faster than the source
+does not duplicate frames. The model adapter still applies its frame budget.
+
+Videos that change resolution use the first frame's output canvas; a change of
+aspect ratio may stretch later frames. The source-PTS sampling contract has a
+new request-cache version. Completed annotations still follow the resume rules
+above: use `--force` to regenerate them with the new sampler.
+
 ## Grounded event scoring
 
 The official [WGO-Bench grading description](https://macrodata.co/blog/annotating-robot-video-subtasks) motivates the temporal and semantic tests. This implementation is an adaptation: it uses natural observable events, its own strict judge prompt and independent one-to-one matching, with no timestamp snapping or duration normalization. It is not an exact reproduction of published WGO numbers.
@@ -239,8 +301,7 @@ Other upstream evaluators use `percept score` commands listed in the [catalog](m
 
 ## Multi-GPU manifest annotation
 
-Manifest mode requires SAM3.1 (`--cv sam31`); fake CV is only available in the
-single-process offline test path (`--videos`).
+Manifest mode requires SAM3.1 (`--cv sam31`).
 
 A JSONL manifest supplies one absolute `video_path` and a unique relative
 `job_id` per line. Input checksum fields are not used.
@@ -289,4 +350,4 @@ For a reported run, record input paths and pair IDs; model/provider configuratio
 
 Save `python --version`, `python -m pip freeze` and `python -m pip check` for each evaluator environment. The motion-only VBench environment deliberately differs from the full upstream dependency metadata. A successful local check does not establish successful real-model inference or a complete benchmark run.
 
-Run the current regression suite with `python -m unittest discover -s tests -v`. Earlier development tests are preserved in [Git history](https://github.com/lindaxhy/WM-PerceptHarness/tree/ace1be715038296d445d904934d297a10ef6fbde/tests). Historical LAS tools remain on [archive/las-comparison-viewer](https://github.com/lindaxhy/WM-PerceptHarness/tree/archive/las-comparison-viewer) and [legacy-las-service](https://github.com/lindaxhy/WM-PerceptHarness/tree/legacy-las-service).
+Historical LAS tools remain on [archive/las-comparison-viewer](https://github.com/lindaxhy/WM-PerceptHarness/tree/archive/las-comparison-viewer) and [legacy-las-service](https://github.com/lindaxhy/WM-PerceptHarness/tree/legacy-las-service).

@@ -4,7 +4,6 @@ import math
 from ..models.response_contract import ModelResponseContract, compile_local_schema, canonical
 from pydantic import Field, StrictStr, StrictBool, field_validator, model_validator
 from ..cv.contracts import StrictModel, Timestamp, PositiveTimestamp, Fraction
-from ..cv.entities import EntityCandidate
 
 Text = Annotated[StrictStr, Field(min_length=1, max_length=4000)]
 Label = Annotated[StrictStr, Field(min_length=1, max_length=256)]
@@ -38,10 +37,6 @@ class GroundedEvents(StrictModel):
         if any(event.end > self.duration for event in self.events):
             raise ValueError('event outside original video')
         return self
-
-
-class EntityNomination(StrictModel):
-    entities: Annotated[tuple[EntityCandidate, ...], Field(max_length=64)]
 
 
 class SpatialTarget(StrictModel):
@@ -203,15 +198,14 @@ def validate_stage(schema, data, context, *, discarded_targets=None):
 
 def register_event_schemas(registry):
     from .output_validation import DeclaredSchemaOutputError
-    from pydantic import ValidationError
-    for schema in (EntityNomination, GroundedEvents, ConfidenceDraft, EvidenceReview, SamPromptReview):
+    for schema in (GroundedEvents, ConfidenceDraft, EvidenceReview, SamPromptReview):
         def validator(data, context, schema=schema):
             try:
                 validated = validate_stage(schema, data, context or {})
-                # Preserve recoverable raw target data through the job store;
+                # Preserve recoverable raw target data through stage execution;
                 # pipeline validation records discarded targets in its audit.
                 return dict(data) if schema is ConfidenceDraft else validated
-            except (ValueError, TypeError, KeyError, ValidationError):
+            except (ValueError, TypeError, KeyError):
                 raise DeclaredSchemaOutputError(('GROUNDED_SCHEMA_INVALID',)) from None
         def response_contract(context, schema=schema):
             encoded = canonical(compile_local_schema(schema.model_json_schema()))

@@ -61,7 +61,7 @@ def check_cli(metric):
 
 
 def check_smoke():
-    from percept_harness.evaluation.event_matching import Event, match_events, temporal_iou
+    from percept_harness.evaluation.event_matching import match_weight_matrix, temporal_iou
     from percept_harness.evaluation.events import score_pair
     from percept_harness.pipelines.event_schemas import GroundedEvents
     from percept_harness.models.base import ModelOutputError, parse_strict_json
@@ -74,10 +74,13 @@ def check_smoke():
         pass
     else:
         raise RuntimeError('Structured output accepted a non-finite number')
-    reference, prediction = Event(0, 2, 'move'), Event(1, 3, 'move')
+    reference, prediction = GroundedEvents.model_validate({'duration': 3, 'events': [
+        {'start': 0, 'end': 2, 'description': 'A hand moves a cup.'},
+        {'start': 1, 'end': 3, 'description': 'A hand moves a cup.'},
+    ]}).events
     if not math.isclose(temporal_iou(reference, prediction), 1 / 3):
         raise RuntimeError('Temporal overlap smoke check failed')
-    matches = match_events([reference], [prediction])
+    matches = match_weight_matrix([[temporal_iou(reference, prediction)]], threshold=0.3)
     if len(matches) != 1 or (matches[0].reference_index, matches[0].prediction_index) != (0, 0):
         raise RuntimeError('Event matching smoke check failed')
     grounded = GroundedEvents.model_validate({'duration': 2.0, 'events': [
@@ -126,7 +129,7 @@ def check_device(metric, device):
 
 
 def check_weights(metric, cache):
-    from percept_harness.weights import check_weights
+    from percept_harness.video_metrics import check_weights
     check_weights(metric, cache)
     return f'Checkpoint files present: {cache}'
 

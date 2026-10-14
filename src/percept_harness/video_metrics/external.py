@@ -27,9 +27,7 @@ from typing import Sequence
 class MetricSpec:
     source_url: str
     revision: str | None
-    source_label: str
     command_hint: str
-    needs_source: bool = True
     needs_checkpoint: bool = False
     needs_manifest: bool = False
     needs_generated: bool = False
@@ -38,55 +36,55 @@ class MetricSpec:
 
 SPECS: dict[str, MetricSpec] = {
     "instruction_following": MetricSpec(
-        "https://github.com/WorldModelBench-Team/WorldModelBench", "00b7aa17a05f9fd1ab5c8f66bcf476d04c9c33bf", "WorldModelBench",
+        "https://github.com/WorldModelBench-Team/WorldModelBench", "00b7aa17a05f9fd1ab5c8f66bcf476d04c9c33bf",
         "python evaluate.py --model_name MODEL_NAME --video_dir VIDEO_DIR --judge JUDGE --save_name OUTPUT", needs_checkpoint=True, needs_manifest=True),
     "action_binding": MetricSpec(
-        "https://github.com/KaiyueSun98/T2V-CompBench", "dd5eff7b93af0550b9efa2bdabbb21b3b017ceda", "T2V-CompBench V2",
+        "https://github.com/KaiyueSun98/T2V-CompBench", "dd5eff7b93af0550b9efa2bdabbb21b3b017ceda",
         "python LLaVA/llava/eval/compbench_eval_action_binding.py --video-path VIDEO_DIR --output-path OUTPUT --read-prompt-file MANIFEST --t2v-model MODEL", needs_manifest=True),
     "object_interactions": MetricSpec(
-        "https://github.com/KaiyueSun98/T2V-CompBench", "dd5eff7b93af0550b9efa2bdabbb21b3b017ceda", "T2V-CompBench V2",
+        "https://github.com/KaiyueSun98/T2V-CompBench", "dd5eff7b93af0550b9efa2bdabbb21b3b017ceda",
         "python LLaVA/llava/eval/compbench_eval_interaction.py --video-path VIDEO_DIR --output-path OUTPUT --read-prompt-file MANIFEST --t2v-model MODEL", needs_manifest=True),
     "motion_binding": MetricSpec(
-        "https://github.com/KaiyueSun98/T2V-CompBench", "dd5eff7b93af0550b9efa2bdabbb21b3b017ceda", "T2V-CompBench V2",
+        "https://github.com/KaiyueSun98/T2V-CompBench", "dd5eff7b93af0550b9efa2bdabbb21b3b017ceda",
         "python Grounded-Segment-Anything/compbench_motion_binding_seg.py ...; python dot/compbench_eval_motion_binding.py ...", needs_manifest=True),
     "motion_order_understanding": MetricSpec(
-        "https://github.com/Vchitect/VBench", "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490", "VBench-2.0",
+        "https://github.com/Vchitect/VBench", "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490",
         "bash evaluate.sh --max_parallel_tasks 1", needs_manifest=True),
     "motion_rationality": MetricSpec(
-        "https://github.com/Vchitect/VBench", "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490", "VBench-2.0",
+        "https://github.com/Vchitect/VBench", "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490",
         "bash evaluate.sh --max_parallel_tasks 1", needs_manifest=True),
     "mechanics": MetricSpec(
-        "https://github.com/Vchitect/VBench", "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490", "VBench-2.0",
+        "https://github.com/Vchitect/VBench", "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490",
         "bash evaluate.sh --max_parallel_tasks 1", needs_manifest=True),
     "thermotics": MetricSpec(
-        "https://github.com/Vchitect/VBench", "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490", "VBench-2.0",
+        "https://github.com/Vchitect/VBench", "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490",
         "bash evaluate.sh --max_parallel_tasks 1", needs_manifest=True),
     "material": MetricSpec(
-        "https://github.com/Vchitect/VBench", "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490", "VBench-2.0",
+        "https://github.com/Vchitect/VBench", "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490",
         "bash evaluate.sh --max_parallel_tasks 1", needs_manifest=True),
     "phygen_eval_pca": MetricSpec(
-        "https://github.com/OpenGVLab/PhyGenBench", "f8642cb796f3bcb01f0b7c1b2ec53b75d357c739", "PhyGenBench",
+        "https://github.com/OpenGVLab/PhyGenBench", "f8642cb796f3bcb01f0b7c1b2ec53b75d357c739",
         "python PhyGenEval/overall.py", needs_manifest=True),
     "videophy_pc": MetricSpec(
-        "https://github.com/Hritikbansal/videophy", None, "VideoPhy-2",
+        "https://github.com/Hritikbansal/videophy", None,
         "python inference.py --input_csv PC.csv --checkpoint CHECKPOINT --output_csv OUTPUT --task pc", needs_checkpoint=True, needs_manifest=True),
     "videophy_sa": MetricSpec(
-        "https://github.com/Hritikbansal/videophy", None, "VideoPhy-2",
+        "https://github.com/Hritikbansal/videophy", None,
         "python inference.py --input_csv SA.csv --checkpoint CHECKPOINT --output_csv OUTPUT --task sa", needs_checkpoint=True, needs_manifest=True),
     "psnr": MetricSpec(
-        "https://github.com/chaofengc/IQA-PyTorch", "18dd7a19694e94aac21019170e3f5e63d6b4e19e", "IQA-PyTorch",
+        "https://github.com/chaofengc/IQA-PyTorch", "18dd7a19694e94aac21019170e3f5e63d6b4e19e",
         "python inference_iqa.py -m PSNR -t GENERATED -r REFERENCE", needs_generated=True, needs_reference=True),
     "ssim": MetricSpec(
-        "https://github.com/chaofengc/IQA-PyTorch", "18dd7a19694e94aac21019170e3f5e63d6b4e19e", "IQA-PyTorch",
+        "https://github.com/chaofengc/IQA-PyTorch", "18dd7a19694e94aac21019170e3f5e63d6b4e19e",
         "python inference_iqa.py -m SSIM -t GENERATED -r REFERENCE", needs_generated=True, needs_reference=True),
     "lpips": MetricSpec(
-        "https://github.com/chaofengc/IQA-PyTorch", "18dd7a19694e94aac21019170e3f5e63d6b4e19e", "IQA-PyTorch",
+        "https://github.com/chaofengc/IQA-PyTorch", "18dd7a19694e94aac21019170e3f5e63d6b4e19e",
         "python inference_iqa.py -m LPIPS -t GENERATED -r REFERENCE", needs_generated=True, needs_reference=True),
     "fid": MetricSpec(
-        "https://github.com/chaofengc/IQA-PyTorch", "18dd7a19694e94aac21019170e3f5e63d6b4e19e", "IQA-PyTorch",
+        "https://github.com/chaofengc/IQA-PyTorch", "18dd7a19694e94aac21019170e3f5e63d6b4e19e",
         "pyiqa fid -t GENERATED -r REFERENCE", needs_generated=True, needs_reference=True),
     "fvd": MetricSpec(
-        "https://github.com/google-research/google-research", "4700efb9afa54286b0e04473ba80a13e8461e25f", "Google Research FVD",
+        "https://github.com/google-research/google-research", "4700efb9afa54286b0e04473ba80a13e8461e25f",
         "python official_fvd_runner.py --real REAL_COLLECTION --generated GENERATED_COLLECTION", needs_generated=True, needs_reference=True),
 }
 
@@ -121,13 +119,10 @@ def preflight(*, metric: str, source_dir: Path | None, checkpoint: Path | None,
         spec = SPECS[metric]
     except KeyError as exc:
         raise ValueError(f"unknown external metric: {metric}") from exc
-    if spec.needs_source and source_dir is None:
+    if source_dir is None:
         raise ValueError(f"{metric} requires --source-dir (use the pinned official checkout)")
-    source = _resolved(source_dir, label="source-dir", directory=True) if spec.needs_source else None
-    if source is not None:
-        revision = verify_revision(source, spec.revision, runner=runner)
-    else:
-        revision = {"revision": None}
+    source = _resolved(source_dir, label="source-dir", directory=True)
+    revision = verify_revision(source, spec.revision, runner=runner)
     model = _resolved(checkpoint, label="checkpoint", directory=None) if spec.needs_checkpoint else checkpoint
     if spec.needs_checkpoint and model is None:
         raise ValueError(f"{metric} requires --checkpoint (no download is attempted)")
@@ -140,7 +135,7 @@ def preflight(*, metric: str, source_dir: Path | None, checkpoint: Path | None,
         raise ValueError(f"{metric} requires --generated")
     if spec.needs_reference and reference_path is None:
         raise ValueError(f"{metric} requires --reference")
-    return {"metric": metric, "source": str(source) if source else None, "source_url": spec.source_url,
+    return {"metric": metric, "source": str(source), "source_url": spec.source_url,
             "revision": revision["revision"], "checkpoint": str(model) if model else None,
             "manifest": str(input_manifest) if input_manifest else None,
             "generated": str(generated_path) if generated_path else None,

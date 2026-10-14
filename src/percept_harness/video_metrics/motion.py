@@ -50,7 +50,7 @@ def score_video(video: Path, cache: Path, output: Path, gpu: str | None = None) 
     if version != VBENCH_VERSION:
         raise RuntimeError(f"Expected vbench=={VBENCH_VERSION}; found {version}")
     checkpoint = cache / "amt_model" / "amt-s.pth"
-    from percept_harness.weights import check_weights
+    from percept_harness.video_metrics import check_weights
     check_weights("motion", cache)
     executable = Path(sysconfig.get_path("scripts")) / ("vbench.exe" if os.name == "nt" else "vbench")
     if not executable.is_file():

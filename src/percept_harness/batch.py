@@ -24,7 +24,7 @@ from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 
 from .config import Settings
-from .result_store import write_json
+from .results import write_json
 from .runner import SyncRunner, run_batch, _write_result
 
 
@@ -106,9 +106,7 @@ def _cv_worker(connection, cv_settings, gpu):
     try:
         from .cli import _cv_executor
         settings = Settings(**cv_settings)
-        from contextlib import ExitStack
-        with ExitStack() as stack:
-            execute = None
+        with _cv_executor(settings.cv_provider, SimpleNamespace(cv_device=gpu), settings) as execute:
             connection.send(("ready", {"pid": os.getpid(), "provider": settings.cv_provider,
                                        "initialization": "deferred_until_target"}))
             while True:
@@ -116,9 +114,6 @@ def _cv_worker(connection, cv_settings, gpu):
                 if payload is None:
                     break
                 try:
-                    if execute is None:
-                        execute = stack.enter_context(_cv_executor(settings.cv_provider, SimpleNamespace(
-                            cv_device=gpu, backend="openai"), settings))
                     result, metrics = execute(payload)
                     connection.send(("ok", (result, metrics)))
                 except Exception as error:
@@ -197,7 +192,6 @@ def archive_cv_evidence(evidence, cache_root: Path, archive_root: Path) -> Path:
             except OSError:
                 if not destination.exists():
                     raise
-                _verify_cv_archive(destination)
         finally:
             if temporary.exists():
                 shutil.rmtree(temporary)
@@ -240,11 +234,6 @@ class ReviewRequiredRunner(SyncRunner):
             return outcome
         metadata = outcome.metadata or {}
         phases = metadata.get('phases', [])
-        from .pipelines.event_schemas import GroundedEvents
-        try:
-            GroundedEvents.model_validate(outcome.data)
-        except ValueError:
-            return replace(outcome, status='failed', data=None, error='Invalid event annotation')
         required = required_event_phases(metadata)
         if not required.issubset(phases):
             return replace(outcome, status='failed', data=None,
@@ -253,16 +242,15 @@ class ReviewRequiredRunner(SyncRunner):
 
 
 def run_manifest(arguments) -> int:
-    from .cli import _load_backend, annotation_cv_preflight
+    from .cli import _load_backend
     if arguments.workers_per_gpu <= 0 or arguments.request_concurrency <= 0:
         raise ValueError("worker and request concurrency must be positive")
     if not 0 <= arguments.shard_index < arguments.shard_count:
         raise ValueError("invalid shard index or count")
-    settings = Settings.from_env()
+    settings = Settings()
     provider = arguments.cv or settings.cv_provider
     if provider != "sam31":
         raise ValueError("manifest annotation requires --cv sam31")
-    annotation_cv_preflight(provider, arguments.backend, settings, check_assets=False)
     devices = [int(s) for s in (arguments.cv_devices or str(settings.cv_device)).split(",")]
     if any(g < 0 for g in devices) or len(set(devices)) != len(devices):
         raise ValueError("CV devices must be distinct nonnegative integers")
@@ -282,7 +270,7 @@ def run_manifest(arguments) -> int:
     provider_logger.addHandler(throttle_handler)
     slots = []
     live_keys = {}
-    archived_keys = {}
+    archived_keys = set()
     archive_lock = threading.Lock()
     start = time.time()
 
@@ -307,7 +295,7 @@ def run_manifest(arguments) -> int:
             status("running" if slots and all(s.ready for s in slots) else "initializing")
 
     def worker(gpu, cv_execute, tasks):
-        lane_settings = Settings.model_validate({**settings.model_dump(), "cv_device": gpu})
+        lane_settings = settings.model_copy(update={"cv_device": gpu})
         model, alias, closer = _load_backend(arguments, lane_settings)
         original_generate = model.generate
         def generate(request):
@@ -353,7 +341,7 @@ def run_manifest(arguments) -> int:
                             if record.get('status') != 'available':
                                 continue
                             archived = archive_cv_evidence(record, lane_settings.cv_cache_root, root / '.cv-archive')
-                            archived_keys[record['artifact_key']] = archived
+                            archived_keys.add(record['artifact_key'])
                             archives.append({'scope': record['scope'], 'archive_path': str(archived)})
                     write_json(job_root / '.percept' / 'cv-artifact.json', {
                         'artifacts': archives, 'host': os.uname().nodename, 'gpu': gpu})
@@ -386,7 +374,7 @@ def run_manifest(arguments) -> int:
                                     continue
                                 os.replace(source, retired)
                             shutil.rmtree(retired)
-                            del archived_keys[key]
+                            archived_keys.remove(key)
                     tasks.task_done()
         finally:
             closer()

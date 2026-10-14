@@ -1,4 +1,4 @@
-"""Provider-independent contracts and normalization for CV evidence."""
+"""Provider-independent contracts and lazy adapters for CV evidence."""
 
 from typing import Any
 
@@ -6,7 +6,6 @@ from .base import (
     CvEvidenceProvider,
     CvOutOfMemoryError,
     CvProviderError,
-    FakeCvEvidenceProvider,
 )
 from .contracts import (
     ArtifactFile,
@@ -14,16 +13,13 @@ from .contracts import (
     CvEvidenceRequest,
     CvTrack,
     EntityPrompt,
-    EntityRole,
     EvidenceStatus,
-    EvidenceThresholds,
     FrameTimeline,
     FrameTimestamp,
     OverlayRecord,
     SamplingPolicy,
     TrackObservation,
 )
-from .entities import EntityCandidate, NormalizedEntities, normalize_entities
 
 __all__ = [
     "ArtifactFile",
@@ -33,21 +29,15 @@ __all__ = [
     "CvOutOfMemoryError",
     "CvProviderError",
     "CvTrack",
-    "EntityCandidate",
     "EntityPrompt",
-    "EntityRole",
     "EvidenceStatus",
-    "EvidenceThresholds",
     "FrameTimeline",
     "FrameTimestamp",
-    "FakeCvEvidenceProvider",
-    "NormalizedEntities",
     "OverlayRecord",
     "SamplingPolicy",
     "Sam31EvidenceProvider",
     "SyncCvExecutor",
     "TrackObservation",
-    "normalize_entities",
 ]
 
 

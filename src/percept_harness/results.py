@@ -46,28 +46,28 @@ def annotation_record(path: Path) -> dict[str, Any] | None:
         if is_annotation_record(audit):
             return data  # A literal *.audit.json annotation is not this file's sidecar.
         record = {**audit, "data": data}
-        if audit.get("status") == "completed":
-            if data is None:
-                record.update(status="failed", error="annotation data missing")
+        if audit.get("status") == "completed" and data is None:
+            record.update(status="failed", error="annotation data missing")
         return record
     return data
 
 
 def write_annotation(path: Path, record: dict[str, Any]) -> None:
     """Audit acts as commit marker across the two atomic file replacements."""
-    if is_annotation_record(read_record(audit_path(path))):
-        raise ValueError(f"Audit path is occupied by an annotation: {audit_path(path)}")
+    sidecar = audit_path(path)
+    if is_annotation_record(read_record(sidecar)):
+        raise ValueError(f"Audit path is occupied by an annotation: {sidecar}")
     data = record["data"]
     audit = {key: value for key, value in record.items() if key != "data"}
     try:
         if record["status"] == "completed":
             from .pipelines.event_schemas import GroundedEvents
             GroundedEvents.model_validate(data)
-            write_json(audit_path(path), {**audit, "status": "writing"})
+            write_json(sidecar, {**audit, "status": "writing"})
             write_json(path, data)
-            write_json(audit_path(path), audit)
+            write_json(sidecar, audit)
         else:
-            write_json(audit_path(path), audit)
+            write_json(sidecar, audit)
             path.unlink(missing_ok=True)
     except BaseException:
         # A partially persisted run must never expose the preceding success.
@@ -123,8 +123,7 @@ def atomic_text(path: Path, text: str) -> None:
             os.fsync(stream.fileno())
         os.replace(temporary, path)
     finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+        Path(temporary).unlink(missing_ok=True)
 
 
 def write_json(path: Path, value: Any) -> None:

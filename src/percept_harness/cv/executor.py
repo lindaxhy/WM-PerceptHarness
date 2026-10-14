@@ -42,17 +42,16 @@ class SyncCvExecutor:
             return _published_result(cached.key, artifact, True), metrics
 
         started = time.monotonic()
-        oom_retry = False
         for attempt_index in range(2):
             try:
                 with self.artifact_store.staging(key) as staging:
                     artifact = self.provider.analyze(request, staging)
                     inference_seconds = time.monotonic() - started
-                    provider_metrics = _provider_execution_metrics(self.provider)
+                    provider_metrics = self.provider.request_metrics()
                     metrics = _cv_metrics(
                         artifact,
                         cache_hit=False,
-                        oom_retry=oom_retry,
+                        oom_retry=bool(attempt_index),
                         processed_frames=provider_metrics["processed_frames"],
                         execution_chunk_frames=provider_metrics["execution_chunk_frames"],
                         peak_allocated_bytes=provider_metrics["peak_allocated_bytes"],
@@ -63,9 +62,9 @@ class SyncCvExecutor:
             except CvOutOfMemoryError:
                 if attempt_index == 1:
                     raise
-                oom_retry = True
-                _halve_execution_chunk(self.provider)
-        raise RuntimeError("CV evidence execution did not produce an artifact")
+                self.provider.execution_chunk_frames = max(
+                    1, self.provider.execution_chunk_frames // 2
+                )
 
 
 def _published_result(
@@ -78,39 +77,6 @@ def _published_result(
         "cache_hit": cache_hit,
         "status": artifact.status.value,
     }
-
-
-def _halve_execution_chunk(provider: CvEvidenceProvider) -> None:
-    current = getattr(provider, "execution_chunk_frames", None)
-    if isinstance(current, bool) or not isinstance(current, int) or current <= 0:
-        raise ValueError("provider execution chunk must be a positive integer")
-    smaller = max(1, current // 2)
-    setter = getattr(provider, "set_execution_chunk_frames", None)
-    if callable(setter):
-        setter(smaller)
-    else:
-        try:
-            setattr(provider, "execution_chunk_frames", smaller)
-        except (AttributeError, TypeError):
-            raise ValueError("provider execution chunk cannot be changed") from None
-
-
-def _provider_execution_metrics(provider: CvEvidenceProvider) -> dict[str, int]:
-    request_metrics = getattr(provider, "request_metrics", None)
-    reported = request_metrics() if callable(request_metrics) else None
-    if reported is None:
-        raise ValueError("provider request metrics are required")
-    if not isinstance(reported, Mapping):
-        raise TypeError("provider request_metrics must return a mapping or None")
-    values: dict[str, int] = {}
-    for name in ("processed_frames", "execution_chunk_frames", "peak_allocated_bytes"):
-        value = reported.get(name)
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ValueError("provider execution metric must be a non-negative integer")
-        values[name] = value
-    if values["execution_chunk_frames"] <= 0:
-        raise ValueError("provider execution chunk must be a positive integer")
-    return values
 
 
 def _cv_metrics(

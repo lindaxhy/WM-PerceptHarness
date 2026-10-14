@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import math
-import re
 from dataclasses import dataclass
 
 
@@ -10,36 +9,6 @@ def _number(value):
     if type(value) not in (float, int) or not math.isfinite(value):
         raise ValueError("invalid finite number")
     return value
-
-
-def _text(value):
-    if type(value) is not str or not value.strip():
-        raise ValueError("invalid text")
-    if re.search(r"(?i)\.(?:npz|npy|mask)\b", value) or ("mask" in value.casefold() and any(c in value for c in "[]{}")):
-        raise ValueError("prohibited raw evidence content")
-    return value
-
-
-@dataclass(frozen=True)
-class Event:
-    start: float
-    end: float
-    event_type: str
-    actor: str | None = None
-    target: str | None = None
-    state: str | None = None
-    result: str | None = None
-    event_id: str = ""
-    target_entity_id: str | None = None
-    occluder_entity_id: str | None = None
-
-    def __post_init__(self):
-        if not 0 <= _number(self.start) < _number(self.end):
-            raise ValueError("invalid positive event interval")
-        _text(self.event_type)
-        for label in (self.actor, self.target, self.state, self.result, self.target_entity_id, self.occluder_entity_id):
-            if label is not None:
-                _text(label)
 
 
 @dataclass(frozen=True)
@@ -102,8 +71,3 @@ def match_weight_matrix(scores, threshold=0.75) -> list[Match]:
             if not j0:
                 break
     return sorted((Match(p[j] - 1, j - 1, scores[p[j] - 1][j - 1]) for j in range(1, real + 1) if p[j] and weights[p[j] - 1][j - 1] > 0), key=lambda x: x.reference_index)
-
-
-def match_events(references, predictions, temporal_iou_threshold=0.3) -> list[Match]:
-    """Legacy category-aware API retained for existing callers."""
-    return match_weight_matrix([[temporal_iou(r, p) if r.event_type == p.event_type and r.event_type != "unknown" else 0 for p in predictions] for r in references], temporal_iou_threshold)

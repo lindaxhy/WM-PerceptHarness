@@ -4,9 +4,6 @@ import json
 import math
 from typing import Any
 
-CHOICE_CONTRACT = 'scene-spatial-choice-refs-v1'
-BOUNDARY_CONTRACT = 'boundary-plan-v1'
-
 MAX_SCHEMA_BYTES = 65_536
 MAX_SCHEMA_DEPTH = 32
 MAX_SCHEMA_NODES = 4_096
@@ -102,7 +99,7 @@ class ModelResponseContract:
     schema_json: str
 
     def __post_init__(self) -> None:
-        if (type(self.name) is not str or self.name not in ('EntityNomination', 'GroundedEvents', 'ConfidenceDraft', 'EvidenceReview', 'SamPromptReview')
+        if (type(self.name) is not str or self.name not in ('GroundedEvents', 'ConfidenceDraft', 'EvidenceReview', 'SamPromptReview')
                 or type(self.schema_json) is not str
                 or len(self.schema_json) > MAX_SCHEMA_BYTES
                 or len(self.schema_json.encode()) > MAX_SCHEMA_BYTES):
