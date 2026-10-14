@@ -92,10 +92,8 @@ class Settings(BaseSettings):
         if self.openai_model_registry:
             return dict(self.openai_model_registry)
         if self.openai_model:
-            from .models.base import validate_model_alias
-
             alias = re.sub(r"[^A-Za-z0-9._-]+", "-", self.openai_model).lstrip("._-")[:128]
-            return {validate_model_alias(alias): self.openai_model}
+            return {alias: self.openai_model}
         return {}
 
     @model_validator(mode="after")

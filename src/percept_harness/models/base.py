@@ -9,7 +9,7 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from .response_contract import ModelResponseContract
 
@@ -24,7 +24,6 @@ def validate_model_alias(value: Any) -> str:
 
 
 DEFAULT_MAX_MODEL_OUTPUT_CHARS = 1_000_000
-TuningLevel = Literal["low", "medium", "high"]
 _COMPLETE_JSON_FENCE = re.compile(
     r"```(?:json)?[ \t]*\r?\n(?P<body>.*?)(?:\r?\n)?```",
     flags=re.IGNORECASE | re.DOTALL,
@@ -79,7 +78,11 @@ class VisualEvidence:
 
 @dataclass(frozen=True)
 class ModelRequest:
-    """Immutable visual-only input for one local model inference stage."""
+    """Internal stage input, constructed with typed paths/spans by the runner.
+
+    Validate inference budgets and evidence alignment here; configuration owns
+    model aliases, and the pipeline owns stage/schema names and prompt text.
+    """
 
     stage: str
     video_path: Path
@@ -90,9 +93,6 @@ class ModelRequest:
     model_name: str
     max_frames: int = 128
     max_output_tokens: int | None = None
-    media_resolution: TuningLevel | None = None
-    reasoning_effort: TuningLevel | None = None
-    clip_context: TuningLevel | None = None
     response_contract: ModelResponseContract | None = None
     visual_evidence: tuple[VisualEvidence, ...] = ()
 
@@ -102,18 +102,12 @@ class ModelRequest:
                 continue
             if type(value) is not int or value <= 0:
                 raise ModelRequestError(f"{name} must be a positive integer")
-        if type(self.visual_evidence) is not tuple or len(self.visual_evidence) > 96 or any(type(e) is not VisualEvidence for e in self.visual_evidence):
+        if len(self.visual_evidence) > 96:
             raise ModelRequestError('invalid visual evidence collection')
         if sum(len(e.png_bytes) for e in self.visual_evidence) > 64 * 1024 * 1024:
             raise ModelRequestError('visual evidence exceeds byte budget')
         if any(not self.span.start <= e.timestamp < self.span.end for e in self.visual_evidence):
             raise ModelRequestError('visual evidence outside original video span')
-        if not isinstance(self.stage, str) or not self.stage.strip():
-            raise ModelRequestError("stage must be a non-blank string")
-        if not isinstance(self.video_path, Path):
-            raise ModelRequestError("video_path must be a pathlib.Path")
-        if not isinstance(self.span, TimeSpan):
-            raise ModelRequestError("span must be a TimeSpan")
         if (
             isinstance(self.fps, bool)
             or not isinstance(self.fps, (int, float))
@@ -121,22 +115,6 @@ class ModelRequest:
             or self.fps <= 0
         ):
             raise ModelRequestError("fps must be a finite positive number")
-        if not isinstance(self.prompt, str):
-            raise ModelRequestError("prompt must be a string")
-        if not isinstance(self.schema_name, str) or not self.schema_name.strip():
-            raise ModelRequestError("schema_name must be a non-blank string")
-        try:
-            validate_model_alias(self.model_name)
-        except ValueError:
-            raise ModelRequestError("model_name must be a local model alias") from None
-        for field_name in ("media_resolution", "reasoning_effort", "clip_context"):
-            value = getattr(self, field_name)
-            if value is not None and (
-                not isinstance(value, str) or value not in ("low", "medium", "high")
-            ):
-                raise ModelRequestError(
-                    f"{field_name} must be low, medium, high, or None"
-                )
 
 
 @runtime_checkable

@@ -96,7 +96,7 @@ class OpenAICompatVideoModel:
 
 
     def semantic_cache_identity(self, request: ModelRequest) -> dict[str, Any]:
-        """Effective request settings plus explicitly recorded, ignored hints."""
+        """Effective settings that determine the model request."""
         return {
             "adapter_contract_version": self.adapter_contract_version,
             "frame_extraction_contract_version": self.frame_extraction_contract_version,
@@ -114,11 +114,6 @@ class OpenAICompatVideoModel:
             },
             "extra_body": canonical(self._extra_body),
             "stream": False,
-            "recorded_hints": {
-                "media_resolution": request.media_resolution,
-                "reasoning_effort": request.reasoning_effort,
-                "clip_context": request.clip_context,
-            },
         }
 
     def generate(self, request: ModelRequest) -> dict[str, Any]:

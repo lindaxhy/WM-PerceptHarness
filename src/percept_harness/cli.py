@@ -319,8 +319,6 @@ def _loaded_cv_executor(provider_name: str, arguments: argparse.Namespace, setti
 
 
 def _configure_execution_chunk_frames(provider, value: int) -> None:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValueError("requested CV execution chunk must be a positive integer")
     setter = getattr(provider, "set_execution_chunk_frames", None)
     if callable(setter):
         setter(value)

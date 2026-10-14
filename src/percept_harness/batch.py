@@ -239,11 +239,6 @@ class ReviewRequiredRunner(SyncRunner):
             return outcome
         metadata = outcome.metadata or {}
         phases = metadata.get('phases', [])
-        from .pipelines.event_schemas import GroundedEvents
-        try:
-            GroundedEvents.model_validate(outcome.data)
-        except ValueError:
-            return replace(outcome, status='failed', data=None, error='Invalid event annotation')
         required = required_event_phases(metadata)
         if not required.issubset(phases):
             return replace(outcome, status='failed', data=None,

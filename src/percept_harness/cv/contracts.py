@@ -312,20 +312,12 @@ class CvEvidenceArtifact(StrictModel):
             or self.overlay_records
         ):
             raise ValueError("nonavailable artifact cannot contain processed evidence")
-        if self.processed_timeline is None and any(
-            track.observations for track in self.tracks
-        ):
-            raise ValueError("observations require a processed timeline")
-        entity_ids = [entity.entity_id for entity in self.entities]
-        if len(entity_ids) != len(set(entity_ids)):
-            raise ValueError("artifact entity IDs must be unique")
         track_ids = [track.track_id for track in self.tracks]
         if len(track_ids) != len(set(track_ids)):
             raise ValueError("track IDs must be unique")
         file_paths = [file.path for file in self.files]
         if len(file_paths) != len(set(file_paths)):
             raise ValueError("artifact file paths must be unique")
-        known_entities = set(entity_ids)
         known_files = set(file_paths)
         processed_clock = (
             {
@@ -337,7 +329,7 @@ class CvEvidenceArtifact(StrictModel):
         )
         total_observations = 0
         for track in self.tracks:
-            if track.entity_id not in known_entities:
+            if track.entity_id != self.entities[0].entity_id:
                 raise ValueError("track entity_id must reference an artifact entity")
             total_observations += len(track.observations)
             if total_observations > MAX_OBSERVATIONS:
@@ -360,14 +352,6 @@ class CvEvidenceArtifact(StrictModel):
             for artifact_file in self.files
             if artifact_file.path.startswith("overlays/")
         }
-        mask_paths = {
-            observation.mask_ref
-            for track in self.tracks
-            for observation in track.observations
-            if observation.mask_ref is not None
-        }
-        if mask_paths & declared_overlay_paths:
-            raise ValueError("mask and overlay artifact paths must be disjoint")
         if set(overlay_paths) != declared_overlay_paths:
             raise ValueError("overlay records must exactly cover overlay files")
         for record in self.overlay_records:

@@ -91,8 +91,6 @@ class SyncRunner:
                 executor=executor, settings=self.settings, media_path=resolved,
             )
             result = EmbodiedActionPipeline().run(context, prompt_context=prompt_context)
-            if not isinstance(result, Mapping):
-                raise TypeError("pipeline result must be a mapping")
             return EvalOutcome(
                 video_path=resolved,
                 status="completed",
@@ -488,9 +486,6 @@ def _model_request(stage: str, payload: Mapping[str, Any], model_name: str) -> M
         model_name=model_name,
         max_frames=payload.get("max_frames", 128),
         max_output_tokens=payload.get("max_output_tokens"),
-        media_resolution=payload.get("media_resolution"),
-        reasoning_effort=payload.get("reasoning_effort"),
-        clip_context=payload.get("clip_context"),
         visual_evidence=tuple(VisualEvidence.from_payload(e) for e in payload.get("visual_evidence", ())),
     )
 
