@@ -33,23 +33,28 @@ The following code is preparation/integration support. Local checks do not estab
 
 ## Checkpoint preparation
 
-`pip install` installs Python packages, not model weights. The packaged downloader manages the checkpoints for the two direct video scorers:
-
-```bash
-percept download clipiqa --cache-dir ./weights
-percept download motion --cache-dir ./weights
-```
-
-Pass the same `--cache-dir` when running `percept score clipiqa` or `percept score motion`. The download default is `./weights` relative to the current directory; use an absolute path when sharing a cache across checkouts. Existing upstream caches can be used directly: a Torch hub directory for CLIP-IQA+ or a VBench cache for motion.
+`pip install` installs Python packages, not model weights. Use the explicit
+`curl` commands in the README for [CLIP-IQA+](../README.md#clip-iqa) and
+[Motion Smoothness](../README.md#motion-smoothness). The former
+`percept download` command has been removed; downloading is handled outside the
+package.
 
 | Metric | Files relative to the cache directory | Source |
 |---|---|---|
 | CLIP-IQA+ | `pyiqa/CLIP-IQA%2B_learned_prompts-603f3273.pth`, `clip/RN50.pt` | PyIQA / OpenAI CLIP |
 | Motion Smoothness | `amt_model/amt-s.pth` | AMT-S |
 
-Download URLs and trusted full SHA-256 values have one source of truth in the packaged [weight registry](../src/percept_harness/weights.py). Downloads follow redirects, stream to a temporary file, and publish only after checksum verification. Matching cached files are reused without network access; failed downloads leave existing files intact. Rerun the command after a failure; partial downloads are not resumed. Custom-cache scoring also verifies the files before loading models. The directory is ignored by Git and is not shipped in the wheel.
+The examples save files under `./weights`, relative to the current directory.
+For another location, change the download destinations and pass that same path
+as `--cache-dir` to scoring and `scripts/verify_install.py`. Existing caches can
+be reused when the required files are present. The shared
+[weight registry](../src/percept_harness/weights.py) contains cache-relative paths;
+installation checks and custom-cache scoring check file existence before model
+loading. Checkpoints are ignored by Git and are not shipped in the wheel.
 
-This command covers these three pinned checkpoints only. Other VBench dimensions, DOVER, external evaluators and semantic event judges retain their respective setup instructions. SAM3.1 source, checkpoint, tokenizer and GPU runtime support targeted checks during production event annotation; see [grounding setup](usage.md#targeted-sam31-grounding). Do not assume downloading these assets prepares every metric.
+These instructions cover three checkpoints only. Other VBench dimensions,
+DOVER, external evaluators and semantic event judges retain their respective
+setup instructions. SAM3.1 has separate [grounding setup](usage.md#targeted-sam31-grounding).
 
 ## CLIP-IQA+
 
@@ -108,7 +113,7 @@ percept score clipiqa \
   --output /data/results/example.clipiqa_plus.json
 ```
 
-`--device auto` selects `cuda:0` when CUDA is available and otherwise CPU. You can pass `cpu`, `cuda:0`, or another valid PyTorch device explicitly. The output contains `score` in `[0, 1]`, the resolved video path and SHA-256, frame counts, sampling settings, dependency versions, and the MemoBench revision. The model weights are not part of the repository; see [checkpoint preparation](#checkpoint-preparation) and [third-party notices](third-party-notices.md). Use `--cache-dir` to load and verify the prepared cache; omitting it preserves PyIQA’s default cache and automatic downloading.
+`--device auto` selects `cuda:0` when CUDA is available and otherwise CPU. You can pass `cpu`, `cuda:0`, or another valid PyTorch device explicitly. The output contains `score` in `[0, 1]`, the resolved video path, frame counts, sampling settings, dependency versions, and the MemoBench revision. The model weights are not part of the repository; see [checkpoint preparation](#checkpoint-preparation) and [third-party notices](third-party-notices.md). Use `--cache-dir` to load the prepared cache; omitting it preserves PyIQA’s default cache and automatic downloading.
 
 ## Motion Smoothness
 
@@ -129,10 +134,13 @@ python -m pip install --only-binary=:all: --no-deps vbench==0.1.5
 
 The `motion` extra in `pyproject.toml` retains the direct dependency versions from the recorded validation environment. Hardware-specific Torch/TorchVision and VBench are installed separately. The official VBench wheel declares a larger, older dependency set for other dimensions (including `numpy<2` and `transformers==4.33.2`); the command above deliberately installs only the Motion Smoothness runtime. Consequently, a global `pip check` can report unmet VBench metadata requirements. This environment is for this dimension only, not all VBench tasks.
 
-Prepare the verified AMT-S checkpoint with:
+Download the AMT-S checkpoint, then verify it in the configured motion environment:
 
 ```bash
-percept download motion --cache-dir /data/model-cache/vbench
+mkdir -p /data/model-cache/vbench/amt_model
+curl --fail --location --output /data/model-cache/vbench/amt_model/amt-s.pth \
+  'https://huggingface.co/lalala125/AMT/resolve/main/amt-s.pth'
+python scripts/verify_install.py --metric motion --cache-dir /data/model-cache/vbench
 ```
 
 The scorer passes this directory through `VBENCH_CACHE_DIR` to the official evaluator and verifies the checkpoint before inference.
@@ -149,9 +157,9 @@ percept score motion \
 
 `--gpu` sets `CUDA_VISIBLE_DEVICES` for the child only; omit it to inherit the current setting. The official CLI requires CUDA. `--output` is a new JSON filename, whereas the official CLI's `--output_path` is a directory.
 
-The wrapper verifies VBench 0.1.5 and the documented AMT-S SHA-256 before launching the official CLI. It preserves the active Python environment for VBench's distributed child, scopes checkpoint compatibility settings to that process, and creates a fresh sibling directory named `<output-stem>.vbench-*` for official JSON files and `vbench.log`. These files are retained even on failure; output paths should be on a local filesystem supported by VBench. The wrapper validates a finite single-video result and an unchanged input hash, then saves the unrounded official score plus input/checkpoint hashes, VBench/Torch versions, command and original-result path. Existing output files are never overwritten. No inference is performed by `--help`, and the wrapper never resamples, resizes or interpolates frames itself.
+The wrapper checks VBench 0.1.5 and the AMT-S checkpoint path before launching the official CLI. It preserves the active Python environment for VBench's distributed child, scopes checkpoint compatibility settings to that process, and creates a fresh sibling directory named `<output-stem>.vbench-*` for official JSON files and `vbench.log`. These files are retained even on failure; output paths should be on a local filesystem supported by VBench. The wrapper validates a finite single-video result, then saves the unrounded official score plus input/checkpoint paths, VBench/Torch versions, command and original-result path. Existing output files are never overwritten. No inference is performed by `--help`, and the wrapper never resamples, resizes or interpolates frames itself.
 
-This is only VBench Motion Smoothness (AMT-S), not all VBench dimensions and not MemoBench's RAFT-based MotionSmoothness. CLIP-IQA+ here is the MemoBench sampled-frame image-quality component, not its combined VisualQuality score. The two commands share the `metric`, `score`, `higher_is_better`, `video`, `video_sha256` and `versions` fields; other metadata is metric-specific.
+This is only VBench Motion Smoothness (AMT-S), not all VBench dimensions and not MemoBench's RAFT-based MotionSmoothness. CLIP-IQA+ here is the MemoBench sampled-frame image-quality component, not its combined VisualQuality score. The two commands share the `metric`, `score`, `higher_is_better`, `video` and `versions` fields; other metadata is metric-specific.
 
 Motion Smoothness estimates local interpolation smoothness. A smooth but incorrect action, a static video, or a video with incorrect object interactions can still score well; this metric does not establish physical correctness, causality, or long-term consistency.
 
@@ -191,13 +199,12 @@ make these dimensions complete: MUSIQ/RAFT/CLIP/ViCLIP/DINO paths still need
 cache mapping and a real single-video run; Temporal Flickering needs a frozen
 static subset; and long-video VBench uses a separate official entry point.
 
-For model-backed dimensions, `--weights-manifest` is required.  It is a JSON
-object mapping every cache-relative required file to its SHA-256.  Create it
-from files already provisioned on your evaluation machine and review the digests; the wrapper
-never downloads a missing checkpoint.  `--check-only` validates this inventory
-without starting inference.  Only after a trusted, hash-verified checkpoint
-has been provisioned should a caller opt into `--allow-trusted-pickle` for an
-official legacy loader.
+Model-backed dimensions check the required checkpoint paths in `--cache-dir`.
+An optional `--weights-manifest` supplies a JSON list of additional cache-relative
+files to check. Legacy object manifests are accepted using their keys as paths;
+values are ignored. The wrapper never downloads a missing checkpoint.
+`--check-only` checks this inventory without starting inference. Provision trusted
+checkpoints before opting into `--allow-trusted-pickle` for an official legacy loader.
 
 The following remain external, conditional, or blocked and are intentionally
 not faked by this package:
@@ -258,9 +265,9 @@ The first run should be one short, decodable video.  Inspect the official
 
 ## DOVER
 
-`percept score dover` validates the pinned upstream source, runtime and checkpoint paths, then invokes the official evaluator. Source/cache preflight is available; this release does not establish successful DOVER model inference.
+`percept score dover` checks required upstream source files, runtime and checkpoint paths, then invokes the official evaluator. Source/cache preflight is available; this release does not establish successful DOVER model inference.
 
-Pinned source: `VQAssessment/DOVER` at `f1ddc96215bc7fbcf8f315c65d47905f339c3419`. The evaluator requires both `pretrained_weights/DOVER.pth` under the source root and `hub/checkpoints/convnext_tiny_1k_224_ema.pth` under `TORCH_HOME`. Record source URLs and full hashes; an observed hash alone is not verification against a trusted expected value.
+Pinned source: `VQAssessment/DOVER` at `f1ddc96215bc7fbcf8f315c65d47905f339c3419`. The evaluator requires both `pretrained_weights/DOVER.pth` under the source root and `hub/checkpoints/convnext_tiny_1k_224_ema.pth` under `TORCH_HOME`. Record the source URLs used to acquire these files.
 
 Checkpoint sources are the [official DOVER release](https://github.com/QualityAssessment/DOVER/releases/download/v0.1.0/DOVER.pth) and the [ConvNeXt initialization checkpoint](https://dl.fbaipublicfiles.com/convnext/convnext_tiny_1k_224_ema.pth).
 
@@ -284,7 +291,7 @@ percept score dover \
   --check-only
 ```
 
-A successful check is `preflight_passed_not_scored`. Omit `--check-only` and use a new output directory only when ready for actual model inference. Preserve the command, environment, hashes, `dover.log` and `result.json`. An unparsed official result is not a score.
+A successful check is `preflight_passed_not_scored`. Omit `--check-only` and use a new output directory only when ready for actual model inference. Preserve the command, environment, checkpoint paths, `dover.log` and `result.json`. An unparsed official result is not a score.
 
 See the [catalog](#public-scoring-entry-points) for overall readiness and the [reproducibility notes](usage.md#reproducibility) for validation stages.
 

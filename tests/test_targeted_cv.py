@@ -17,7 +17,7 @@ from percept_harness.cv.timeline import SampledFrame, SampledFrameSet
 
 def request(**updates):
     payload = dict(schema_version='cv_request_v1', provider='sam31', model_identity='sam3.1',
-        video_path=Path('/tmp/source.mp4'), video_sha256='a'*64, checkpoint_sha256='b'*64,
+        video_path=Path('/tmp/source.mp4'), video_identity='source-video', checkpoint_identity='fixture-checkpoint',
         duration_seconds=20.0, frame_count=100,
         timeline={'frames': [{'frame_index': i, 'timestamp_seconds': t} for i,t in [(20,2.0),(30,3.0),(40,4.0)]]},
         entities=[{'entity_id':'cup','canonical_label':'red cup','aliases':['mug'],'role':'other'}],
@@ -124,6 +124,15 @@ class TargetedCvTests(unittest.TestCase):
                 self.assertEqual(store.lookup(key),handle)
                 self.assertIsNone(store.lookup(cv_cache_key(request(provider='fake',video_path=video,
                     mode='track',spatial_prompts=[spatial()]))))
+                self.assertEqual(set(artifact.files[0].model_dump()), {'path', 'size_bytes'})
+                # Same-sized content is accepted; the store enforces structure
+                # and size, without authenticating payloads by checksum.
+                mask = store._entry_path(key) / artifact.files[0].path
+                mask.write_bytes(b'x' * artifact.files[0].size_bytes)
+                self.assertEqual(store.lookup(key), handle)
+                self.assertEqual(store.load(handle), artifact)
+                mask.write_bytes(b'too long' + mask.read_bytes())
+                self.assertIsNone(store.lookup(key))
 
     def test_legacy_manifest_identity_remains_readable_but_cannot_hit_new_key(self):
         current=request()
@@ -138,7 +147,7 @@ class TargetedCvTests(unittest.TestCase):
         probe=request(mode='probe',spatial_prompts=[spatial()])
         artifact=CvEvidenceArtifact(schema_version='cv_evidence_v1',status='available',
             provider=probe.provider,model_identity=probe.model_identity,
-            video_sha256=probe.video_sha256,checkpoint_sha256=probe.checkpoint_sha256,
+            video_identity=probe.video_identity,checkpoint_identity=probe.checkpoint_identity,
             processed_timeline={'frames':[{'frame_index':20,'timestamp_seconds':2.0}]},
             entities=probe.entities,tracks=(),files=(),overlay_records=())
         with self.assertRaises(ValueError):

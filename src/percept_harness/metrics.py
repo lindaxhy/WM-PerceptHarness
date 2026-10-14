@@ -24,17 +24,16 @@ _JOB_METRIC_KEYS = frozenset(
         "semantic_cache_hit",
         "semantic_cache_published",
         "semantic_cache_key",
-        "semantic_cache_result_sha256",
     }
 )
 _JOB_BOOLEAN_METRIC_KEYS = frozenset(
     {"cache_hit", "oom_retry", "semantic_cache_hit", "semantic_cache_published"}
 )
-_JOB_DIGEST_METRIC_KEYS = frozenset(
-    {"semantic_cache_key", "semantic_cache_result_sha256"}
+_JOB_CACHE_KEY_METRICS = frozenset(
+    {"semantic_cache_key"}
 )
 _JOB_INTEGER_METRIC_KEYS = (
-    _JOB_METRIC_KEYS - _JOB_BOOLEAN_METRIC_KEYS - _JOB_DIGEST_METRIC_KEYS
+    _JOB_METRIC_KEYS - _JOB_BOOLEAN_METRIC_KEYS - _JOB_CACHE_KEY_METRICS
     - {"inference_seconds"}
 )
 
@@ -60,10 +59,10 @@ def validate_inference_job_metrics(metrics: Mapping[str, Any] | None) -> None:
     for key in _JOB_BOOLEAN_METRIC_KEYS & values.keys():
         if type(values[key]) is not bool:
             raise ValueError(f"metrics {key} must be a boolean")
-    for key in _JOB_DIGEST_METRIC_KEYS & values.keys():
+    for key in _JOB_CACHE_KEY_METRICS & values.keys():
         if (not isinstance(values[key], str)
                 or re.fullmatch(r"[0-9a-f]{64}", values[key]) is None):
-            raise ValueError(f"metrics {key} must be a lowercase SHA256 digest")
+            raise ValueError(f"metrics {key} must be a lowercase hexadecimal cache key")
     encoded = json.dumps(
         values, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
     )

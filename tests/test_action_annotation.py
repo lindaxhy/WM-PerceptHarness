@@ -18,10 +18,15 @@ from percept_harness.cv.artifacts import CvArtifactStore
 class ActionAnnotationTests(unittest.TestCase):
     def test_annotation_defaults_to_action_pipeline(self):
         args = _parser().parse_args(['annotate', '--videos', 'clip.mp4', '--output', 'out'])
-        self.assertEqual(args.template, 'embodied_action_captioning')
+        self.assertFalse(hasattr(args, 'template'))
+
+    def test_resume_flag_is_removed(self):
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit) as error:
+            _parser().parse_args(['annotate', '--videos', 'clip.mp4', '--output', 'out', '--resume'])
+        self.assertEqual(error.exception.code, 2)
 
     def test_retired_templates_rejected_by_cli(self):
-        for template in ('general_video_captioning', 'embodied_active_object_detection'):
+        for template in ('embodied_action_captioning', 'general_video_captioning', 'embodied_active_object_detection'):
             with self.subTest(template=template), redirect_stderr(StringIO()):
                 with self.assertRaises(SystemExit) as error:
                     _parser().parse_args(['annotate', '--videos', 'clip.mp4', '--output', 'out', '--template', template])
@@ -38,20 +43,23 @@ class ActionAnnotationTests(unittest.TestCase):
             self.addCleanup(artifacts.close)
             runner = SyncRunner(FakeVideoModel(), settings, model_alias='fake',
                                 cv_executor=SyncCvExecutor(FakeCvEvidenceProvider(), artifacts))
-            first = list(run_batch(runner, [video], 'embodied_action_captioning', root / 'out', log=lambda message: None))
+            first = list(run_batch(runner, [video], root / 'out', log=lambda message: None))
             self.assertEqual(first[0].status, 'completed', first[0].error)
             data = first[0].data
             self.assertEqual(set(data), {'duration', 'events'})
             self.assertTrue(data['events'])
             self.assertEqual(data['events'][0]['description'], 'A hand moves the red container.')
-            second = list(run_batch(runner, [video], 'embodied_action_captioning', root / 'out', log=lambda message: None))
-            # CV execution identity is not yet reusable; rerun honestly, with CV cache.
-            self.assertEqual(second[0].status, 'completed')
+            second = list(run_batch(runner, [video], root / 'out', log=lambda message: None))
+            self.assertEqual(second[0].status, 'skipped')
             self.assertFalse(second[0].metadata['evidence'])
             stored = json.loads((root / 'out' / 'clip.json').read_text())
             self.assertEqual(stored['events'], data['events'])
             audit = json.loads((root / 'out' / 'clip.audit.json').read_text())
             self.assertTrue(audit['metadata']['synthetic'])
+            self.assertNotIn('template', audit)
+            self.assertNotIn('provenance', audit)
+            aggregate = json.loads((root / 'out' / 'results.jsonl').read_text().splitlines()[0])
+            self.assertNotIn('template', aggregate)
 
 
 if __name__ == '__main__':

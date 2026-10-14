@@ -285,7 +285,6 @@ class Sam31EvidenceProvider:
         materialize_frames: Callable[..., SampledFrameSet] = materialize_sampled_frames,
         initial_sampler: Callable[..., tuple[int, ...]] = initial_sample_indices,
         refinement_sampler: Callable[..., tuple[int, ...]] = refinement_sample_indices,
-        checkpoint_sha256: str | None = None,
         repository_revision: str = _PINNED_REPOSITORY_REVISION,
         max_artifact_bytes: int = _DEFAULT_MAX_ARTIFACT_BYTES,
         max_artifact_files: int = _DEFAULT_MAX_ARTIFACT_FILES,
@@ -305,7 +304,6 @@ class Sam31EvidenceProvider:
             execution_chunk_frames, "execution_chunk_frames"
         )
         self._apply_execution_chunk_frames()
-        self.checkpoint_sha256 = checkpoint_sha256
         self.repository_revision = repository_revision
         self._max_artifact_bytes = _positive_integer(
             max_artifact_bytes, "max_artifact_bytes"
@@ -333,7 +331,6 @@ class Sam31EvidenceProvider:
         cls,
         repository_path: Path | str,
         checkpoint_path: Path | str,
-        checkpoint_sha256: str,
         *,
         compile_model: bool = False,
         predictor_factory: Callable[..., Any] | None = None,
@@ -355,10 +352,9 @@ class Sam31EvidenceProvider:
                 repository, _BPE_REPOSITORY_PATH
             )
             runtime_directory = _private_runtime_directory()
-            checkpoint, digest = _snapshot_local_asset(
+            checkpoint = _snapshot_local_asset(
                 checkpoint_path,
                 runtime_directory / "checkpoint.pt",
-                expected_sha256=checkpoint_sha256,
             )
             bpe = _snapshot_local_asset(
                 bpe_path
@@ -366,7 +362,7 @@ class Sam31EvidenceProvider:
                 else repository / _BPE_REPOSITORY_PATH,
                 runtime_directory / "bpe_simple_vocab_16e6.txt.gz",
                 expected_git_object_id=pinned_bpe_object_id,
-            )[0]
+            )
             imported_snapshot = _sam_module_snapshot()
             if any(
                 not _module_is_beneath(module, repository)
@@ -401,7 +397,6 @@ class Sam31EvidenceProvider:
             return cls(
                 predictor=predictor,
                 torch_module=torch_module,
-                checkpoint_sha256=digest,
                 repository_revision=_PINNED_REPOSITORY_REVISION,
                 max_artifact_bytes=max_artifact_bytes,
                 max_artifact_files=max_artifact_files,
@@ -469,11 +464,6 @@ class Sam31EvidenceProvider:
                 raise RuntimeError
             validated_request = CvEvidenceRequest.model_validate(request, strict=True)
             if validated_request.provider != "sam31":
-                raise ValueError
-            if (
-                self.checkpoint_sha256 is not None
-                and validated_request.checkpoint_sha256 != self.checkpoint_sha256
-            ):
                 raise ValueError
             staging = _prepare_staging_directory(staging_dir)
             _reset_peak_memory(self._torch)
@@ -947,8 +937,8 @@ def _empty_artifact(request: CvEvidenceRequest) -> CvEvidenceArtifact:
         status=EvidenceStatus.DISABLED,
         provider="sam31",
         model_identity=request.model_identity,
-        video_sha256=request.video_sha256,
-        checkpoint_sha256=request.checkpoint_sha256,
+        video_identity=request.video_identity,
+        checkpoint_identity=request.checkpoint_identity,
         processed_timeline=None,
         entities=request.entities,
         tracks=(),
@@ -1045,14 +1035,8 @@ def _snapshot_local_asset(
     value: Path | str,
     destination: Path,
     *,
-    expected_sha256: str | None = None,
     expected_git_object_id: str | None = None,
-) -> tuple[Path, str]:
-    if expected_sha256 is not None and (
-        not isinstance(expected_sha256, str)
-        or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None
-    ):
-        raise ValueError
+) -> Path:
     if expected_git_object_id is not None and (
         not isinstance(expected_git_object_id, str)
         or re.fullmatch(r"[0-9a-f]{40}", expected_git_object_id) is None
@@ -1088,9 +1072,9 @@ def _snapshot_local_asset(
             or identity != (before.st_dev, before.st_ino)
         ):
             raise ValueError
-        digest = hashlib.sha256()
-        git_digest = hashlib.sha1()
-        git_digest.update(f"blob {opened.st_size}\0".encode("ascii"))
+        git_digest = hashlib.sha1() if expected_git_object_id is not None else None
+        if git_digest is not None:
+            git_digest.update(f"blob {opened.st_size}\0".encode("ascii"))
         output_descriptor = os.open(
             destination,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow,
@@ -1098,8 +1082,8 @@ def _snapshot_local_asset(
         )
         try:
             while payload := os.read(descriptor, _HASH_READ_BYTES):
-                digest.update(payload)
-                git_digest.update(payload)
+                if git_digest is not None:
+                    git_digest.update(payload)
                 view = memoryview(payload)
                 while view:
                     written = os.write(output_descriptor, view)
@@ -1111,7 +1095,6 @@ def _snapshot_local_asset(
             os.close(output_descriptor)
         after_open = os.fstat(descriptor)
         after_path = resolved.lstat()
-        actual_digest = digest.hexdigest()
         if (
             (after_open.st_dev, after_open.st_ino) != identity
             or (after_path.st_dev, after_path.st_ino) != identity
@@ -1119,9 +1102,8 @@ def _snapshot_local_asset(
             or after_open.st_mtime_ns != opened.st_mtime_ns
             or after_path.st_size != opened.st_size
             or after_path.st_mtime_ns != opened.st_mtime_ns
-            or (expected_sha256 is not None and actual_digest != expected_sha256)
             or (
-                expected_git_object_id is not None
+                git_digest is not None
                 and git_digest.hexdigest() != expected_git_object_id
             )
         ):
@@ -1135,7 +1117,7 @@ def _snapshot_local_asset(
             or copied.st_size != opened.st_size
         ):
             raise ValueError
-        return destination.resolve(strict=True), actual_digest
+        return destination.resolve(strict=True)
     except (OSError, RuntimeError, ValueError):
         raise ValueError from None
     finally:
@@ -2235,8 +2217,8 @@ def _build_artifact(
         status=EvidenceStatus.AVAILABLE,
         provider="sam31",
         model_identity=request.model_identity,
-        video_sha256=request.video_sha256,
-        checkpoint_sha256=request.checkpoint_sha256,
+        video_identity=request.video_identity,
+        checkpoint_identity=request.checkpoint_identity,
         processed_timeline=FrameTimeline(
             frames=tuple(
                 FrameTimestamp(
@@ -2366,7 +2348,6 @@ def _write_exclusive_bytes(path: Path, payload: memoryview) -> None:
 
 
 def _artifact_file(staging: Path, path: Path) -> ArtifactFile:
-    payload_hash = hashlib.sha256()
     size = 0
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     try:
@@ -2374,7 +2355,6 @@ def _artifact_file(staging: Path, path: Path) -> ArtifactFile:
         if not stat.S_ISREG(status.st_mode):
             raise ValueError
         while payload := os.read(descriptor, _HASH_READ_BYTES):
-            payload_hash.update(payload)
             size += len(payload)
         if size != status.st_size:
             raise ValueError
@@ -2382,7 +2362,6 @@ def _artifact_file(staging: Path, path: Path) -> ArtifactFile:
         os.close(descriptor)
     return ArtifactFile(
         path=path.relative_to(staging).as_posix(),
-        sha256=payload_hash.hexdigest(),
         size_bytes=size,
     )
 

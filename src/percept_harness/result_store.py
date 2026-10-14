@@ -1,109 +1,11 @@
-"""Content/configuration identity and durable storage for annotation results."""
+"""Small JSON result reader/writer for annotations and their audit sidecars."""
 from __future__ import annotations
 
-import hashlib
-import importlib.metadata
 import json
 import os
-import platform
-import shutil
-import subprocess
 import tempfile
-import socket
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
-
-SCHEMA_VERSION = 1
-
-
-def json_digest(value: Any) -> str:
-    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-                         allow_nan=False).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
-
-def file_digest(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def package_digest() -> str:
-    root = Path(__file__).parent
-    return json_digest({p.relative_to(root).as_posix(): file_digest(p)
-                        for p in sorted(root.rglob("*"))
-                        if p.is_file() and p.suffix in {".py", ".txt", ".json"}})
-
-
-def _runtime() -> dict[str, Any]:
-    versions = {"python": platform.python_version()}
-    for name in ("wm-percept-harness", "httpx", "pydantic", "pydantic-settings",
-                 "torch", "torchvision", "numpy"):
-        try:
-            versions[name] = importlib.metadata.version(name)
-        except importlib.metadata.PackageNotFoundError:
-            versions[name] = None
-    tools = {}
-    for name in ("ffmpeg", "ffprobe"):
-        executable = shutil.which(name)
-        try:
-            result = subprocess.run([executable or name, "-version"], capture_output=True,
-                                    timeout=10, check=True)
-            tools[name] = {"executable": executable,
-                           "version_sha256": hashlib.sha256(result.stdout).hexdigest()}
-        except (OSError, subprocess.SubprocessError):
-            tools[name] = None
-    return {"packages": versions, "media_tools": tools}
-
-
-def run_identity(runner, template: str, prompt_context: str | None) -> dict[str, Any]:
-    """Snapshot the built-in execution path; unverifiable integrations cannot resume."""
-    from .models.fake import FakeVideoModel
-    from .models.openai_compat import OpenAICompatVideoModel
-
-    settings = runner.settings.model_dump(mode="json", exclude={"openai_api_key"})
-    # Hash provider-supplied dictionaries/URLs rather than serialize credentials.
-    for name in ("openai_base_url", "openai_extra_body", "openai_extra_headers"):
-        settings[name] = {"sha256": json_digest(settings[name])}
-    proxy = runner.settings.openai_proxy
-    settings["openai_proxy"] = {"sha256": json_digest(proxy.get_secret_value() if proxy else None)}
-    settings.pop("work_root")
-    settings.pop("cv_cache_root")
-    model = runner.model
-    reusable = not runner.custom_registry
-    if type(model) is FakeVideoModel:
-        backend = {"kind": "fake"}
-    elif type(model) is OpenAICompatVideoModel:
-        backend = model.run_identity(runner.model_alias)
-        reusable = reusable and model.supports_batch_resume
-    else:
-        backend = {"kind": f"{type(model).__module__}.{type(model).__qualname__}"}
-        reusable = False
-    # A custom executor or external CV runtime cannot be verified from Settings alone.
-    # Until its loaded weights/source/runtime has an explicit identity, rerun safely.
-    if runner.cv_executor is not None or runner.settings.cv_provider != "disabled":
-        reusable = False
-    identity = {
-        "schema_version": SCHEMA_VERSION,
-        "template": template,
-        "model_alias": runner.model_alias,
-        "backend": backend,
-        "settings": settings,
-        "prompt_context": prompt_context,
-        "code_sha256": package_digest(),
-        "runtime": _runtime(),
-        "reusable": reusable,
-    }
-    return identity
-
-
-def provenance(video: Path, run: dict[str, Any]) -> dict[str, Any]:
-    return {"schema_version": SCHEMA_VERSION,
-            "input": {"path": str(video.resolve()), "sha256": file_digest(video)},
-            "run": run, "run_fingerprint": json_digest(run)}
 
 
 def _unique_pairs(pairs):
@@ -118,7 +20,7 @@ def _unique_pairs(pairs):
 def read_record(path: Path) -> dict[str, Any] | None:
     try:
         value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_pairs)
-        json_digest(value)  # Reject non-finite JSON numbers in any metadata or data field.
+        json.dumps(value, allow_nan=False)  # Reject non-finite numbers, including overflow.
     except (OSError, ValueError, RecursionError):
         return None
     return value if isinstance(value, dict) else None
@@ -134,7 +36,7 @@ def is_annotation_record(record: dict[str, Any] | None) -> bool:
 
 
 def annotation_record(path: Path) -> dict[str, Any] | None:
-    """Normalize public+audit or legacy envelopes; never trust an unbound sidecar."""
+    """Read public+audit results, plain annotations, and legacy envelopes."""
     data = read_record(path)
     sidecar = audit_path(path)
     if sidecar.exists():
@@ -145,8 +47,8 @@ def annotation_record(path: Path) -> dict[str, Any] | None:
             return data  # A literal *.audit.json annotation is not this file's sidecar.
         record = {**audit, "data": data}
         if audit.get("status") == "completed":
-            if data is None or audit.get("data_sha256") != json_digest(data):
-                record.update(status="failed", error="annotation data missing or SHA-256 mismatch")
+            if data is None:
+                record.update(status="failed", error="annotation data missing")
         return record
     return data
 
@@ -161,12 +63,10 @@ def write_annotation(path: Path, record: dict[str, Any]) -> None:
         if record["status"] == "completed":
             from .pipelines.event_schemas import GroundedEvents
             GroundedEvents.model_validate(data)
-            audit["data_sha256"] = json_digest(data)
             write_json(audit_path(path), {**audit, "status": "writing"})
             write_json(path, data)
             write_json(audit_path(path), audit)
         else:
-            audit["data_sha256"] = None
             write_json(audit_path(path), audit)
             path.unlink(missing_ok=True)
     except BaseException:
@@ -176,57 +76,49 @@ def write_annotation(path: Path, record: dict[str, Any]) -> None:
 
 
 def result_path(output: Path, video: Path) -> Path:
-    """Keep the familiar name if free/owned, otherwise isolate by full source path."""
+    """Reuse a video's filename, adding a numeric suffix for name collisions."""
     resolved = str(video.resolve())
-    suffix = hashlib.sha256(resolved.encode("utf-8")).hexdigest()
-    alternate = output / f"{video.stem[:32]}--{suffix}.json"
-    primary = output / f"{video.stem}.json"
-    # An existing disambiguated result keeps its path even if a later batch is smaller.
-    candidates = (alternate,) if primary.name.endswith(".audit.json") else (alternate, primary)
-    for candidate in candidates:
-        sidecar = read_record(audit_path(candidate))
-        record = sidecar if sidecar and not is_annotation_record(sidecar) else read_record(candidate)
-        if record and record.get("video_path") == resolved:
-            if is_annotation_record(sidecar):
-                raise ValueError("Result audit path is occupied by another annotation; use a fresh output directory")
+    # Find an existing owner before filling filename gaps, including legacy names.
+    for sidecar_path in sorted(output.glob("*.audit.json")):
+        sidecar = read_record(sidecar_path)
+        if sidecar and not is_annotation_record(sidecar) and sidecar.get("video_path") == resolved:
+            return sidecar_path.with_name(sidecar_path.name[:-len(".audit.json")] + ".json")
+    for candidate in sorted(output.glob("*.json")):
+        record = read_record(candidate)
+        if record and is_annotation_record(record) and record.get("video_path") == resolved:
             return candidate
-    if primary in candidates and not primary.exists() and not audit_path(primary).exists():
-        return primary
-    if not alternate.exists() and not audit_path(alternate).exists():
-        return alternate
-    raise ValueError("Result paths are occupied by other or unreadable records; use a fresh output directory")
+    index = 0
+    while True:
+        name = video.stem if index == 0 else f"{video.stem}--{index}"
+        candidate = output / f"{name}.json"
+        index += 1
+        if candidate.name.endswith(".audit.json"):
+            continue
+        if not candidate.exists() and not audit_path(candidate).exists():
+            return candidate
 
 
-def completed_result(path: Path, expected: dict[str, Any]) -> dict[str, Any] | None:
+def completed_result(path: Path, video: Path) -> dict[str, Any] | None:
+    """Check completion, source path and annotation structure for result reuse."""
+    from .pipelines.event_schemas import GroundedEvents
     try:
         record = annotation_record(path)
-    except (ValueError, TypeError):
-        return None
-    if (not expected["run"]["reusable"] or not record
-            or record.get("status") != "completed"
-            or record.get("template") != expected["run"]["template"]
-            or record.get("video_path") != expected["input"]["path"]
-            or record.get("provenance") != expected
-            or not isinstance(record.get("data"), dict)):
-        return None
-    try:
-        if record.get("data_sha256") != json_digest(record["data"]):
+        if (not record or record.get("status") != "completed"
+                or record.get("video_path") != str(video.resolve())):
             return None
+        GroundedEvents.model_validate(record.get("data"))
+        return record
     except (ValueError, TypeError):
         return None
-    return record
 
 
 def atomic_text(path: Path, text: str) -> None:
-    atomic_bytes(path, text.encode("utf-8"))
-
-
-def atomic_bytes(path: Path, payload: bytes) -> None:
+    """Replace a complete file in one step; clean up failed temporary writes."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=".percept-", dir=path.parent)
     try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(payload)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
@@ -237,47 +129,3 @@ def atomic_bytes(path: Path, payload: bytes) -> None:
 
 def write_json(path: Path, value: Any) -> None:
     atomic_text(path, json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False) + "\n")
-
-
-def archive_result(path: Path, output: Path) -> None:
-    for source in (path, audit_path(path)):
-        _archive_file(source, output)
-
-
-def _archive_file(path: Path, output: Path) -> None:
-    if not path.exists():
-        return
-    payload = path.read_bytes()
-    destination = output / ".percept" / "history" / (hashlib.sha256(payload).hexdigest() + ".json")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.exists():
-        if destination.read_bytes() != payload:
-            raise ValueError("Archived result is inconsistent; refusing to replace current output")
-    else:
-        atomic_bytes(destination, payload)
-
-
-class OutputBusyError(RuntimeError):
-    """Another batch owns this output directory, or a crashed run left a lock."""
-
-
-@contextmanager
-def output_lock(output: Path):
-    directory = output / ".percept"
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / "writer.lock"
-    try:
-        stream = path.open("x", encoding="utf-8")
-    except FileExistsError:
-        raise OutputBusyError(
-            f"Output directory is already in use: {output}. "
-            f"Inspect {path}; remove a stale lock only after confirming its process stopped."
-        ) from None
-    try:
-        with stream:
-            json.dump({"pid": os.getpid(), "host": socket.gethostname()}, stream)
-            stream.flush()
-            os.fsync(stream.fileno())
-        yield
-    finally:
-        path.unlink()

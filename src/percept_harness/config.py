@@ -127,7 +127,6 @@ class Settings(BaseSettings):
     cv_repository_path: Path = Path("models/sam3")
     cv_checkpoint_path: Path = Path("models/sam3/checkpoints/sam3.pt")
     cv_bpe_path: Path = Path("models/sam3/sam3/assets/bpe_simple_vocab_16e6.txt.gz")
-    cv_checkpoint_sha256: str = "0" * 64
     cv_cache_root: Path = Path("work/cv-cache")
     cv_cache_max_bytes: PositiveInteger = 8 * 1024 * 1024 * 1024
     cv_cache_max_files: PositiveInteger = 10_000
@@ -150,21 +149,15 @@ class Settings(BaseSettings):
         if self.openai_model_registry:
             return dict(self.openai_model_registry)
         if self.openai_model:
-            from .model_alias import alias_for_model_id
+            from .models.base import validate_model_alias
 
-            return {alias_for_model_id(self.openai_model): self.openai_model}
+            alias = re.sub(r"[^A-Za-z0-9._-]+", "-", self.openai_model).lstrip("._-")[:128]
+            return {validate_model_alias(alias): self.openai_model}
         return {}
 
     @property
     def allowed_model_aliases(self) -> frozenset[str]:
         return frozenset(self.model_registry) | frozenset(self.openai_model_aliases)
-
-    @field_validator("cv_checkpoint_sha256")
-    @classmethod
-    def validate_checkpoint_digest(cls, value: str) -> str:
-        if re.fullmatch(r"[0-9A-Fa-f]{64}", value) is None:
-            raise ValueError("cv_checkpoint_sha256 must be exactly 64 hexadecimal characters")
-        return value.lower()
 
     @model_validator(mode="after")
     def validate_cv_configuration(self) -> Self:

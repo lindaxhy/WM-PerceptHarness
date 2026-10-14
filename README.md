@@ -49,14 +49,13 @@ Choose a model that accepts image inputs through the chat completions API. Confi
 ```bash
 percept annotate \
   --videos ./videos/sample_001.mp4 \
-  --template embodied_action_captioning \
   --output ./outputs/actions
 ```
 
-Pass a directory to `--videos` to process its videos recursively. Annotation uses
-`embodied_action_captioning`, the only supported template, and produces
-event descriptions and bounds on the original video clock. You can omit `--template`; existing
-commands that specify it explicitly remain valid.
+Pass a directory to `--videos` to process its videos recursively. Annotation
+produces event descriptions and bounds on the original video clock through a
+single event annotation pipeline. The obsolete `--template` option has been removed;
+omit it from older commands.
 
 By default (`--event-workflow reviewed`), the VLM drafts events and independently reviews the original video. Only concrete object identity, location, occlusion or trajectory questions trigger SAM: a text + candidate box prompt is checked on one reference frame before tracking that object within the relevant window. There is no unconditional baseline SAM pass. Camera-motion doubts and editorial changes stay in the existing visual review. Tracking supports review but does not prove an action, outcome or boundary.
 
@@ -101,9 +100,47 @@ outputs/actions/
 └── results.jsonl      # Batch summary, status and result filenames
 ```
 
-Read `sample_001.json` directly for the annotation; execution `status`, `error`, provenance and intermediate review live in `sample_001.audit.json`. Failed runs have an audit file and no successful annotation file. Timestamps are seconds on the original video. The directory also contains `.percept/` run records used for resume and history. If video filenames collide, use the `result_file` recorded in `results.jsonl` to locate the correct JSON.
+Read `sample_001.json` directly for the annotation; execution `status`, `error` and intermediate review live in `sample_001.audit.json`. Failed runs have an audit file and no successful annotation file. Timestamps are seconds on the original video. If video filenames collide, use the `result_file` recorded in `results.jsonl` to locate the correct JSON.
 
-Grounded runs currently rerun because CV execution identity is not yet reusable. Add `--force` for an independent repeat that also disables the request cache. See [outputs and resume](docs/usage.md#result-identity-and-resume) for the exact rules.
+Completed, structurally valid results for the same source path are skipped by default. Add `--force` to rerun them without the VLM request cache. Use a new output directory when changing videos, models or workflow settings; resume does not compare their contents or configuration. See [outputs and resume](docs/usage.md#result-identity-and-resume) for the exact rules.
+
+## Annotate across multiple GPUs
+
+Use `--manifest` to annotate multiple videos in parallel across GPUs. Ordinary
+`--videos` runs process videos sequentially. Configure the VLM API and local
+SAM3.1 runtime as above, then create `corpus.jsonl` with one unique relative
+`job_id` and an absolute `video_path` per line:
+
+```jsonl
+{"job_id":"video_001","video_path":"/data/videos/video_001.mp4"}
+{"job_id":"video_002","video_path":"/data/videos/video_002.mp4"}
+```
+
+```bash
+percept annotate --manifest corpus.jsonl \
+  --cv sam31 --cv-devices 0,1,2,3 \
+  --workers-per-gpu 2 --request-concurrency 9 \
+  --output outputs/annotations
+```
+
+- `--cv-devices` selects physical GPUs. Each GPU has one SAM process, which
+  loads the model on its first targeted request and reuses it for later requests.
+  Different GPUs can process different videos concurrently; one video's SAM
+  inference uses one GPU.
+- `--workers-per-gpu` controls CPU threads running video workflows, each with its
+  own VLM client. Two threads can overlap VLM calls and SAM work, but share one
+  SAM instance and serialize SAM requests on their GPU.
+- `--request-concurrency` caps concurrent VLM API calls across this invocation.
+  The limit starts at two, increases after successful calls, and decreases when
+  HTTP 429 responses are observed.
+
+The example uses four GPUs and eight video workflow threads. SAM remains
+conditional on the annotation workflow's questions. Add
+`--event-workflow confidence-gated` to use the experimental workflow.
+Results are written under `outputs/annotations/<job_id>/`, with progress in
+`shard-00.status.json` at the output root. See
+[multi-GPU manifest annotation](docs/usage.md#multi-gpu-manifest-annotation)
+for multi-host sharding and retry behavior.
 
 ## Compare real and generated videos
 
@@ -134,13 +171,17 @@ python3.12 -m venv .venv-clipiqa
 source .venv-clipiqa/bin/activate
 # Install the appropriate PyTorch/TorchVision build before the next step.
 python -m pip install -e '.[clipiqa]'
-percept download clipiqa --cache-dir ./weights
+mkdir -p ./weights/pyiqa ./weights/clip
+curl --fail --location --output './weights/pyiqa/CLIP-IQA%2B_learned_prompts-603f3273.pth' \
+  'https://huggingface.co/chaofengc/IQA-PyTorch-Weights/resolve/main/CLIP-IQA%2B_learned_prompts-603f3273.pth'
+curl --fail --location --output ./weights/clip/RN50.pt \
+  'https://openaipublic.azureedge.net/clip/models/afeb0e10f9e5a86da6080e35cf09123aca3b358a0c3e3b6c78a7b63bc04b6762/RN50.pt'
 python scripts/verify_install.py --metric clipiqa --cache-dir ./weights
 percept score clipiqa --video ./videos/sample_001.mp4 \
   --cache-dir ./weights --output outputs/sample_001.clipiqa.json
 ```
 
-The JSON includes the score, sampled-frame count, sampling settings and input checksum. `--device auto` selects CUDA when available, otherwise CPU. CLIP-IQA+ measures sampled-frame image quality.
+The JSON includes the score, sampled-frame count, sampling settings and input path. `--device auto` selects CUDA when available, otherwise CPU. CLIP-IQA+ measures sampled-frame image quality.
 
 ### Motion Smoothness
 
@@ -152,7 +193,9 @@ source .venv-motion/bin/activate
 # Install the appropriate PyTorch/TorchVision build before the next step.
 python -m pip install -e '.[motion]'
 python -m pip install --only-binary=:all: --no-deps vbench==0.1.5
-percept download motion --cache-dir ./weights
+mkdir -p ./weights/amt_model
+curl --fail --location --output ./weights/amt_model/amt-s.pth \
+  'https://huggingface.co/lalala125/AMT/resolve/main/amt-s.pth'
 python scripts/verify_install.py --metric motion --cache-dir ./weights
 percept score motion --video ./videos/sample_001.mp4 \
   --cache-dir ./weights --gpu 0 --output outputs/sample_001.motion.json
@@ -160,7 +203,12 @@ percept score motion --video ./videos/sample_001.mp4 \
 
 The JSON includes the score and paths to the official evaluator result and log. Motion Smoothness measures local interpolation smoothness; a smooth video can still depict an incorrect action.
 
-**Weights:** `percept download` currently supports `clipiqa` and `motion`. It verifies SHA-256 and reuses valid files. Use the same `--cache-dir` for downloading and scoring; `./weights` is relative to the current directory. Other metrics require their own [checkpoint preparation](docs/metrics.md#checkpoint-preparation).
+**Weights:** Install Python dependencies with `pip`, then download model weights
+with the `curl` commands above. The former `percept download` command has been
+removed. `weights.py` only records cache-relative paths;
+installation checks and scoring check that the files exist. No SHA-256 verification is performed. Use the same `--cache-dir`
+for checks and scoring; `./weights` is relative to the current directory.
+Other metrics require their own [checkpoint preparation](docs/metrics.md#checkpoint-preparation).
 
 ### Other individual metrics
 

@@ -51,7 +51,7 @@ class GroundedAnnotationTests(unittest.TestCase):
     def run_model(self, model, executor=True):
         return SyncRunner(model, self.settings, model_alias='fake',
                           cv_executor=self.executor if executor else None).evaluate(
-                              self.video, 'embodied_action_captioning')
+                              self.video)
 
     def test_clear_video_needs_no_sam_executor_or_visual_evidence(self):
         model = RecordingModel()
@@ -142,7 +142,7 @@ class GroundedAnnotationTests(unittest.TestCase):
                 from percept_harness.cv.contracts import CvEvidenceArtifact
                 return CvEvidenceArtifact(schema_version='cv_evidence_v1', status='available',
                     provider=request.provider, model_identity=request.model_identity,
-                    video_sha256=request.video_sha256, checkpoint_sha256=request.checkpoint_sha256,
+                    video_identity=request.video_identity, checkpoint_identity=request.checkpoint_identity,
                     processed_timeline=request.timeline, entities=request.entities,
                     tracks=(), files=(), overlay_records=())
         self.executor = SyncCvExecutor(ZeroDetection(), self.artifacts)

@@ -14,8 +14,8 @@ from percept_harness.cv.base import FakeCvEvidenceProvider, CvOutOfMemoryError
 
 def payload(root):
     return dict(schema_version='cv_request_v1', provider='sam31', model_identity='sam3.1',
-        video_path=str(root / 'source.mp4'), video_sha256='a' * 64,
-        checkpoint_sha256='b' * 64, duration_seconds=1.0, frame_count=1,
+        video_path=str(root / 'source.mp4'), video_identity='source-video',
+        checkpoint_identity='fixture-checkpoint', duration_seconds=1.0, frame_count=1,
         timeline={'frames': [{'frame_index': 0, 'timestamp_seconds': 0.0}]}, entities=[],
         sampling={'short_video_seconds': 30.0, 'scan_fps': 1.0, 'max_fps': 4.0,
                   'refinement_radius_seconds': 1.0},
@@ -123,7 +123,7 @@ class LazyCvTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, 'load failed'):
                     execute(payload(self.root))
                 with self.assertRaises(CvArtifactError):
-                    store.lookup('a' * 64)
+                    store.lookup('source-video')
 
     def test_runner_rejects_production_fake_cv_and_disabled_settings(self):
         from percept_harness.runner import SyncRunner
@@ -134,7 +134,7 @@ class LazyCvTests(unittest.TestCase):
             with self.subTest(provider=provider):
                 settings = self.settings.model_copy(update={'cv_provider': provider})
                 result = SyncRunner(ProductionModel(), settings, model_alias='production').evaluate(
-                    self.root / 'source.mp4', 'embodied_action_captioning')
+                    self.root / 'source.mp4')
                 self.assertEqual(result.status, 'failed')
                 self.assertIn(message, result.error)
 

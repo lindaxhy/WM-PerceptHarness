@@ -14,7 +14,13 @@ from typing import Any, Literal, Protocol, runtime_checkable
 from .response_contract import ModelResponseContract
 
 from ..media import FrameRef, TimeSpan, VideoMetadata
-from ..model_alias import DEFAULT_MODEL_ALIAS, validate_model_alias
+
+
+def validate_model_alias(value: Any) -> str:
+    """Validate the local name used to select a configured provider model."""
+    if not isinstance(value, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value) is None:
+        raise ValueError("model alias must be an opaque local name")
+    return value
 
 
 DEFAULT_MAX_MODEL_OUTPUT_CHARS = 1_000_000
@@ -61,23 +67,22 @@ class VisualEvidence:
                 raise ModelRequestError('invalid visual evidence identity')
 
     def identity(self):
-        return {'sha256': hashlib.sha256(self.png_bytes).hexdigest(), 'timestamp': self.timestamp,
+        return {'image_key': hashlib.sha256(self.png_bytes).hexdigest(), 'timestamp': self.timestamp,
                 'entity_id': self.entity_id, 'track_id': self.track_id, 'source': self.source}
 
     def payload(self):
-        return {**self.identity(), 'png_base64': base64.b64encode(self.png_bytes).decode('ascii')}
+        return {'timestamp': self.timestamp, 'entity_id': self.entity_id, 'track_id': self.track_id,
+                'source': self.source, 'png_base64': base64.b64encode(self.png_bytes).decode('ascii')}
 
     @classmethod
     def from_payload(cls, value):
-        if type(value) is not dict or set(value) != {'sha256', 'timestamp', 'entity_id', 'track_id', 'source', 'png_base64'}:
+        if type(value) is not dict or set(value) != {'timestamp', 'entity_id', 'track_id', 'source', 'png_base64'}:
             raise ModelRequestError('invalid visual evidence payload')
         encoded = value['png_base64']
         if type(encoded) is not str or len(encoded) > 12 * 1024 * 1024:
             raise ModelRequestError('invalid visual evidence byte budget')
         result = cls(png_bytes=base64.b64decode(encoded, validate=True), timestamp=value['timestamp'],
                      entity_id=value['entity_id'], track_id=value['track_id'], source=value['source'])
-        if result.identity()['sha256'] != value['sha256']:
-            raise ModelRequestError('visual evidence digest mismatch')
         return result
 
 
@@ -92,7 +97,7 @@ class ModelRequest:
     prompt: str
     schema_name: str
     video_session_id: str | None
-    model_name: str = DEFAULT_MODEL_ALIAS
+    model_name: str
     media_resolution: TuningLevel | None = None
     reasoning_effort: TuningLevel | None = None
     clip_context: TuningLevel | None = None

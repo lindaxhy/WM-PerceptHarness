@@ -8,20 +8,15 @@ without importing GPU packages, downloading anything, or creating an output.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib.metadata
 import json
 import math
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 
 VBENCH_REVISION = "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490"
-# evaluate.py plus every file below vbench/, except Python bytecode caches.
-# Computed from the clean official source checkout at the revision above.
-SOURCE_SHA256 = "b2afd4fcb9bb0775ec872b34c88274f8f0753601871e03aabefe61582f710e13"
 DIRECT_DIMENSIONS = frozenset({
     "imaging_quality", "aesthetic_quality", "temporal_flickering", "dynamic_degree",
     "subject_consistency", "background_consistency", "overall_consistency",
@@ -35,37 +30,13 @@ REQUIRED_FILES = {
     "subject_consistency": (
         "dino_model/dino_vitbase16_pretrain.pth",
         # The official VBench call is torch.hub.load(..., source="local")
-        # with this repository and checkpoint.  The repository itself is
-        # verified below; no second Torch URL cache is part of the official
-        # contract.
+        # with this repository and checkpoint.
     ),
     "temporal_flickering": (),
 }
-KNOWN_SHA256 = {
-    "clip_model/ViT-B-32.pt": "40d365715913c9da98579312b702a82c18be219cc2a73407c4526f58eba950af",
-    "clip_model/ViT-L-14.pt": "b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836",
-    "dino_model/dino_vitbase16_pretrain.pth": "bf34ad0f424b9029b593e8dc3ed553bf26e88bcba0d32bf3e62a6209cb64c85e",
-}
 
-# The archive contains source text and opaque binary assets.  Only known text
-# suffixes/names receive CRLF -> LF canonicalization; every other byte, including
-# PNG/weights/unknown files, remains covered exactly as extracted.
-TEXT_SOURCE_SUFFIXES = frozenset({
-    ".c", ".cpp", ".cu", ".h", ".ipynb", ".json", ".md", ".py", ".sh",
-    ".txt", ".yaml", ".yml",
-})
-TEXT_SOURCE_NAMES = frozenset({"Dockerfile", "LICENSE", "Makefile"})
 DINO_REPOSITORY_PREFIX = "dino_model/facebookresearch_dino_main"
-DINO_CHECKPOINT_RELATIVE = "dino_model/dino_vitbase16_pretrain.pth"
 DINO_TORCH_CHECKPOINT_NAME = "dino_vitbase16_pretrain.pth"
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _object_without_duplicates(pairs):
@@ -81,28 +52,12 @@ def read_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8-sig"), object_pairs_hook=_object_without_duplicates)
 
 
-def source_fingerprint(root: Path) -> str:
-    files = [root / "evaluate.py"] + [
-        path for path in (root / "vbench").rglob("*")
-        if path.is_file() and "__pycache__" not in path.parts and path.suffix not in (".pyc", ".pyo")
-    ]
-    digest = hashlib.sha256()
-    for path in sorted(files, key=lambda path: path.relative_to(root).as_posix()):
-        digest.update(path.relative_to(root).as_posix().encode("utf-8") + b"\0")
-        payload = path.read_bytes()
-        if path.suffix.lower() in TEXT_SOURCE_SUFFIXES or path.name in TEXT_SOURCE_NAMES:
-            # Official source archives may preserve CRLF while a Git checkout
-            # uses LF.  Never normalize opaque/binary assets.
-            payload = payload.replace(b"\r\n", b"\n")
-        digest.update(hashlib.sha256(payload).digest())
-    return digest.hexdigest()
-
-
 def verify_source(root: Path) -> dict:
-    actual = source_fingerprint(root)
-    if actual != SOURCE_SHA256:
-        raise ValueError(f"VBench source differs from pinned {VBENCH_REVISION}; expected tree SHA256 {SOURCE_SHA256}, got {actual}")
-    return {"revision": VBENCH_REVISION, "source_sha256": actual}
+    for relative in ['evaluate.py', 'vbench/__init__.py']:
+        path = root / relative
+        if not path.is_file():
+            raise FileNotFoundError(f"Missing required source file: {path}")
+    return {"expected_revision": VBENCH_REVISION}
 
 
 def resolve_prompt(video: Path, prompt: str | None, prompt_file: Path | None) -> str | None:
@@ -127,70 +82,32 @@ def resolve_prompt(video: Path, prompt: str | None, prompt_file: Path | None) ->
 def verify_cache(cache: Path, dimensions: list[str], manifest: Path | None,
                  torch_home: Path | None = None) -> dict:
     required = set().union(*(set(REQUIRED_FILES[dimension]) for dimension in dimensions))
-    if "subject_consistency" in dimensions:
-        # The official local-source call points torch.hub at this clone, then
-        # hubconf.py calls load_state_dict_from_url().  Both the clone's Python
-        # source and the URL-cache checkpoint therefore need independent
-        # preflight verification; check-only must never let torch download them.
-        required.add(DINO_CHECKPOINT_RELATIVE)
-    if not required:
-        return {}
-    if manifest is None:
-        raise ValueError("Model dimensions require --weights-manifest: a frozen JSON object of cache-relative path -> expected SHA256")
-    expected = read_json(manifest)
-    if not isinstance(expected, dict):
-        raise ValueError("Weights manifest must be a JSON object: cache-relative path -> SHA256")
+    if manifest is not None:
+        entries = read_json(manifest)
+        if not isinstance(entries, (list, dict)) or any(not isinstance(item, str) for item in entries):
+            raise ValueError("Weights manifest must be a JSON list of cache-relative paths")
+        for relative in entries:
+            path = Path(relative)
+            if path.is_absolute() or ".." in path.parts:
+                raise ValueError(f"Weights manifest path must be cache-relative: {relative}")
+            required.add(relative)
     records = {}
     for relative in sorted(required):
         path = cache / relative
-        wanted = expected.get(relative)
-        if not isinstance(wanted, str) or not re.fullmatch(r"[0-9a-f]{64}", wanted):
-            raise ValueError(f"Missing/invalid expected SHA256 in weights manifest: {relative}")
-        if relative in KNOWN_SHA256 and wanted != KNOWN_SHA256[relative]:
-            raise ValueError(f"Manifest conflicts with official CLIP checkpoint digest: {relative}")
         if not path.is_file() or path.stat().st_size == 0:
             raise FileNotFoundError(f"Pre-provision model/cache file; automatic downloads are not started: {path}")
-        actual = sha256(path)
-        if actual != wanted:
-            raise ValueError(f"Model/cache SHA256 mismatch: {relative}")
-        records[relative] = actual
-
+        records[relative] = str(path)
     if "subject_consistency" in dimensions:
         if torch_home is None:
             raise ValueError("subject_consistency requires an explicit Torch hub cache path")
         repo = cache / DINO_REPOSITORY_PREFIX
-        py_files = sorted(
-            path for path in repo.rglob("*.py")
-            if path.is_file() and ".git" not in path.parts and "__pycache__" not in path.parts
-        ) if repo.is_dir() else []
-        if not py_files:
-            raise FileNotFoundError(
-                f"Pre-provision official DINO source checkout is missing: {repo}"
-            )
-        for path in py_files:
-            relative = f"{DINO_REPOSITORY_PREFIX}/{path.relative_to(repo).as_posix()}"
-            wanted = expected.get(relative)
-            if not isinstance(wanted, str) or not re.fullmatch(r"[0-9a-f]{64}", wanted):
-                raise ValueError(f"Missing/invalid expected SHA256 in weights manifest: {relative}")
-            actual = sha256(path)
-            if actual != wanted:
-                raise ValueError(f"DINO source SHA256 mismatch: {relative}")
-            records[relative] = actual
-
-        torch_checkpoint = torch_home / "hub" / "checkpoints" / DINO_TORCH_CHECKPOINT_NAME
-        if not torch_checkpoint.is_file() or torch_checkpoint.stat().st_size == 0:
-            raise FileNotFoundError(
-                "Pre-provision official DINO Torch hub/checkpoints URL-cache checkpoint is missing "
-                f"(automatic downloads are not started): {torch_checkpoint}"
-            )
-        local_hash = records[DINO_CHECKPOINT_RELATIVE]
-        torch_hash = sha256(torch_checkpoint)
-        if torch_hash != local_hash:
-            raise ValueError(
-                "DINO Torch hub/checkpoints URL-cache checkpoint differs from the hash-verified "
-                f"official cache checkpoint: {torch_checkpoint}"
-            )
-        records[f"torch_home/hub/checkpoints/{DINO_TORCH_CHECKPOINT_NAME}"] = torch_hash
+        if not (repo / "hubconf.py").is_file():
+            raise FileNotFoundError(f"Pre-provision official DINO source checkout is missing: {repo}")
+        records[DINO_REPOSITORY_PREFIX] = str(repo)
+        checkpoint = torch_home / "hub" / "checkpoints" / DINO_TORCH_CHECKPOINT_NAME
+        if not checkpoint.is_file() or checkpoint.stat().st_size == 0:
+            raise FileNotFoundError(f"Pre-provision official DINO Torch hub checkpoint is missing: {checkpoint}")
+        records[f"torch_home/hub/checkpoints/{DINO_TORCH_CHECKPOINT_NAME}"] = str(checkpoint)
     return records
 
 
@@ -280,7 +197,6 @@ def run_official(*, vbench_root: Path, videos_path: Path, dimensions: list[str],
         weights_manifest = weights_manifest.expanduser().resolve(strict=True)
     source = verify_source(root)
     weights = verify_cache(cache, dimensions, weights_manifest, torch_home=torch_home)
-    video_hash = sha256(video)
     env = os.environ.copy()
     env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
     env["VBENCH_CACHE_DIR"] = str(cache)
@@ -291,7 +207,7 @@ def run_official(*, vbench_root: Path, videos_path: Path, dimensions: list[str],
     env.pop("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", None)
     if allow_trusted_pickle:
         if not weights:
-            raise ValueError("--allow-trusted-pickle requires hash-verified model files")
+            raise ValueError("--allow-trusted-pickle requires local model files")
         env.pop("TORCH_FORCE_WEIGHTS_ONLY_LOAD", None)
         env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
     env.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
@@ -307,9 +223,8 @@ def run_official(*, vbench_root: Path, videos_path: Path, dimensions: list[str],
     if actual_prompt is not None:
         command += ["--prompt", actual_prompt]
     metadata = {"wrapper": "score_vbench_official.py", "source": source, "video": str(video),
-                "video_sha256": video_hash, "dimensions": dimensions, "mode": "custom_input",
-                "prompt": actual_prompt, "cache_dir": str(cache), "weights_sha256": weights,
-                "weights_manifest_sha256": sha256(weights_manifest) if weights_manifest else None,
+                "dimensions": dimensions, "mode": "custom_input",
+                "prompt": actual_prompt, "cache_dir": str(cache), "weights": weights,
                 "torch_home": env["TORCH_HOME"], "cuda_visible_devices": env.get("CUDA_VISIBLE_DEVICES"),
                 "static_subset_ack": static_subset_ack, "allow_trusted_pickle": allow_trusted_pickle,
                 "imaging_quality_preprocessing_mode": imaging_quality_preprocessing_mode,
@@ -329,12 +244,6 @@ def run_official(*, vbench_root: Path, videos_path: Path, dimensions: list[str],
     if len(results) != 1:
         raise ValueError(f"Expected exactly one official evaluation JSON; see {output}")
     scores = validate_result(results[0], video, dimensions)
-    if sha256(video) != video_hash:
-        raise ValueError("Video changed during scoring; refusing to publish a validated result")
-    if verify_source(root) != source or verify_cache(
-        cache, dimensions, weights_manifest, torch_home=torch_home
-    ) != weights:
-        raise ValueError("Source or model files changed during scoring")
     versions = {}
     for name in ("torch", "torchvision", "pyiqa", "openai-clip", "decord", "numpy"):
         try:
@@ -365,13 +274,13 @@ def metric_main(dimension: str, argv: list[str] | None = None) -> int:
     parser.add_argument("--prompt-file", type=Path)
     parser.add_argument("--cache-dir", type=Path, required=True)
     parser.add_argument("--torch-home", type=Path, help="Writable Torch hub cache for official loaders such as DINO; defaults to <cache-dir>/torch")
-    parser.add_argument("--weights-manifest", type=Path, help="JSON object: cache-relative model/code path -> expected SHA256")
+    parser.add_argument("--weights-manifest", type=Path, help="Optional JSON list of cache-relative model/code paths")
     parser.add_argument("--gpu", help="One CUDA_VISIBLE_DEVICES index or UUID")
     parser.add_argument("--output-dir", type=Path, required=True, help="New result directory outside source checkout")
     parser.add_argument("--imaging-quality-preprocessing-mode", choices=("shorter", "longer", "shorter_centercrop", "None"), default="longer")
     parser.add_argument("--load-ckpt-from-local", action="store_true", default=True, help="Always enabled by this wrapper")
     parser.add_argument("--static-subset-ack", action="store_true")
-    parser.add_argument("--allow-trusted-pickle", action="store_true", help="Only for trusted, hash-verified checkpoints requiring legacy torch.load")
+    parser.add_argument("--allow-trusted-pickle", action="store_true", help="Only for trusted checkpoints requiring legacy torch.load")
     parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args(argv)
     try:

@@ -1,6 +1,5 @@
 """Targeted SAM probes and tracks on the original playback clock."""
 from dataclasses import dataclass
-import hashlib
 from pathlib import Path
 from ..cv.artifacts import CvArtifactStore, CvArtifactHandle, cv_cache_key
 from ..cv.contracts import CvEvidenceRequest, SamplingPolicy, EvidenceThresholds, FrameTimeline, SpatialPrompt
@@ -13,6 +12,16 @@ from .base import SafePipelineError
 MAX_RECHECKS = 3
 MAX_RECHECK_SECONDS = 30.0
 CONTEXT_SECONDS = 0.5
+
+
+def local_asset_identity(path):
+    """Cache identity from local metadata; this does not verify file contents."""
+    path = Path(path).resolve()
+    try:
+        status = path.stat()
+    except FileNotFoundError:
+        return str(path)
+    return f"{path}:{status.st_size}:{status.st_mtime_ns}"
 
 
 @dataclass(frozen=True)
@@ -43,8 +52,7 @@ class EvidenceOrchestrator:
     def __init__(self, task, context, media_path, duration, wait_jobs):
         self.task, self.context, self.media_path, self.duration, self.wait_jobs = task, context, media_path, duration, wait_jobs
         self.timeline = probe_frame_timeline(media_path)
-        with media_path.open('rb') as stream:
-            self.video_sha = hashlib.file_digest(stream, 'sha256').hexdigest()
+        self.video_identity = local_asset_identity(media_path)
 
     def run(self, candidates, *, ordinal, window, target, mode):
         settings = self.context.settings
@@ -59,8 +67,9 @@ class EvidenceOrchestrator:
         spatial = SpatialPrompt(entity_id=normalized.entities[0].entity_id,
                                 frame_index=reference.frame_index, bbox_xyxy=target.bbox_xyxy)
         request = CvEvidenceRequest(schema_version='cv_request_v1', provider=settings.cv_provider,
-            model_identity=settings.cv_model_alias, video_path=self.media_path, video_sha256=self.video_sha,
-            duration_seconds=self.duration, frame_count=len(self.timeline.frames), checkpoint_sha256=settings.cv_checkpoint_sha256,
+            model_identity=settings.cv_model_alias, video_path=self.media_path, video_identity=self.video_identity,
+            duration_seconds=self.duration, frame_count=len(self.timeline.frames), checkpoint_identity=(local_asset_identity(settings.cv_checkpoint_path)
+                if settings.cv_checkpoint_path else settings.cv_model_alias),
             timeline=selected, entities=normalized.entities, mode=mode, spatial_prompts=(spatial,),
             sampling=SamplingPolicy(short_video_seconds=settings.cv_short_video_seconds,
                 scan_fps=settings.cv_max_fps if window else settings.cv_scan_fps, max_fps=settings.cv_max_fps,
@@ -72,11 +81,11 @@ class EvidenceOrchestrator:
         [result] = self.wait_jobs(self.context.store, self.task.task_id, [job.job_id], settings.cv_timeout_seconds)
         if result.get('status') != 'available' or result.get('artifact_key') != cv_cache_key(request):
             raise SafePipelineError('Targeted SAM evidence unavailable or mismatched')
-        handle = CvArtifactHandle(result['artifact_key'], result['manifest_sha256'])
+        handle = CvArtifactHandle(result['artifact_key'])
         scope = f'{mode}_{ordinal}'
         with CvArtifactStore(settings.cv_cache_root, max_files=settings.cv_cache_max_files, max_bytes=settings.cv_cache_max_bytes) as store:
             artifact = store.load(handle)
-            if artifact.video_sha256 != self.video_sha or artifact.entities != request.entities or artifact.provider != request.provider:
+            if artifact.video_identity != self.video_identity or artifact.entities != request.entities or artifact.provider != request.provider:
                 raise SafePipelineError('SAM artifact does not match the evidence request')
             if artifact.processed_timeline is None:
                 raise SafePipelineError('SAM evidence has no observed source frames')
@@ -92,10 +101,10 @@ class EvidenceOrchestrator:
             images.append(VisualEvidence(png_bytes=overlay_bytes[record.path], timestamp=observation.timestamp_seconds,
                           entity_id=track.entity_id, track_id=f'{scope}:{track.track_id}', source=scope))
         if artifact.tracks and not images:
-            raise SafePipelineError('SAM tracks have no authenticated visual overlays')
+            raise SafePipelineError('SAM tracks have no visual overlays')
         # Zero detections can be valid. Record this explicitly; original imagery
         # is still supplied and absence of tracks never establishes object absence.
-        audit = {**result, 'scope': scope, 'provider': artifact.provider, 'video_sha256': self.video_sha,
+        audit = {**result, 'scope': scope, 'provider': artifact.provider, 'video_identity': self.video_identity,
                  'time_basis': 'container-relative playback seconds; original decoder frame indices',
                  'window': [window['start'], window['end']] if window else [0.0, self.duration],
                  'mode': mode, 'question': window['question'],

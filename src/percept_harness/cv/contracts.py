@@ -39,7 +39,7 @@ _MAX_CANONICAL_INT = 2**63 - 1
 _MAX_UNANNOTATED_JSON_SEQUENCE = 100_000
 
 
-Sha256 = Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{64}$")]
+CacheIdentity = Annotated[StrictStr, Field(min_length=1, max_length=4096)]
 ObjectId = Annotated[
     StrictStr,
     Field(
@@ -226,10 +226,10 @@ class CvEvidenceRequest(StrictModel):
         StrictStr, Field(max_length=_MAX_MODEL_IDENTITY_CHARS)
     ]
     video_path: Path
-    video_sha256: Sha256
+    video_identity: CacheIdentity
     duration_seconds: PositiveTimestamp
     frame_count: PositiveInt
-    checkpoint_sha256: Sha256
+    checkpoint_identity: CacheIdentity
     timeline: FrameTimeline
     entities: Annotated[
         tuple[EntityPrompt, ...], Field(max_length=_MAX_ARTIFACT_ENTITIES)
@@ -357,7 +357,6 @@ class CvTrack(StrictModel):
 
 class ArtifactFile(StrictModel):
     path: Annotated[StrictStr, Field(max_length=_MAX_ARTIFACT_PATH_CHARS)]
-    sha256: Sha256
     size_bytes: NonnegativeInt
 
     @field_validator("path")
@@ -393,8 +392,8 @@ class CvEvidenceArtifact(StrictModel):
     model_identity: Annotated[
         StrictStr, Field(max_length=_MAX_MODEL_IDENTITY_CHARS)
     ]
-    video_sha256: Sha256
-    checkpoint_sha256: Sha256
+    video_identity: CacheIdentity
+    checkpoint_identity: CacheIdentity
     processed_timeline: FrameTimeline | None
     entities: Annotated[
         tuple[EntityPrompt, ...], Field(max_length=_MAX_ARTIFACT_ENTITIES)

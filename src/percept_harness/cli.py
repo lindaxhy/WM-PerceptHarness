@@ -10,10 +10,8 @@ from collections.abc import Sequence
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
-from .result_store import OutputBusyError
 from .config import Settings
 from .runner import (
-    SUPPORTED_TEMPLATES,
     SyncRunner,
     collect_videos,
     run_batch,
@@ -46,9 +44,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     if argv and argv[0] in _DIRECT_METRICS:
         from .video_metrics.vbench_backend import metric_main
         return metric_main(argv[0].replace("-", "_"), argv[1:])
-    if argv and argv[0] == "download":
-        from .weights import main as download_main
-        return download_main(argv[1:])
     if argv and argv[0] == "score":
         score_parser = argparse.ArgumentParser(
             prog="percept score",
@@ -77,7 +72,6 @@ def _parser() -> argparse.ArgumentParser:
     )
     for name, description in _DIRECT_METRICS.items():
         commands.add_parser(name, help=description)
-    commands.add_parser("download", help="download and verify metric checkpoints")
     evaluate = commands.add_parser(
         "annotate",
         help="annotate videos to structured JSON",
@@ -88,12 +82,6 @@ def _parser() -> argparse.ArgumentParser:
         nargs="+",
         type=Path,
         help="video files and/or directories (searched recursively)",
-    )
-    evaluate.add_argument(
-        "--template",
-        default="embodied_action_captioning",
-        choices=SUPPORTED_TEMPLATES,
-        help="annotation template (default: embodied_action_captioning)",
     )
     evaluate.add_argument(
         "--backend",
@@ -115,7 +103,7 @@ def _parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--shard-count", type=int, default=1)
     evaluate.add_argument("--event-workflow", choices=("reviewed", "confidence-gated"),
                           default=None, help="event workflow (default: PERCEPT_EVENT_WORKFLOW, reviewed)")
-    evaluate.add_argument("--force", action="store_true", help="rerun matching results; archive displaced files")
+    evaluate.add_argument("--force", action="store_true", help="rerun videos without reusing VLM request cache")
     evaluate.add_argument(
         "--model",
         default=None,
@@ -196,12 +184,11 @@ def _eval(arguments: argparse.Namespace) -> int:
             outcomes = run_batch(
                 runner,
                 videos,
-                arguments.template,
                 arguments.output,
                 prompt_context=arguments.prompt_context,
                 force=arguments.force,
             )
-    except (OutputBusyError, ValueError, RuntimeError) as error:
+    except (ValueError, RuntimeError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
     finally:
@@ -336,7 +323,6 @@ def _loaded_cv_executor(provider_name: str, arguments: argparse.Namespace, setti
             provider = Sam31EvidenceProvider.load(
                 settings.cv_repository_path,
                 settings.cv_checkpoint_path,
-                settings.cv_checkpoint_sha256,
                 bpe_path=settings.cv_bpe_path,
                 compile_model=settings.cv_compile_model,
                 max_artifact_bytes=settings.cv_cache_max_bytes,

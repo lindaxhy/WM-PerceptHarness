@@ -8,6 +8,7 @@ current process, so `wait_for_jobs` only collects already-terminal results.
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import math
 import os
@@ -92,31 +93,17 @@ class SemanticResultCache:
     def __init__(self, root: Path) -> None:
         self._root = Path(root)
         self._root.mkdir(parents=True, exist_ok=True)
-        self._video_digests: dict[Path, tuple[tuple[int, int], str]] = {}
-
-    def _video_digest(self, path: Path) -> str:
-        from .result_store import file_digest
-
-        resolved = path.resolve(strict=True)
-        status = resolved.stat()
-        identity = (status.st_size, status.st_mtime_ns)
-        cached = self._video_digests.get(resolved)
-        if cached is not None and cached[0] == identity:
-            return cached[1]
-        digest = file_digest(resolved)
-        self._video_digests[resolved] = (identity, digest)
-        return digest
-
     def key(
         self,
         request: ModelRequest,
         backend_identity: Mapping[str, Any],
         schema_context: Mapping[str, Any] | None,
     ) -> str:
-        from .result_store import json_digest
-
-        return json_digest({
-            "video_sha256": self._video_digest(request.video_path),
+        video = request.video_path.resolve(strict=True)
+        status = video.stat()
+        identity = {
+            "cache_version": 3,
+            "video": [str(video), status.st_size, status.st_mtime_ns],
             "span": [request.span.start, request.span.end],
             "fps": request.fps,
             "stage": request.stage,
@@ -125,7 +112,9 @@ class SemanticResultCache:
             "schema_context": dict(schema_context) if schema_context else None,
             "backend": dict(backend_identity),
             "visual_evidence": [e.identity() for e in request.visual_evidence],
-        })
+        }
+        # Opaque cache filename only; no content integrity verification.
+        return hashlib.sha256(json.dumps(identity, sort_keys=True, allow_nan=False).encode()).hexdigest()
 
     def _entry_path(self, key: str) -> Path:
         return self._root / key[:2] / f"{key}.json"

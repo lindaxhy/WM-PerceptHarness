@@ -1,6 +1,5 @@
 """Bounded immutable internal descriptor; only registered factories supply it."""
 from dataclasses import dataclass
-import hashlib
 import json
 import math
 from typing import Any
@@ -101,7 +100,6 @@ def compile_local_schema(source: dict[str, Any]) -> dict[str, Any]:
 class ModelResponseContract:
     name: str
     schema_json: str
-    schema_sha256: str
 
     def __post_init__(self) -> None:
         if (type(self.name) is not str or self.name not in ('EntityNomination', 'GroundedEvents', 'ConfidenceDraft', 'EvidenceReview', 'SamPromptReview')
@@ -112,12 +110,11 @@ class ModelResponseContract:
         value = json.loads(self.schema_json)
         preflight_plain(value, max_bytes=MAX_SCHEMA_BYTES,
                         max_nodes=MAX_SCHEMA_NODES, max_depth=MAX_SCHEMA_DEPTH)
-        if (canonical(value) != self.schema_json or
-                hashlib.sha256(self.schema_json.encode()).hexdigest() != self.schema_sha256):
+        if canonical(value) != self.schema_json:
             raise ValueError('scene response descriptor identity is invalid')
 
     def format(self) -> dict[str, Any]:
         return dict(type='json_schema', name=self.name, schema=json.loads(self.schema_json), strict=True)
 
     def cache_identity(self) -> dict[str, Any]:
-        return dict(type='json_schema', name=self.name, strict=True, schema_sha256=self.schema_sha256)
+        return dict(type='json_schema', name=self.name, strict=True, schema=json.loads(self.schema_json))

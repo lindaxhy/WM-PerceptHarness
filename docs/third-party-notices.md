@@ -24,7 +24,7 @@ rounded resize dimensions, and four-decimal final rounding. It removes unrelated
 aesthetic/ImageReward functions, frame-directory handling, global model caches,
 and the MUSIQ/Laplacian fallback. It adds CLI arguments, optional imports, input
 validation, explicit video release, non-finite score rejection, JSON output,
-version metadata, and video SHA-256. Model loading errors now fail the command.
+and version metadata. Model loading errors now fail the command.
 
 ## External packages and models (not vendored)
 
@@ -43,13 +43,12 @@ or their model weights. Refer to the licenses shipped with the exact installed
 versions and to the upstream checkpoint terms.
 
 No model checkpoints or third-party model implementation are distributed here.
-The packaged [weight registry](../src/percept_harness/weights.py) records download URLs, cache-relative filenames,
-and reference SHA-256 values from the existing evaluation environment.
-`percept download` verifies these digests before publishing files. CLIP-IQA+
-verifies both checkpoints when `--cache-dir` is supplied; omitting it retains
-PyIQA’s own default cache and download behavior.
-The Motion Smoothness wrapper verifies the recorded AMT-S hash before enabling
-legacy checkpoint loading in its child process.
+The packaged [weight registry](../src/percept_harness/weights.py) records cache-relative filenames.
+Download URLs and commands are documented in the README. Installation checks
+check file existence. CLIP-IQA+ checks both checkpoint paths when `--cache-dir`
+is supplied; omitting it retains PyIQA’s own default cache and download behavior.
+The Motion Smoothness wrapper checks the AMT-S path before enabling legacy
+checkpoint loading in its child process.
 
 `percept score motion` (`src/percept_harness/video_metrics/motion.py`) is a
 local invocation wrapper. It

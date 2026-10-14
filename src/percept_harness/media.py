@@ -1,4 +1,4 @@
-"""Local media probing, segmentation, and frame extraction."""
+"""Local media probing, playback timing, and frame extraction."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
-_TIMESTAMP_QUANTUM = Decimal("0.000001")
 _MAX_TIME_BASE_CHARS = 64
 
 
@@ -187,36 +186,6 @@ def _positive_finite_float(value: Any) -> float | None:
     if not math.isfinite(parsed) or parsed <= 0:
         return None
     return parsed
-
-
-def plan_segments(
-    duration: float,
-    max_seconds: float,
-    overlap_seconds: float,
-) -> list[TimeSpan]:
-    """Plan deterministic overlapping spans ending exactly at ``duration``."""
-    if not all(math.isfinite(value) for value in (duration, max_seconds, overlap_seconds)):
-        raise ValueError("segment values must be finite")
-    if duration <= 0 or max_seconds <= 0 or overlap_seconds < 0:
-        raise ValueError("duration and max_seconds must be positive; overlap cannot be negative")
-    if overlap_seconds >= max_seconds:
-        raise ValueError("overlap must be smaller than max_seconds")
-
-    duration_decimal = Decimal(str(duration))
-    maximum = Decimal(str(max_seconds))
-    overlap = Decimal(str(overlap_seconds))
-    start = Decimal("0")
-    spans: list[TimeSpan] = []
-    while start < duration_decimal:
-        end = min(start + maximum, duration_decimal)
-        spans.append(TimeSpan(float(start), duration if end == duration_decimal else float(end)))
-        if end == duration_decimal:
-            break
-        next_start = (end - overlap).quantize(_TIMESTAMP_QUANTUM)
-        if next_start <= start:
-            raise ValueError("rounded segment step does not make progress")
-        start = next_start
-    return spans
 
 
 def extract_frames(

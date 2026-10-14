@@ -6,8 +6,23 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from manifest_cv_fixture import SyntheticGpuSlot
+
 
 class AnnotationBatchTests(unittest.TestCase):
+    def test_manifest_rejects_fake_cv_before_starting_workers(self):
+        from unittest.mock import patch
+        from percept_harness.batch import run_manifest
+        from percept_harness.cli import _parser
+        args = _parser().parse_args(['annotate', '--manifest', 'unused.jsonl',
+            '--output', 'unused-output', '--backend', 'fake', '--cv', 'fake'])
+        with patch('percept_harness.batch.read_manifest', side_effect=AssertionError('fake CV reached manifest loading')) as read, \
+                patch('percept_harness.batch.GpuSlot') as slot:
+            with self.assertRaisesRegex(ValueError, 'manifest annotation requires --cv sam31'):
+                run_manifest(args)
+            read.assert_not_called()
+            slot.assert_not_called()
+
     def test_manifest_without_targets_writes_public_and_audit_without_sam(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td).resolve()
@@ -16,13 +31,13 @@ class AnnotationBatchTests(unittest.TestCase):
             manifest=root/'input.jsonl';manifest.write_text(json.dumps({'job_id':'one','video_path':str(video)})+'\n')
             env={**os.environ,'PYTHONPATH':str(Path('src').resolve()),'PERCEPT_CV_CACHE_ROOT':str(root/'cv'), 'PERCEPT_WORK_ROOT':str(root/'work')}
             process=subprocess.run([sys.executable,'-m','percept_harness.cli','annotate','--manifest',str(manifest),
-                '--output',str(root/'out'),'--backend','fake','--model','fake','--cv','fake','--cv-devices','0',
+                '--output',str(root/'out'),'--backend','fake','--model','fake','--cv','sam31','--cv-devices','0',
                 '--workers-per-gpu','1','--request-concurrency','1'],env=env,text=True,capture_output=True,timeout=45)
             self.assertEqual(process.returncode,0,process.stdout+process.stderr)
             record=json.loads((root/'out/one/clip.json').read_text())
             self.assertEqual(set(record),{'duration','events'})
             audit=json.loads((root/'out/one/clip.audit.json').read_text())
-            self.assertTrue(audit['metadata']['synthetic'])
+            self.assertNotIn('provenance', audit)
             self.assertEqual(audit['metadata']['evidence'], [])
             archives=json.loads((root/'out/one/.percept/cv-artifact.json').read_text())['artifacts']
             self.assertEqual(archives, [])
@@ -49,10 +64,10 @@ class LocalRecheckArchiveTests(unittest.TestCase):
             manifest = root/'input.jsonl'
             manifest.write_text(json.dumps({'job_id': 'one', 'video_path': str(video)})+'\n')
             settings = {'PERCEPT_CV_CACHE_ROOT': str(root/'cv'), 'PERCEPT_WORK_ROOT': str(root/'work')}
-            with patch.dict(os.environ, settings), patch.object(FakeVideoModel, '_fixture', with_review), \
+            with patch('percept_harness.batch.GpuSlot', SyntheticGpuSlot), patch.dict(os.environ, settings), patch.object(FakeVideoModel, '_fixture', with_review), \
                     redirect_stdout(StringIO()), redirect_stderr(StringIO()):
                 code = cli.main(['annotate', '--manifest', str(manifest), '--output', str(root/'out'),
-                    '--backend', 'fake', '--model', 'fake', '--cv', 'fake', '--cv-devices', '0',
+                    '--backend', 'fake', '--model', 'fake', '--cv', 'sam31', '--cv-devices', '0',
                     '--workers-per-gpu', '1', '--request-concurrency', '1'])
             self.assertEqual(code, 0)
             record = json.loads((root/'out/one/clip.audit.json').read_text())
@@ -97,12 +112,12 @@ class EvidenceExportFailureTests(unittest.TestCase):
                 'color=c=blue:s=64x64:r=4:d=2', '-c:v', 'mpeg4', str(video)], check=True)
             manifest = root/'input.jsonl'
             manifest.write_text(json.dumps({'job_id':'one', 'video_path':str(video)})+'\n')
-            with patch.dict(os.environ, {'PERCEPT_CV_CACHE_ROOT':str(root/'cv'), 'PERCEPT_WORK_ROOT':str(root/'work')}), \
+            with patch('percept_harness.batch.GpuSlot', SyntheticGpuSlot), patch.dict(os.environ, {'PERCEPT_CV_CACHE_ROOT':str(root/'cv'), 'PERCEPT_WORK_ROOT':str(root/'work')}), \
                  patch.object(FakeVideoModel, '_fixture', with_target), \
                  patch('percept_harness.batch.archive_cv_evidence', side_effect=OSError('archive full')), \
                  redirect_stdout(StringIO()), redirect_stderr(StringIO()):
                 code = cli.main(['annotate','--manifest',str(manifest),'--output',str(root/'out'),
-                    '--backend','fake','--model','fake','--cv','fake','--cv-devices','0',
+                    '--backend','fake','--model','fake','--cv','sam31','--cv-devices','0',
                     '--workers-per-gpu','1','--request-concurrency','1'])
             self.assertEqual(code, 1)
             self.assertFalse((root/'out/one/clip.json').exists())
