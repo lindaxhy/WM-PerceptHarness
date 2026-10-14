@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 from ..config import Settings
-from ..domain import TaskRecord
 from ..execution import JobStore
 
 

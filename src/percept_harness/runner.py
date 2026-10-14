@@ -12,9 +12,9 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from . import result_store
+from . import results
 from .config import Settings
-from .domain import TaskRecord
+from .types import TaskRecord
 from .execution import SyncJobStore
 from .models.base import VideoModel
 from .pipelines.base import PipelineContext, SafePipelineError
@@ -170,8 +170,8 @@ def run_batch(
     outcomes = []
     for index, source in enumerate(videos, start=1):
         video = Path(source).resolve()
-        path = result_store.result_path(output_dir, video)
-        previous = result_store.completed_result(path, video) if not force and video.is_file() else None
+        path = results.result_path(output_dir, video)
+        previous = results.completed_result(path, video) if not force and video.is_file() else None
         if previous is not None:
             outcome = EvalOutcome(video_path=video, status="skipped", data=previous["data"],
                                   result_file=path.name, metadata=previous.get("metadata"))
@@ -200,8 +200,6 @@ def _task_record(
         payload["task_context"] = {"prompt_context": prompt_context}
     return TaskRecord(
         task_id=str(uuid.uuid4()),
-        operator_id="percept_eval",
-        operator_version="v1",
         payload=payload,
     )
 
@@ -228,7 +226,7 @@ def _write_result(result_path: Path, outcome: EvalOutcome) -> None:
         "elapsed_seconds": outcome.elapsed_seconds,
         "result_file": outcome.result_file,
     }
-    result_store.write_annotation(result_path, record)
+    results.write_annotation(result_path, record)
 
 
 def _write_aggregate(jsonl_path: Path, outcomes: list[EvalOutcome]) -> None:
@@ -240,4 +238,4 @@ def _write_aggregate(jsonl_path: Path, outcomes: list[EvalOutcome]) -> None:
         "error": outcome.error,
         "result_file": outcome.result_file,
     }, ensure_ascii=False, allow_nan=False) + "\n" for outcome in outcomes]
-    result_store.atomic_text(jsonl_path, "".join(lines))
+    results.atomic_text(jsonl_path, "".join(lines))

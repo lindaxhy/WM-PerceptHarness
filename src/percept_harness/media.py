@@ -1,4 +1,9 @@
-"""Local media probing, playback timing, and frame extraction."""
+"""Shared video metadata, playback timing and timestamped frame extraction.
+
+``probe_video`` reads duration, size and frame rate with FFprobe.
+``extract_frames`` writes frames with FFmpeg for model requests.
+Model inference lives in ``models``; these helpers preserve video timing.
+"""
 
 from __future__ import annotations
 

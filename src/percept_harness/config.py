@@ -7,63 +7,29 @@ import re
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import BeforeValidator, Field, SecretStr, field_validator, model_validator
+from pydantic import BeforeValidator, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-
-def _integer(value: Any, name: str) -> int:
+def _integer(value: Any) -> int:
     if isinstance(value, bool):
-        raise ValueError(f"{name} must be an integer")
+        raise ValueError("value must be an integer")
     if isinstance(value, int):
         return value
     if isinstance(value, str) and re.fullmatch(r"[+-]?[0-9]+", value):
         return int(value)
-    raise ValueError(f"{name} must be an integer")
+    raise ValueError("value must be an integer")
 
 
-def _nonnegative_integer(value: Any) -> int:
-    parsed = _integer(value, "value")
-    if parsed < 0:
-        raise ValueError("value must be non-negative")
-    return parsed
-
-
-def _positive_integer(value: Any) -> int:
-    parsed = _integer(value, "value")
-    if parsed <= 0:
-        raise ValueError("value must be positive")
-    return parsed
-
-
-def _positive_finite(value: Any) -> float:
+def _finite_number(value: Any) -> float:
     if isinstance(value, bool):
-        raise ValueError("value must be finite and positive")
+        raise ValueError("value must be a finite number")
     try:
         parsed = float(value)
     except (TypeError, ValueError):
-        raise ValueError("value must be finite and positive") from None
-    if not math.isfinite(parsed) or parsed <= 0:
-        raise ValueError("value must be finite and positive")
-    return parsed
-
-
-def _nonnegative_finite(value: Any) -> float:
-    if isinstance(value, bool):
-        raise ValueError("value must be finite and non-negative")
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        raise ValueError("value must be finite and non-negative") from None
-    if not math.isfinite(parsed) or parsed < 0:
-        raise ValueError("value must be finite and non-negative")
-    return parsed
-
-
-def _positive_fraction(value: Any) -> float:
-    parsed = _positive_finite(value)
-    if parsed > 1:
-        raise ValueError("value must be no greater than one")
+        raise ValueError("value must be a finite number") from None
+    if not math.isfinite(parsed):
+        raise ValueError("value must be a finite number")
     return parsed
 
 
@@ -75,11 +41,13 @@ def _strict_boolean(value: Any) -> bool:
     raise ValueError("value must be a boolean")
 
 
-NonnegativeInteger = Annotated[int, BeforeValidator(_nonnegative_integer)]
-PositiveInteger = Annotated[int, BeforeValidator(_positive_integer)]
-PositiveFinite = Annotated[float, BeforeValidator(_positive_finite)]
-NonnegativeFinite = Annotated[float, BeforeValidator(_nonnegative_finite)]
-PositiveFraction = Annotated[float, BeforeValidator(_positive_fraction)]
+StrictInteger = Annotated[int, BeforeValidator(_integer)]
+NonnegativeInteger = Annotated[StrictInteger, Field(ge=0)]
+PositiveInteger = Annotated[StrictInteger, Field(gt=0)]
+FiniteNumber = Annotated[float, BeforeValidator(_finite_number)]
+PositiveFinite = Annotated[FiniteNumber, Field(gt=0)]
+NonnegativeFinite = Annotated[FiniteNumber, Field(ge=0)]
+PositiveFraction = Annotated[FiniteNumber, Field(gt=0, le=1)]
 StrictEnvironmentBool = Annotated[bool, BeforeValidator(_strict_boolean)]
 
 
@@ -88,12 +56,14 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="PERCEPT_", extra="ignore")
 
+    # Local workspace and model selection.
     work_root: Path = Path("work")
     # Alias registry for the fake backend and stored-result identity; the
     # openai backend derives its aliases from PERCEPT_OPENAI_MODEL[_REGISTRY].
     model_registry: dict[str, Path] = Field(
         default_factory=lambda: {"qwen3-vl-8b-instruct": Path("models/qwen3-vl-8b-instruct")}
     )
+    # OpenAI-compatible model transport and request limits.
     openai_base_url: str | None = None
     openai_api_key: SecretStr | None = None
     openai_model: str | None = None
@@ -116,11 +86,8 @@ class Settings(BaseSettings):
     openai_max_request_bytes: PositiveInteger = 32 * 1024 * 1024
     openai_max_output_chars: PositiveInteger = 1_000_000
     openai_proxy: SecretStr | None = None
-    max_model_output_chars: int = Field(default=1_000_000, gt=0)
-    max_fine_segment_seconds: float = 30.0
-    # Retained for pipeline affinity-grace computation; not a service lease.
-    lease_seconds: int = 300
     event_workflow: Literal["reviewed", "confidence-gated"] = "reviewed"
+    # Optional computer-vision evidence.
     cv_device: NonnegativeInteger = 3
     cv_provider: Literal["disabled", "fake", "sam31"] = "sam31"
     cv_model_alias: Literal["sam3.1"] = "sam3.1"
@@ -131,7 +98,6 @@ class Settings(BaseSettings):
     cv_cache_max_bytes: PositiveInteger = 8 * 1024 * 1024 * 1024
     cv_cache_max_files: PositiveInteger = 10_000
     cv_entity_limit: PositiveInteger = Field(default=16, le=16)
-    cv_entity_pinning: StrictEnvironmentBool = True
     cv_short_video_seconds: PositiveFinite = 30.0
     cv_scan_fps: PositiveFinite = 8.0
     cv_max_fps: PositiveFinite = 30.0
@@ -160,7 +126,7 @@ class Settings(BaseSettings):
         return frozenset(self.model_registry) | frozenset(self.openai_model_aliases)
 
     @model_validator(mode="after")
-    def validate_cv_configuration(self) -> Self:
+    def validate_model_configuration(self) -> Self:
         if self.openai_model and self.openai_model_registry:
             raise ValueError(
                 "openai_model and openai_model_registry are mutually exclusive"
@@ -172,6 +138,10 @@ class Settings(BaseSettings):
             ("https://", "http://")
         ):
             raise ValueError("openai_base_url must be an http(s) URL")
+        return self
+
+    @model_validator(mode="after")
+    def validate_cv_configuration(self) -> Self:
         if self.cv_scan_fps > self.cv_max_fps:
             raise ValueError("cv_scan_fps must not exceed cv_max_fps")
         return self

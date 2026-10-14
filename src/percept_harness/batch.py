@@ -24,7 +24,7 @@ from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 
 from .config import Settings
-from .result_store import write_json
+from .results import write_json
 from .runner import SyncRunner, run_batch, _write_result
 
 

@@ -11,7 +11,7 @@ import httpx
 
 from percept_harness.pipelines.event_schemas import GroundedEvents
 from percept_harness.models.base import parse_strict_json
-from percept_harness import result_store
+from percept_harness import results
 from .event_matching import match_weight_matrix, temporal_iou
 
 
@@ -141,7 +141,7 @@ def load_group(root: Path) -> dict:
         relative = path.relative_to(root)
         if any(part in {".percept", ".cv-archive"} for part in relative.parts) or (len(relative.parts) == 1 and re.fullmatch(r"shard-\d+\.status\.json", path.name)):
             continue
-        if path.name.endswith(".audit.json") and not result_store.is_annotation_record(result_store.read_record(path)):
+        if path.name.endswith(".audit.json") and not results.is_annotation_record(results.read_record(path)):
             path = path.with_name(path.name[:-len(".audit.json")] + ".json")
         candidates.add(path)
     for path in sorted(candidates):
@@ -149,7 +149,7 @@ def load_group(root: Path) -> dict:
         if any(part in {".percept", ".cv-archive"} for part in relative.parts) or (len(relative.parts) == 1 and re.fullmatch(r"shard-\d+\.status\.json", path.name)):
             continue
         try:
-            record = result_store.annotation_record(path)
+            record = results.annotation_record(path)
             if not isinstance(record, dict):
                 raise ValueError("result must be JSON object")
             sample_id = _identity(path, root, record)

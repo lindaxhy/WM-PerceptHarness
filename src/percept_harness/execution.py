@@ -1,9 +1,4 @@
-"""Synchronous in-memory job execution replacing the queue/worker service layer.
-
-Pipelines were written against a store that queues inference jobs for worker
-processes. Here `create_inference_jobs` executes each job immediately in the
-current process, so `wait_for_jobs` only collects already-terminal results.
-"""
+"""Synchronous stage execution, per-video sessions and request-result caching."""
 
 from __future__ import annotations
 
@@ -20,7 +15,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Protocol
 
-from .domain import InferenceJob, InferenceJobSpec, InferenceStatus
+from .types import InferenceJob, InferenceJobSpec, InferenceStatus
 from .media import TimeSpan, VideoMetadata
 from .models.base import ModelOutputError, ModelRequest, VideoModel, VideoSession, VisualEvidence
 from .metrics import validate_inference_job_metrics
@@ -52,7 +47,7 @@ class JobStore(Protocol):
     """The minimal store surface pipelines depend on."""
 
     def create_inference_jobs(
-        self, task_id: str, specs: Iterable[InferenceJobSpec], *, now: float | None = None
+        self, task_id: str, specs: Iterable[InferenceJobSpec]
     ) -> list[InferenceJob]: ...
 
     def get_inference_job(self, job_id: str) -> InferenceJob | None: ...
@@ -200,10 +195,7 @@ class SyncJobStore:
         self,
         task_id: str,
         specs: Iterable[InferenceJobSpec],
-        *,
-        now: float | None = None,
     ) -> list[InferenceJob]:
-        created_at = time.time() if now is None else now
         jobs: list[InferenceJob] = []
         for spec in specs:
             job_id = f"{task_id}:{spec.stage}:{spec.ordinal}"
@@ -219,8 +211,6 @@ class SyncJobStore:
                 ordinal=spec.ordinal,
                 payload=dict(spec.payload),
                 model_name=model_name,
-                created_at=created_at,
-                updated_at=created_at,
             )
             try:
                 if spec.stage == "cv_evidence":
@@ -233,9 +223,6 @@ class SyncJobStore:
                     status=InferenceStatus.COMPLETED,
                     result=result,
                     metrics=metrics,
-                    completed_by="sync",
-                    started_at=created_at,
-                    finished_at=time.time(),
                 )
             except Exception as error:
                 job = replace(

@@ -3,7 +3,7 @@ import time
 from types import SimpleNamespace
 
 from ..cv.entities import EntityCandidate
-from ..domain import InferenceJobSpec
+from ..types import InferenceJobSpec
 from ..media import probe_video
 from ..execution import wait_for_jobs
 from .base import SafePipelineError
