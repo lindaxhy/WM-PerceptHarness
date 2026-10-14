@@ -65,21 +65,27 @@ The application does not automatically load `.env`. Keep keys outside committed 
 
 ### Timeouts and transient failures
 
-The OpenAI-compatible backend retries timeouts, transport errors, and HTTP 429, 500, 502, 503 and 504. Other HTTP error statuses fail immediately. The default is three extra attempts, with exponential backoff and jitter starting from a five-second base. Configure these through:
+The OpenAI-compatible backend retries timeouts, transport errors, and HTTP 429,
+500, 502, 503 and 504. Other HTTP errors fail immediately. Client class constants
+set three extra attempts and exponential backoff with jitter from a five-second
+base. Configure the fixed per-request timeout with
+`PERCEPT_OPENAI_TIMEOUT_SECONDS` (default 180 seconds). Dynamic video-length
+scaling and its upper timeout cap have been removed. This is not a batch deadline.
 
-```bash
-export PERCEPT_OPENAI_TRANSPORT_RETRIES=3
-export PERCEPT_OPENAI_RETRY_BACKOFF_SECONDS=5
-export PERCEPT_OPENAI_TIMEOUT_SECONDS=180
-export PERCEPT_OPENAI_TIMEOUT_SECONDS_PER_VIDEO_SECOND=0
-export PERCEPT_OPENAI_MAX_TIMEOUT_SECONDS=1800
-```
+Each `ModelRequest` carries `max_frames` (default 128, including SAM overlays)
+and optional `max_output_tokens`. When the token limit is omitted, stage defaults
+are 16,384 for drafts/revision, 8,192 for evidence review and 4,096 for SAM prompt
+review. Stage payloads accept these same fields. Effective budgets enter the
+request-cache identity. The CLI resolves model aliases before creating a client.
 
-Set retries to `0` to disable transport retries. A positive per-video-second value scales each request's timeout as `min(max_timeout, base_timeout + per_video_second * requested_span_seconds)`; zero keeps the fixed base timeout. These are request settings, not an overall batch deadline. Model-output repair is a separate pipeline step. Check failed result records and retry logs before changing sampling or timeout settings.
-
-For repeatability and the separate request-level cache, see [result identity and resume](usage.md#result-identity-and-resume).
-
-The client limits each encoded JSON request to 32 MiB by default. Full-resolution SAM PNG overlays (from targeted checks) can exceed that limit. If a result reports `request exceeds configured size limit`, inspect the evidence sizes and set `PERCEPT_OPENAI_MAX_REQUEST_BYTES` to a budget supported by your endpoint; for example, `134217728` permits 128 MiB locally. This does not change the provider's limits. The client preserves all authenticated overlays and fails if they cannot fit.
+`OpenAICompatVideoModel.MAX_REQUEST_BYTES` fixes the encoded request limit at
+32 MiB; `MAX_OUTPUT_CHARS` limits model text to 1,000,000 characters. Oversized
+requests thin original video frames while retaining mandatory SAM overlays;
+requests that still exceed the limit fail. These limits and retry behavior are
+internal class constants, not environment settings. The former
+`PERCEPT_OPENAI_MAX_FRAMES`, request/output-size, retry and dynamic-timeout
+settings no longer apply. For repeatability, see
+[result identity and resume](usage.md#result-identity-and-resume).
 
 ### Targeted SAM3.1 grounding
 

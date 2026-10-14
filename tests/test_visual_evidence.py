@@ -29,7 +29,7 @@ class VisualEvidenceTests(unittest.TestCase):
             def handle(req):
                 received.append(json.loads(req.content))
                 return httpx.Response(200, json={'choices': [{'message': {'role': 'assistant', 'content': '{"duration":4,"events":[]}'}}]})
-            model = OpenAICompatVideoModel(base_url='https://example.test/v1', api_key='test', model_registry=registry,
+            model = OpenAICompatVideoModel(base_url='https://example.test/v1', api_key='test', model_name=registry[request.model_name],
                 transport=httpx.MockTransport(handle), frame_extractor=lambda *a: [FrameRef(timestamp=0.0, path=frame)])
             self.addCleanup(model.close)
             self.assertEqual(model.generate(request)['events'], [])
@@ -51,8 +51,48 @@ class VisualEvidenceTests(unittest.TestCase):
             root=Path(td); video=root/'video'; video.write_bytes(b'v'); frame=root/'f.jpg'; frame.write_bytes(b'jpg')
             ev=base.VisualEvidence(png_bytes=b'\x89PNG\r\n\x1a\n'+b'x'*4000, timestamp=0.0, entity_id='cup', track_id='b:cup', source='b')
             request=base.ModelRequest(stage='grounded_draft',video_path=video,span=TimeSpan(0,4),fps=1,prompt='',schema_name='GroundedEvents',model_name='test',visual_evidence=(ev,))
-            model=OpenAICompatVideoModel(base_url='https://example.test/v1',api_key='test',model_registry={'test':'test'},max_request_bytes=1500,
+            model=OpenAICompatVideoModel(base_url='https://example.test/v1',api_key='test',model_name='test',
                 transport=httpx.MockTransport(lambda r: self.fail('oversize request reached HTTP')),frame_extractor=lambda *a:[FrameRef(timestamp=0.0,path=frame)])
             self.addCleanup(model.close)
+            model.MAX_REQUEST_BYTES = 1500
             with self.assertRaisesRegex(RuntimeError, 'size|budget|limit'):
                 model.generate(request)
+
+
+def test_call_budgets_cache_identity_and_fixed_timeout(tmp_path):
+    from unittest.mock import patch
+    video = tmp_path / 'clip'; video.write_bytes(b'video')
+    frame = tmp_path / 'frame.jpg'; frame.write_bytes(b'jpeg')
+    requests = []
+    def respond(request):
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(503)
+        return httpx.Response(200, json={'choices': [{'message': {
+            'role': 'assistant', 'content': '{"events":[]}'}}]})
+    model = OpenAICompatVideoModel(base_url='https://example.test/v1', api_key='test',
+        model_name='vendor/model', timeout_seconds=17,
+        transport=httpx.MockTransport(respond),
+        frame_extractor=lambda *args: [FrameRef(timestamp=0.0, path=frame)])
+    request = base.ModelRequest(stage='grounded_draft', video_path=video,
+        span=TimeSpan(0, 4), fps=2, prompt='inspect', schema_name='GroundedEvents',
+        model_name='local-alias', max_frames=4, max_output_tokens=512)
+    try:
+        identity = model.semantic_cache_identity(request)
+        assert identity['max_frames'] == 4
+        assert identity['max_output_tokens'] == 512
+        cache = SemanticResultCache(tmp_path / 'cache')
+        key = cache.key(request, identity, {})
+        for changed in (replace(request, max_frames=8), replace(request, max_output_tokens=1024)):
+            assert cache.key(changed, model.semantic_cache_identity(changed), {}) != key
+        with patch('percept_harness.models.openai_compat.time.sleep') as sleep:
+            assert model.generate(request) == {'events': []}
+            sleep.assert_called_once()
+        assert len(requests) == 2
+        assert all(set(item.extensions['timeout'].values()) == {17} for item in requests)
+        payload = json.loads(requests[-1].content)
+        assert payload['model'] == 'vendor/model'
+        assert payload['max_tokens'] == 512
+        assert model.semantic_cache_identity(replace(request, max_output_tokens=None))['max_output_tokens'] == 16384
+    finally:
+        model.close()

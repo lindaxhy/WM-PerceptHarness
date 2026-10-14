@@ -26,15 +26,9 @@ import httpx
 logger = logging.getLogger(__name__)
 
 from ..media import FrameRef, TimeSpan, extract_frames
-from .base import validate_model_alias
 from .base import ModelOutputError, ModelRequest, parse_strict_json
 from .response_contract import canonical
 
-STAGE_MAX_OUTPUT_TOKENS = {
-    "confidence_draft": 16384, "grounded_draft": 16384, "evidence_review": 8192,
-    "sam_prompt_review": 4096, "grounded_revision": 16384,
-
-}
 RESPONSE_FORMAT_MODES = ("json_schema", "json_object", "none")
 # Provider statuses worth one more attempt: throttling, and transient
 # service-side failures. 4xx besides 429 are deterministic and never retried.
@@ -55,23 +49,27 @@ class OpenAICompatBackendError(RuntimeError):
 class OpenAICompatVideoModel:
     """Send explicitly sampled JPEG frames to one OpenAI-compatible endpoint."""
 
+    TRANSPORT_RETRIES = 3
+    RETRY_BACKOFF_SECONDS = 5.0
+    MAX_REQUEST_BYTES = 32 * 1024 * 1024
+    MAX_OUTPUT_CHARS = 1_000_000
+    OUTPUT_TOKENS = {
+        "confidence_draft": 16384, "grounded_draft": 16384, "evidence_review": 8192,
+        "sam_prompt_review": 4096, "grounded_revision": 16384,
+    }
+
     supports_semantic_result_cache = True
     # Bump these contracts when payload defaults or frame encoding/sampling change.
     adapter_contract_version = "openai-compat-chat-completions-v1"
     frame_extraction_contract_version = "extract-frames-source-pts-v2"
 
     def __init__(self, *, base_url: str, api_key: str,
-                 model_registry: Mapping[str, str],
+                 model_name: str,
                  response_format: str = "json_object",
                  extra_body: Mapping[str, Any] | None = None,
                  extra_headers: Mapping[str, str] | None = None,
-                 timeout_seconds: float = 180.0, max_frames: int = 128,
-                 timeout_seconds_per_video_second: float = 0.0,
-                 max_timeout_seconds: float = 1_800.0,
-                 transport_retries: int = 3,
-                 retry_backoff_seconds: float = 5.0,
-                 max_request_bytes: int = 32 * 1024 * 1024,
-                 max_output_chars: int = 1_000_000, proxy: str | None = None,
+                 timeout_seconds: float = 180.0,
+                 proxy: str | None = None,
                  transport: httpx.BaseTransport | None = None,
                  client: httpx.Client | None = None,
                  frame_extractor: FrameExtractor = extract_frames) -> None:
@@ -90,34 +88,15 @@ class OpenAICompatVideoModel:
             )
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be finite and positive")
-        if (isinstance(timeout_seconds_per_video_second, bool)
-                or not isinstance(timeout_seconds_per_video_second, (int, float))
-                or not math.isfinite(timeout_seconds_per_video_second)
-                or timeout_seconds_per_video_second < 0):
-            raise ValueError("timeout_seconds_per_video_second must be finite and non-negative")
-        if not math.isfinite(max_timeout_seconds) or max_timeout_seconds < timeout_seconds:
-            raise ValueError("max_timeout_seconds must be finite and at least timeout_seconds")
-        if isinstance(transport_retries, bool) or not isinstance(transport_retries, int) \
-                or transport_retries < 0:
-            raise ValueError("transport_retries must be a non-negative integer")
-        if not math.isfinite(retry_backoff_seconds) or retry_backoff_seconds <= 0:
-            raise ValueError("retry_backoff_seconds must be finite and positive")
-        for name, value in (("max_frames", max_frames), ("max_request_bytes", max_request_bytes),
-                            ("max_output_chars", max_output_chars)):
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-                raise ValueError(f"{name} must be a positive integer")
+        if not isinstance(model_name, str) or not model_name.strip():
+            raise ValueError("model_name must be non-empty")
         self._key = api_key
         self._endpoint = base_url.rstrip("/") + "/chat/completions"
-        self._registry = dict(model_registry)
+        self.model_name = model_name
         self.response_format = response_format
         self._extra_body = extra_body
         self._extra_headers = dict(extra_headers or {})
-        self.timeout_seconds, self.max_frames = timeout_seconds, max_frames
-        self.timeout_seconds_per_video_second = float(timeout_seconds_per_video_second)
-        self.max_timeout_seconds = max_timeout_seconds
-        self.transport_retries = transport_retries
-        self.retry_backoff_seconds = retry_backoff_seconds
-        self.max_request_bytes, self.max_output_chars = max_request_bytes, max_output_chars
+        self.timeout_seconds = timeout_seconds
         self._extract = frame_extractor
         if client is not None and transport is not None:
             raise ValueError("client and transport are mutually exclusive")
@@ -135,11 +114,11 @@ class OpenAICompatVideoModel:
             "frame_extraction_contract_version": self.frame_extraction_contract_version,
             "endpoint": self._endpoint,
             "model_alias": request.model_name,
-            "resolved_model_id": self._registry[request.model_name],
-            "max_frames": self.max_frames,
-            "max_request_bytes": self.max_request_bytes,
-            "max_output_chars": self.max_output_chars,
-            "max_output_tokens": STAGE_MAX_OUTPUT_TOKENS[request.stage],
+            "resolved_model_id": self.model_name,
+            "max_frames": request.max_frames,
+            "max_request_bytes": self.MAX_REQUEST_BYTES,
+            "max_output_chars": self.MAX_OUTPUT_CHARS,
+            "max_output_tokens": (request.max_output_tokens or self.OUTPUT_TOKENS[request.stage]),
             "response_format": {
                 "mode": self.response_format,
                 "contract": (request.response_contract.cache_identity()
@@ -156,18 +135,13 @@ class OpenAICompatVideoModel:
 
     def generate(self, request: ModelRequest) -> dict[str, Any]:
         self._metrics = {}
-        if request.stage not in STAGE_MAX_OUTPUT_TOKENS:
+        if request.max_output_tokens is None and request.stage not in self.OUTPUT_TOKENS:
             raise OpenAICompatBackendError("stage has no configured output budget")
-        try:
-            alias = validate_model_alias(request.model_name)
-            model_id = self._registry[alias]
-        except (ValueError, KeyError, TypeError):
-            raise OpenAICompatBackendError("model alias is not allowlisted") from None
         temporary = Path(tempfile.mkdtemp(prefix="percept-frames-"))
         try:
             span_seconds = max(0.0, request.span.end - request.span.start)
             evidence_count = len(request.visual_evidence)
-            original_budget = self.max_frames - evidence_count
+            original_budget = request.max_frames - evidence_count
             if original_budget < 1:
                 raise OpenAICompatBackendError('mandatory evidence exceeds frame budget')
             fps = request.fps
@@ -185,8 +159,8 @@ class OpenAICompatVideoModel:
             except Exception:
                 raise OpenAICompatBackendError("visual preparation failed") from None
             payload: dict[str, Any] = {
-                "model": model_id, "stream": False,
-                "max_tokens": STAGE_MAX_OUTPUT_TOKENS[request.stage],
+                "model": self.model_name, "stream": False,
+                "max_tokens": (request.max_output_tokens or self.OUTPUT_TOKENS[request.stage]),
                 "messages": [{"role": "user", "content": content}],
             }
             if self.response_format == "json_schema" and request.response_contract is not None:
@@ -197,11 +171,11 @@ class OpenAICompatVideoModel:
                 payload["response_format"] = {"type": "json_object"}
             payload.update(self._extra_body)
             encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
-            while len(encoded) > self.max_request_bytes and len(frames) > _MIN_FRAMES:
+            while len(encoded) > self.MAX_REQUEST_BYTES and len(frames) > _MIN_FRAMES:
                 # High-bitrate sources can exceed the request budget at any
                 # frame count. Thin the sampled frames evenly (keeping the
                 # first frame) instead of failing the whole task.
-                keep = max(_MIN_FRAMES, int(len(frames) * self.max_request_bytes
+                keep = max(_MIN_FRAMES, int(len(frames) * self.MAX_REQUEST_BYTES
                                             / len(encoded) * 0.9))
                 if keep >= len(frames):
                     keep = len(frames) - 1
@@ -211,25 +185,21 @@ class OpenAICompatVideoModel:
                     {"role": "user", "content": self._content(request, frames)}
                 ]
                 encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
-            if len(encoded) > self.max_request_bytes:
+            if len(encoded) > self.MAX_REQUEST_BYTES:
                 raise OpenAICompatBackendError("request exceeds configured size limit")
-            request_timeout = min(
-                self.max_timeout_seconds,
-                self.timeout_seconds + self.timeout_seconds_per_video_second * span_seconds,
-            )
-            raw = self._post_with_retries(encoded, request_timeout)
+            raw = self._post_with_retries(encoded)
             return self._parse(raw)
         finally:
             shutil.rmtree(temporary, ignore_errors=True)
 
-    def _post_with_retries(self, encoded: bytes, request_timeout: float) -> bytes:
+    def _post_with_retries(self, encoded: bytes) -> bytes:
         """POST once, then retry transient transport/service failures with backoff.
 
         Deterministic failures (non-retryable statuses, oversized or malformed
         responses) raise immediately. The final attempt's failure is raised
         with its underlying cause preserved for diagnosis.
         """
-        attempts = self.transport_retries + 1
+        attempts = self.TRANSPORT_RETRIES + 1
         for attempt in range(attempts):
             retryable: str | None = None
             cause: BaseException | None = None
@@ -237,7 +207,7 @@ class OpenAICompatVideoModel:
                 with self._client.stream("POST", self._endpoint,
                     headers={"Authorization": f"Bearer {self._key}",
                              "Content-Type": "application/json", **self._extra_headers},
-                    content=encoded, timeout=request_timeout,
+                    content=encoded, timeout=self.timeout_seconds,
                     follow_redirects=False) as response:
                     if response.status_code == 200:
                         return self._bounded_body(response)
@@ -257,7 +227,7 @@ class OpenAICompatVideoModel:
             if attempt + 1 == attempts:
                 message = f"service request failed after {attempts} attempts: {retryable}"
                 raise OpenAICompatBackendError(message) from cause
-            delay = self.retry_backoff_seconds * (2 ** attempt) * (1 + random.random())
+            delay = self.RETRY_BACKOFF_SECONDS * (2 ** attempt) * (1 + random.random())
             logger.warning(
                 "retrying request (%s; attempt %d/%d) in %.1fs",
                 retryable, attempt + 1, attempts, delay,
@@ -266,7 +236,7 @@ class OpenAICompatVideoModel:
         raise OpenAICompatBackendError("transport failed")  # pragma: no cover
 
     def _content(self, request: ModelRequest, frames: list[FrameRef]) -> list[dict[str, Any]]:
-        if not frames or len(frames) + len(request.visual_evidence) > self.max_frames:
+        if not frames or len(frames) + len(request.visual_evidence) > request.max_frames:
             raise OpenAICompatBackendError("frame count is outside configured bounds")
         previous = -math.inf
         content: list[dict[str, Any]] = [{"type": "text", "text": request.prompt}]
@@ -294,7 +264,7 @@ class OpenAICompatVideoModel:
         parts, size = [], 0
         for part in response.iter_bytes():
             size += len(part)
-            if size > self.max_output_chars * 4 + 1_000_000:
+            if size > self.MAX_OUTPUT_CHARS * 4 + 1_000_000:
                 raise ModelOutputError("response exceeds configured size limit")
             parts.append(part)
         return b"".join(parts)
@@ -331,7 +301,7 @@ class OpenAICompatVideoModel:
                 if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                     raise ModelOutputError("response usage is invalid")
                 metrics[target] = value
-        result = parse_strict_json(text, max_chars=self.max_output_chars,
+        result = parse_strict_json(text, max_chars=self.MAX_OUTPUT_CHARS,
                                    forbid_duplicate_keys=True)
         self._metrics = metrics
         return result

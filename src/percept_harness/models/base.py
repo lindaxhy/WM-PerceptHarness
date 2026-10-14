@@ -88,6 +88,8 @@ class ModelRequest:
     prompt: str
     schema_name: str
     model_name: str
+    max_frames: int = 128
+    max_output_tokens: int | None = None
     media_resolution: TuningLevel | None = None
     reasoning_effort: TuningLevel | None = None
     clip_context: TuningLevel | None = None
@@ -95,6 +97,11 @@ class ModelRequest:
     visual_evidence: tuple[VisualEvidence, ...] = ()
 
     def __post_init__(self) -> None:
+        for name, value in (("max_frames", self.max_frames), ("max_output_tokens", self.max_output_tokens)):
+            if value is None and name == "max_output_tokens":
+                continue
+            if type(value) is not int or value <= 0:
+                raise ModelRequestError(f"{name} must be a positive integer")
         if type(self.visual_evidence) is not tuple or len(self.visual_evidence) > 96 or any(type(e) is not VisualEvidence for e in self.visual_evidence):
             raise ModelRequestError('invalid visual evidence collection')
         if sum(len(e.png_bytes) for e in self.visual_evidence) > 64 * 1024 * 1024:

@@ -224,18 +224,11 @@ def _load_backend(arguments: argparse.Namespace, settings: Settings):
         model = OpenAICompatVideoModel(
             base_url=settings.openai_base_url,
             api_key=settings.openai_api_key.get_secret_value(),
-            model_registry=registry,
+            model_name=registry[alias],
             response_format=settings.openai_response_format,
             extra_body=settings.openai_extra_body,
             extra_headers=settings.openai_extra_headers,
             timeout_seconds=settings.openai_timeout_seconds,
-            timeout_seconds_per_video_second=settings.openai_timeout_seconds_per_video_second,
-            max_timeout_seconds=settings.openai_max_timeout_seconds,
-            transport_retries=settings.openai_transport_retries,
-            retry_backoff_seconds=settings.openai_retry_backoff_seconds,
-            max_frames=settings.openai_max_frames,
-            max_request_bytes=settings.openai_max_request_bytes,
-            max_output_chars=settings.openai_max_output_chars,
             proxy=settings.openai_proxy.get_secret_value() if settings.openai_proxy else None,
         )
         return model, alias, model.close

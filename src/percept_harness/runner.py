@@ -489,6 +489,8 @@ def _model_request(stage: str, payload: Mapping[str, Any], model_name: str) -> M
         prompt=payload.get("prompt", ""),
         schema_name=payload.get("schema_name", stage),
         model_name=model_name,
+        max_frames=payload.get("max_frames", 128),
+        max_output_tokens=payload.get("max_output_tokens"),
         media_resolution=payload.get("media_resolution"),
         reasoning_effort=payload.get("reasoning_effort"),
         clip_context=payload.get("clip_context"),

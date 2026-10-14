@@ -95,7 +95,7 @@ def test_old_sampling_contract_cannot_hit_model_request_cache(tmp_path):
                            fps=2, prompt='describe', schema_name='GroundedEvents',
                            model_name='test')
     model = OpenAICompatVideoModel(base_url='https://example.test/v1', api_key='test',
-                                  model_registry={'test': 'test'})
+                                  model_name='test')
     try:
         cache = SemanticResultCache(tmp_path / 'cache')
         current = model.semantic_cache_identity(request)
@@ -139,12 +139,12 @@ def test_real_sampling_respects_vlm_frame_budget(tmp_path):
         return httpx.Response(200, json={'choices': [{'message': {
             'role': 'assistant', 'content': '{"duration":2,"events":[]}'}}]})
     model = OpenAICompatVideoModel(base_url='https://example.test/v1', api_key='test',
-                                  model_registry={'test': 'test'}, max_frames=4,
+                                  model_name='test',
                                   transport=httpx.MockTransport(respond))
     try:
         request = ModelRequest(stage='grounded_draft', video_path=video, span=TimeSpan(0, 2),
                                fps=100, prompt='describe', schema_name='GroundedEvents',
-                               model_name='test')
+                               model_name='test', max_frames=4)
         assert model.generate(request)['events'] == []
         content = sent[0]['messages'][0]['content']
         assert sum(item['type'] == 'image_url' for item in content) == 4
