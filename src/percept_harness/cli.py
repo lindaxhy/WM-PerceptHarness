@@ -137,7 +137,7 @@ def _eval(arguments: argparse.Namespace) -> int:
             print(f"error: {error}", file=sys.stderr)
             return 2
     try:
-        settings = Settings.from_env()
+        settings = Settings()
     except Exception as error:
         print(f"error: invalid configuration: {error}", file=sys.stderr)
         return 2

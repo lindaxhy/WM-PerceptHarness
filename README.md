@@ -253,22 +253,24 @@ No project-wide open-source license has been granted yet. Third-party components
 
 ## Code structure
 
-Annotation flows through `cli → runner → pipelines → execution → models`.
+Annotation flows through `cli → runner → pipelines → models`.
 `batch.py` adds batch scheduling and shared CV workers. Event scoring and video
 quality metrics have separate entry points.
 
 | Module | Responsibility |
 |---|---|
 | `config.py` | `PERCEPT_` settings and model/CV validation |
-| `types.py` | Annotation inputs and inference stage records |
 | `media.py` | FFprobe metadata and timestamped FFmpeg frame extraction |
 | `pipelines/` | Event prompts, schemas, visual review and targeted SAM evidence |
 | `models/`, `cv/` | VLM backends and computer-vision adapters |
-| `execution.py` | Synchronous stages, video sessions and request caching |
-| `runner.py`, `batch.py` | Single-video execution and batch scheduling |
+| `runner.py` | Annotation inputs, synchronous stages, request caching and video orchestration |
+| `batch.py` | Manifest scheduling, shared GPU workers and concurrency control |
 | `results.py` | Annotation JSON, audit sidecars, filename collisions and resume |
-| `evaluation/`, `video_metrics/` | Event comparison and video quality metrics |
+| `evaluation/`, `video_metrics/` | Event comparison, video quality metrics and checkpoint checks |
 
 `media.py` handles video input; it does not run inference. `results.py` manages
 files without a database. Its resume behavior is described in
 [usage](docs/usage.md).
+
+The [function audit](docs/function-audit.md) records callers, retained behavior,
+removed wrappers and remaining simplification candidates for the original top-level modules.

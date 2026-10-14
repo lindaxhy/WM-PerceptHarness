@@ -3,9 +3,9 @@ import time
 from types import SimpleNamespace
 
 from ..cv.entities import EntityCandidate
-from ..types import InferenceJobSpec
+from ..runner import InferenceJobSpec
 from ..media import probe_video
-from ..execution import wait_for_jobs
+from ..runner import wait_for_jobs
 from .base import SafePipelineError
 from .event_evidence import EvidenceOrchestrator, targeted_windows
 from .event_prompts import VERSION, CONFIDENCE_VERSION, prompt

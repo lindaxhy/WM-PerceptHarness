@@ -126,7 +126,7 @@ def check_device(metric, device):
 
 
 def check_weights(metric, cache):
-    from percept_harness.weights import check_weights
+    from percept_harness.video_metrics import check_weights
     check_weights(metric, cache)
     return f'Checkpoint files present: {cache}'
 

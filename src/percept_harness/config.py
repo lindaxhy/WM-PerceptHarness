@@ -121,10 +121,6 @@ class Settings(BaseSettings):
             return {validate_model_alias(alias): self.openai_model}
         return {}
 
-    @property
-    def allowed_model_aliases(self) -> frozenset[str]:
-        return frozenset(self.model_registry) | frozenset(self.openai_model_aliases)
-
     @model_validator(mode="after")
     def validate_model_configuration(self) -> Self:
         if self.openai_model and self.openai_model_registry:
@@ -145,8 +141,3 @@ class Settings(BaseSettings):
         if self.cv_scan_fps > self.cv_max_fps:
             raise ValueError("cv_scan_fps must not exceed cv_max_fps")
         return self
-
-    @classmethod
-    def from_env(cls) -> "Settings":
-        """Construct settings from ``PERCEPT_``-prefixed environment variables."""
-        return cls()

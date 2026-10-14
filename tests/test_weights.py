@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from percept_harness import weights
+from percept_harness import video_metrics as weights
 
 
 class WeightTests(unittest.TestCase):

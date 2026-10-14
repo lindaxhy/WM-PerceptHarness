@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 from percept_harness.models import base
 from percept_harness.models.openai_compat import OpenAICompatVideoModel
-from percept_harness.execution import SemanticResultCache
+from percept_harness.runner import SemanticResultCache
 from percept_harness.media import TimeSpan, FrameRef
 
 

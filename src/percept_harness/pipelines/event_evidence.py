@@ -5,7 +5,7 @@ from ..cv.artifacts import CvArtifactStore, CvArtifactHandle, cv_cache_key
 from ..cv.contracts import CvEvidenceRequest, SamplingPolicy, EvidenceThresholds, FrameTimeline, SpatialPrompt
 from ..cv.entities import EntityCandidate, normalize_entities
 from ..cv.timeline import probe_frame_timeline
-from ..types import InferenceJobSpec
+from ..runner import InferenceJobSpec
 from ..models.base import VisualEvidence
 from .base import SafePipelineError
 

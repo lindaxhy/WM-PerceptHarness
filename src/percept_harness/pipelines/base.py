@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import Settings
-from ..execution import JobStore
+from ..runner import JobStore
 
 
 class SafePipelineError(RuntimeError):

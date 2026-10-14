@@ -197,7 +197,6 @@ def archive_cv_evidence(evidence, cache_root: Path, archive_root: Path) -> Path:
             except OSError:
                 if not destination.exists():
                     raise
-                _verify_cv_archive(destination)
         finally:
             if temporary.exists():
                 shutil.rmtree(temporary)
@@ -258,7 +257,7 @@ def run_manifest(arguments) -> int:
         raise ValueError("worker and request concurrency must be positive")
     if not 0 <= arguments.shard_index < arguments.shard_count:
         raise ValueError("invalid shard index or count")
-    settings = Settings.from_env()
+    settings = Settings()
     provider = arguments.cv or settings.cv_provider
     if provider != "sam31":
         raise ValueError("manifest annotation requires --cv sam31")

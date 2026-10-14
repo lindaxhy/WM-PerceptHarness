@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import subprocess
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -153,30 +154,14 @@ def _timestamp_duration(video: dict[str, Any]) -> float | None:
     time_base = video.get("time_base")
     if not isinstance(time_base, str) or len(time_base) >= _MAX_TIME_BASE_CHARS:
         return None
-    separator = time_base.find("/")
-    if (
-        separator <= 0
-        or separator != time_base.rfind("/")
-        or separator == len(time_base) - 1
-    ):
-        return None
-    numerator_text = time_base[:separator]
-    denominator_text = time_base[separator + 1 :]
-    if not all(
-        part.isascii() and part.isdigit()
-        for part in (numerator_text, denominator_text)
-    ):
+    if re.fullmatch(r"[0-9]+/[0-9]+", time_base) is None:
         return None
     try:
-        numerator = int(numerator_text)
-        denominator = int(denominator_text)
-    except ValueError:
-        return None
-    if numerator <= 0 or denominator <= 0:
-        return None
-    try:
-        duration = float(Fraction(duration_ts) * Fraction(numerator, denominator))
-    except OverflowError:
+        tick_seconds = Fraction(time_base)
+        if tick_seconds <= 0:
+            return None
+        duration = float(duration_ts * tick_seconds)
+    except (ValueError, ZeroDivisionError, OverflowError):
         return None
     return _positive_finite_float(duration)
 
@@ -229,7 +214,7 @@ def extract_frames(
                     "-loglevel",
                     "error",
                     "-ss",
-                    _decimal_text(timestamp),
+                    format(timestamp, "f"),
                     "-i",
                     str(path),
                     "-map",
@@ -279,7 +264,3 @@ def _video_frame_rate(video: dict[str, Any]) -> float:
         if math.isfinite(rate) and rate > 0:
             return rate
     raise ValueError("video has no usable frame rate")
-
-
-def _decimal_text(value: Decimal) -> str:
-    return format(value, "f")
