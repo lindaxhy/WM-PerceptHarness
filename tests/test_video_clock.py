@@ -18,7 +18,10 @@ class VideoClockTests(unittest.TestCase):
             self.assertAlmostEqual(metadata.duration,1.2,places=5)
             self.assertLess(timeline.frames[-1].timestamp_seconds,metadata.duration)
             frames=extract_frames(path,TimeSpan(0,metadata.duration),5,root/'vlm')
+            self.assertAlmostEqual(frames[0].timestamp,.2,places=5)
             self.assertGreaterEqual(frames[-1].timestamp,1.)
+            self.assertTrue(all(any(abs(f.timestamp - t.timestamp_seconds) < 1e-6
+                                    for t in timeline.frames) for f in frames))
 
     def test_nonzero_container_origin_is_removed_without_renumbering_frames(self):
         with tempfile.TemporaryDirectory() as tmp:

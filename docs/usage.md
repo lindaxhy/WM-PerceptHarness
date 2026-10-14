@@ -192,6 +192,19 @@ changing the output directory does not disable request caching. SAM evidence has
 its own cache. Internal hashes name cache entries and assign jobs to shards;
 they are not file integrity checks.
 
+## Video frame sampling
+
+VLM inputs use one FFmpeg decoding pass per extraction. Sampling intervals start
+at the requested span's beginning; each interval contributes its first source
+frame, and empty intervals contribute none. Timestamps come from the selected
+frames' PTS on the container playback clock. Sampling faster than the source
+does not duplicate frames. The model adapter still applies its frame budget.
+
+Videos that change resolution use the first frame's output canvas; a change of
+aspect ratio may stretch later frames. The source-PTS sampling contract has a
+new request-cache version. Completed annotations still follow the resume rules
+above: use `--force` to regenerate them with the new sampler.
+
 ## Grounded event scoring
 
 The official [WGO-Bench grading description](https://macrodata.co/blog/annotating-robot-video-subtasks) motivates the temporal and semantic tests. This implementation is an adaptation: it uses natural observable events, its own strict judge prompt and independent one-to-one matching, with no timestamp snapping or duration normalization. It is not an exact reproduction of published WGO numbers.

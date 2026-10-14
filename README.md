@@ -268,7 +268,9 @@ quality metrics have separate entry points.
 | `results.py` | Annotation JSON, audit sidecars, filename collisions and resume |
 | `evaluation/`, `video_metrics/` | Event comparison, video quality metrics and checkpoint checks |
 
-`media.py` handles video input; it does not run inference. `results.py` manages
+`media.py` handles video input and extracts frames in one FFmpeg pass with actual
+source timestamps. See [sampling behavior](docs/usage.md#video-frame-sampling).
+`results.py` manages
 files without a database. Its resume behavior is described in
 [usage](docs/usage.md).
 

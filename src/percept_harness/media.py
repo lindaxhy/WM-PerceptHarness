@@ -11,8 +11,10 @@ import json
 import math
 import re
 import subprocess
+import shutil
+import tempfile
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -184,72 +186,56 @@ def extract_frames(
     fps: float,
     output_dir: Path,
 ) -> list[FrameRef]:
-    """Extract frames at an absolute timeline cadence within ``span``."""
+    """Decode once; keep the first source frame in each sampling interval.
+
+    Intervals are anchored at span.start. Empty intervals produce no frame;
+    timestamps are selected source PTS on the container playback clock.
+    Mixed-resolution inputs use FFmpeg's first-frame output canvas.
+    """
     if not math.isfinite(fps) or fps <= 0:
         raise ValueError("fps must be finite and positive")
     output_dir.mkdir(parents=True, exist_ok=True)
-    if not output_dir.resolve(strict=True).is_dir():
-        raise FrameExtractionError("frame output is not a directory")
-
-    start = Decimal(str(span.start))
-    end = Decimal(str(span.end))
-    fps_decimal = Decimal(str(fps))
-    frames: list[FrameRef] = []
-    timestamp = start
-    index = 0
-    while timestamp < end:
-        absolute = float(timestamp)
-        if absolute >= span.end:
-            # Decimal division can land fractionally below the Decimal end
-            # while rounding to the float end exactly; such a frame would be
-            # out of span downstream and often has no decodable frame at all.
-            break
-        milliseconds = int((timestamp * 1000).quantize(Decimal("1"), ROUND_HALF_UP))
-        destination = output_dir / f"frame_{index:06d}_{milliseconds:012d}.jpg"
-        try:
-            subprocess.run(
-                [
-                    "ffmpeg",
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-ss",
-                    format(timestamp, "f"),
-                    "-i",
-                    str(path),
-                    "-map",
-                    "0:v:0",
-                    "-an",
-                    "-sn",
-                    "-dn",
-                    "-frames:v",
-                    "1",
-                    "-q:v",
-                    "2",
-                    "-y",
-                    str(destination),
-                ],
-                check=True,
-                shell=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except (OSError, subprocess.SubprocessError):
-            destination.unlink(missing_ok=True)
-            raise FrameExtractionError("unable to extract video frame") from None
-        if not destination.is_file():
-            # ffmpeg exits zero yet writes nothing when the seek lands past
-            # the last decodable frame; treat it as the end of the clip.
-            if frames:
-                break
-            raise FrameExtractionError("unable to extract video frame")
-        frames.append(FrameRef(destination, absolute))
-        index += 1
-        # Exact per-index division: accumulating a pre-rounded interval can
-        # land a timestamp fractionally below ``end`` at what is really the
-        # video's end, producing one out-of-range ffmpeg seek.
-        timestamp = start + Decimal(index) / fps_decimal
-    return frames
+    destination = Path(tempfile.mkdtemp(prefix="frames-", dir=output_dir))
+    # The epsilon stabilizes bin boundaries against floating-point rounding.
+    current_bin = f"floor((t-{span.start})*{fps}+1e-9)"
+    previous_bin = f"floor((prev_selected_t-{span.start})*{fps}+1e-9)"
+    selection = (f"gte(t,{span.start})*lt(t,{span.end})*"
+                 f"if(isnan(prev_selected_t),1,gt({current_bin},{previous_bin}))")
+    try:
+        completed = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-nostdin", "-nostats", "-loglevel", "info",
+             "-copyts", "-start_at_zero", "-reinit_filter", "0",
+             "-t", str(span.end), "-i", str(path),
+             "-map", "0:v:0", "-an", "-sn", "-dn",
+             "-vf", f"select='{selection}',showinfo=checksum=0",
+             "-fps_mode", "passthrough", "-q:v", "2", "-y",
+             str(destination / "frame_%06d.jpg")],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+        )
+        # Integer PTS + rational time base avoids showinfo's rounded pts_time.
+        bases = set(re.findall(r"config in time_base:\s*(\d+/\d+)", completed.stderr))
+        if len(bases) != 1:
+            raise ValueError("missing frame time base")
+        tick = Fraction(bases.pop())
+        if tick <= 0:
+            raise ValueError("invalid frame time base")
+        frames = []
+        previous = -math.inf
+        for number, pts in re.findall(r"\bn:\s*(\d+)\s+pts:\s*(-?\d+)", completed.stderr):
+            timestamp = float(int(pts) * tick)
+            image = destination / f"frame_{int(number) + 1:06d}.jpg"
+            if (int(number) != len(frames)
+                    or not span.start <= timestamp < span.end or timestamp <= previous
+                    or not image.is_file() or image.stat().st_size == 0):
+                raise ValueError("invalid extracted frame")
+            frames.append(FrameRef(image, timestamp))
+            previous = timestamp
+        if not frames or len(list(destination.glob("frame_*.jpg"))) != len(frames):
+            raise ValueError("no source frames in requested span")
+        return frames
+    except (OSError, subprocess.SubprocessError, ValueError, ZeroDivisionError):
+        shutil.rmtree(destination, ignore_errors=True)
+        raise FrameExtractionError("unable to extract video frames") from None
 
 
 def _video_frame_rate(video: dict[str, Any]) -> float:

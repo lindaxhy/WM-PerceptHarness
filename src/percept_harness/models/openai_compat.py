@@ -58,7 +58,7 @@ class OpenAICompatVideoModel:
     supports_semantic_result_cache = True
     # Bump these contracts when payload defaults or frame encoding/sampling change.
     adapter_contract_version = "openai-compat-chat-completions-v1"
-    frame_extraction_contract_version = "extract-frames-jpeg-timestamps-v1"
+    frame_extraction_contract_version = "extract-frames-source-pts-v2"
 
     def __init__(self, *, base_url: str, api_key: str,
                  model_registry: Mapping[str, str],
