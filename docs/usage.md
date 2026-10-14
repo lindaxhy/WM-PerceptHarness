@@ -213,6 +213,8 @@ per-key process locks and publish complete artifact directories atomically.
 Each read checks the request identity, frame mapping, registered files, sizes
 and overlay signatures. Do not modify cache entries while a run is using them.
 The simplified internal CV schema accepts one target and one spatial prompt.
+Each request uses the local ID `target` and retains the original target description.
+Request scopes distinguish tracks; the description remains part of the cache key.
 Old CV entries containing retired entity/sampling fields become cache misses and
 are recomputed. Public annotation JSON and completed-result resume rules are
 unchanged; use `--force` to regenerate an already completed annotation.

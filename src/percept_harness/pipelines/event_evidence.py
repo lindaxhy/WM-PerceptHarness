@@ -1,9 +1,6 @@
 """Targeted SAM probes and tracks on the original playback clock."""
 from dataclasses import dataclass
 from pathlib import Path
-import hashlib
-import re
-import unicodedata
 from ..cv.artifacts import CvArtifactStore, CvArtifactHandle, cv_cache_key
 from ..cv.contracts import CvEvidenceRequest, SamplingPolicy, FrameTimeline, SpatialPrompt, EntityPrompt
 from ..cv.timeline import probe_frame_timeline
@@ -23,22 +20,6 @@ def local_asset_identity(path):
     except FileNotFoundError:
         return str(path)
     return f"{path}:{status.st_size}:{status.st_mtime_ns}"
-
-
-def target_entity(description: str) -> EntityPrompt:
-    """Stable identity for the single spatial target selected by the VLM."""
-    label = " ".join(description.split()).casefold()
-    if label in {"", "unknown"}:
-        raise SafePipelineError("Targeted SAM requires a named object")
-    if len(label) > 256:
-        label = label[:239] + "_" + hashlib.sha256(label.encode()).hexdigest()[:16]
-    ascii_label = unicodedata.normalize("NFKD", label).encode("ascii", "ignore").decode()
-    slug = re.sub(r"[^a-z0-9]+", "_", ascii_label.casefold()).strip("_")
-    if not slug or not slug[0].isalpha():
-        slug = f"entity_{slug}" if slug else "entity"
-    if len(slug) > 125:
-        slug = slug[:108].rstrip("_") + "_" + hashlib.sha256(slug.encode()).hexdigest()[:16]
-    return EntityPrompt(entity_id=slug, canonical_label=label)
 
 
 @dataclass(frozen=True)
@@ -73,7 +54,7 @@ class EvidenceOrchestrator:
 
     def run(self, *, ordinal, window, target, mode):
         settings = self.context.settings
-        entity = target_entity(target.description)
+        entity = EntityPrompt(entity_id="target", canonical_label=target.description)
         points = tuple(p for p in self.timeline.frames if window['start'] <= p.timestamp_seconds <= window['end'])
         if not points:
             raise SafePipelineError('Local SAM window contains no original frames')

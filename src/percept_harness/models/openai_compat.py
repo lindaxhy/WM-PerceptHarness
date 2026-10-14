@@ -12,9 +12,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import math
 import random
-import shutil
 import tempfile
 import time
 from collections.abc import Mapping
@@ -48,11 +46,7 @@ class OpenAICompatBackendError(RuntimeError):
 
 
 class OpenAICompatVideoModel:
-    """Send sampled frames using connection values validated by Settings/CLI.
-
-    Direct Python callers must provide valid connection settings. The adapter
-    validates provider-specific body overrides and all external responses.
-    """
+    """Send sampled frames and parse structured chat-completion responses."""
 
     TRANSPORT_RETRIES = 3
     RETRY_BACKOFF_SECONDS = 5.0
@@ -117,10 +111,7 @@ class OpenAICompatVideoModel:
         }
 
     def generate(self, request: ModelRequest) -> dict[str, Any]:
-        if request.max_output_tokens is None and request.stage not in self.OUTPUT_TOKENS:
-            raise OpenAICompatBackendError("stage has no configured output budget")
-        temporary = Path(tempfile.mkdtemp(prefix="percept-frames-"))
-        try:
+        with tempfile.TemporaryDirectory(prefix="percept-frames-", ignore_cleanup_errors=True) as temporary:
             span_seconds = request.span.end - request.span.start
             evidence_count = len(request.visual_evidence)
             original_budget = request.max_frames - evidence_count
@@ -133,13 +124,8 @@ class OpenAICompatVideoModel:
                 # evenly across the span instead (0.5 guards the < end loop
                 # boundary against rounding up to max_frames + 1).
                 fps = (original_budget - 0.5) / span_seconds
-            try:
-                frames = self._extract(request.video_path, request.span, fps, temporary)
-                content = self._content(request, frames)
-            except OpenAICompatBackendError:
-                raise
-            except Exception:
-                raise OpenAICompatBackendError("visual preparation failed") from None
+            frames = self._extract(request.video_path, request.span, fps, Path(temporary))
+            content = self._content(request, frames)
             payload: dict[str, Any] = {
                 "model": self.model_name, "stream": False,
                 "max_tokens": (request.max_output_tokens or self.OUTPUT_TOKENS[request.stage]),
@@ -169,8 +155,6 @@ class OpenAICompatVideoModel:
                 raise OpenAICompatBackendError("request exceeds configured size limit")
             raw = self._post_with_retries(encoded)
             return self._parse(raw)
-        finally:
-            shutil.rmtree(temporary, ignore_errors=True)
 
     def _post_with_retries(self, encoded: bytes) -> bytes:
         """POST once, then retry transient transport/service failures with backoff.
@@ -210,22 +194,13 @@ class OpenAICompatVideoModel:
                 retryable, attempt + 1, attempts, delay,
             )
             time.sleep(delay)
-        raise OpenAICompatBackendError("transport failed")  # pragma: no cover
 
     def _content(self, request: ModelRequest, frames: list[FrameRef]) -> list[dict[str, Any]]:
         if not frames or len(frames) + len(request.visual_evidence) > request.max_frames:
             raise OpenAICompatBackendError("frame count is outside configured bounds")
-        previous = -math.inf
         content: list[dict[str, Any]] = [{"type": "text", "text": request.prompt}]
         for frame in frames:
-            if (not math.isfinite(frame.timestamp) or frame.timestamp < request.span.start
-                    or frame.timestamp >= request.span.end or frame.timestamp <= previous):
-                raise OpenAICompatBackendError("frame timestamps are invalid")
-            previous = frame.timestamp
-            try:
-                jpeg = frame.path.read_bytes()
-            except OSError:
-                raise OpenAICompatBackendError("extracted frame is unavailable") from None
+            jpeg = frame.path.read_bytes()
             content.extend((
                 {"type": "text", "text": f"Frame timestamp: {frame.timestamp:.6f} seconds"},
                 {"type": "image_url", "image_url": {
@@ -264,10 +239,7 @@ class OpenAICompatVideoModel:
         message = choice.get("message")
         if not isinstance(message, dict) or message.get("role") != "assistant":
             raise ModelOutputError("response must contain one assistant message")
-        text = message.get("content")
-        if not isinstance(text, str) or not text.strip():
-            raise ModelOutputError("response message content must be non-empty text")
-        return parse_strict_json(text, max_chars=self.MAX_OUTPUT_CHARS)
+        return parse_strict_json(message.get("content"), max_chars=self.MAX_OUTPUT_CHARS)
 
     def close(self) -> None:
         self._client.close()
