@@ -97,13 +97,8 @@ class Settings(BaseSettings):
     cv_cache_root: Path = Path("work/cv-cache")
     cv_cache_max_bytes: PositiveInteger = 8 * 1024 * 1024 * 1024
     cv_cache_max_files: PositiveInteger = 10_000
-    cv_short_video_seconds: PositiveFinite = 30.0
-    cv_scan_fps: PositiveFinite = 8.0
     cv_max_fps: PositiveFinite = 30.0
-    cv_refinement_radius_seconds: PositiveFinite = 1.0
     cv_min_confidence: PositiveFraction = 0.5
-    cv_min_area_fraction: PositiveFraction = 0.01
-    cv_occlusion_visibility_drop: PositiveFraction = 0.5
     cv_execution_chunk_frames: PositiveInteger = 8
     cv_compile_model: StrictEnvironmentBool = False
 
@@ -132,10 +127,4 @@ class Settings(BaseSettings):
             ("https://", "http://")
         ):
             raise ValueError("openai_base_url must be an http(s) URL")
-        return self
-
-    @model_validator(mode="after")
-    def validate_cv_configuration(self) -> Self:
-        if self.cv_scan_fps > self.cv_max_fps:
-            raise ValueError("cv_scan_fps must not exceed cv_max_fps")
         return self

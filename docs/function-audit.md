@@ -12,6 +12,8 @@
 - VLM 缓存复用 `results.write_json()` 的原子写入，删除重复文件发布逻辑。
 - SAM 用 NumPy 处理数组统计和 NPY 归档，合并 probe/track 的流消费与清理逻辑；直接加载固定版本的本地源码、checkpoint 和 tokenizer，删除源码/权重复制与快照框架。保留时间轴映射、归档预算、OOM 重试和来源检查。
 
+第三轮进一步收敛为当前实际使用的单目标空间提示流程：删除别名/角色、全视频扫描与细化采样、未使用阈值、运行身份包装和手写 JPEG 解析。图像尺寸使用延迟导入的 Pillow；OOM 重试保持同一组原始帧。`contracts.py` 的 19 个限制常量缩减为 3 个共享资源上限，普通字段由 Pydantic 校验，缓存文件/字节预算由存储层统一处理。第一轮表中的 `validate_cv_configuration` 也随旧采样配置删除。
+
 ## 结论
 
 - 直接删除：无调用方的 `get_inference_job`（协议和实现）及 `allowed_model_aliases`。

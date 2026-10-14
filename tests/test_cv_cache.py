@@ -15,10 +15,9 @@ def cache_request():
         video_path=Path('/tmp/video.mp4'), video_identity='video', checkpoint_identity='weights',
         duration_seconds=1.0, frame_count=1,
         timeline={'frames': [{'frame_index': 0, 'timestamp_seconds': 0.0}]},
-        entities=[], sampling={'short_video_seconds': 30.0, 'scan_fps': 1.0,
-                              'max_fps': 4.0, 'refinement_radius_seconds': 1.0},
-        thresholds={'min_confidence': 0.1, 'min_area_fraction': 0.001,
-                    'occlusion_visibility_drop': 0.5}))
+        entities=[{'entity_id': 'target', 'canonical_label': 'target'}], sampling={'max_fps': 4.0},
+        spatial_prompts=[{'entity_id': 'target', 'frame_index': 0, 'bbox_xyxy': [0.1, 0.1, 0.8, 0.8]}],
+        thresholds={'min_confidence': 0.1}))
 
 
 def cache_artifact(request, stage, content=b'mask'):
@@ -28,7 +27,7 @@ def cache_artifact(request, stage, content=b'mask'):
         schema_version='cv_evidence_v1', status='available', provider=request.provider,
         model_identity=request.model_identity, video_identity=request.video_identity,
         checkpoint_identity=request.checkpoint_identity,
-        processed_timeline=request.timeline, entities=[], tracks=[], overlay_records=[],
+        processed_timeline=request.timeline, entities=request.entities, tracks=[], overlay_records=[],
         files=[{'path': 'masks/fixture.mask', 'size_bytes': len(content)}]))
 
 

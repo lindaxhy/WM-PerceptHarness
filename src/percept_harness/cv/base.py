@@ -107,9 +107,7 @@ class FakeCvEvidenceProvider:
                             mask_ref=mask_ref if visible else None,
                             visible=visible,
                             confidence=max(request.thresholds.min_confidence, 0.9),
-                            area_fraction=max(
-                                request.thresholds.min_area_fraction, 0.01
-                            ),
+                            area_fraction=(box[2] - box[0]) * (box[3] - box[1]),
                             center_xy=((box[0] + box[2]) / 2, (box[1] + box[3]) / 2),
                         )
                     )

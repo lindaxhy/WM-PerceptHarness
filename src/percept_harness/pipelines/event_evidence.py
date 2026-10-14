@@ -5,7 +5,7 @@ import hashlib
 import re
 import unicodedata
 from ..cv.artifacts import CvArtifactStore, CvArtifactHandle, cv_cache_key
-from ..cv.contracts import CvEvidenceRequest, SamplingPolicy, EvidenceThresholds, FrameTimeline, SpatialPrompt, EntityPrompt, EntityRole
+from ..cv.contracts import CvEvidenceRequest, SamplingPolicy, EvidenceThresholds, FrameTimeline, SpatialPrompt, EntityPrompt
 from ..cv.timeline import probe_frame_timeline
 from ..models.base import VisualEvidence
 from .base import SafePipelineError
@@ -38,7 +38,7 @@ def target_entity(description: str) -> EntityPrompt:
         slug = f"entity_{slug}" if slug else "entity"
     if len(slug) > 125:
         slug = slug[:108].rstrip("_") + "_" + hashlib.sha256(slug.encode()).hexdigest()[:16]
-    return EntityPrompt(entity_id=slug, canonical_label=label, aliases=(), role=EntityRole.OTHER)
+    return EntityPrompt(entity_id=slug, canonical_label=label)
 
 
 @dataclass(frozen=True)
@@ -86,11 +86,8 @@ class EvidenceOrchestrator:
             duration_seconds=self.duration, frame_count=len(self.timeline.frames), checkpoint_identity=(local_asset_identity(settings.cv_checkpoint_path)
                 if settings.cv_checkpoint_path else settings.cv_model_alias),
             timeline=selected, entities=(entity,), mode=mode, spatial_prompts=(spatial,),
-            sampling=SamplingPolicy(short_video_seconds=settings.cv_short_video_seconds,
-                scan_fps=settings.cv_max_fps if window else settings.cv_scan_fps, max_fps=settings.cv_max_fps,
-                refinement_radius_seconds=settings.cv_refinement_radius_seconds),
-            thresholds=EvidenceThresholds(min_confidence=settings.cv_min_confidence,
-                min_area_fraction=settings.cv_min_area_fraction, occlusion_visibility_drop=settings.cv_occlusion_visibility_drop))
+            sampling=SamplingPolicy(max_fps=settings.cv_max_fps),
+            thresholds=EvidenceThresholds(min_confidence=settings.cv_min_confidence))
         result = self.context.executor.execute('cv_evidence', request.model_dump(mode='json'))
         if result.get('status') != 'available' or result.get('artifact_key') != cv_cache_key(request):
             raise SafePipelineError('Targeted SAM evidence unavailable or mismatched')

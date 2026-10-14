@@ -129,8 +129,9 @@ def test_resource_failure_closes_session_stream_and_removes_partial_outputs(tmp_
 
         def handle_stream_request(self, payload):
             try:
-                yield self.response(0)
                 yield self.response(1)
+                yield self.response(2)
+                yield self.response(0)
             finally:
                 self.stream_closed = True
 
@@ -143,7 +144,7 @@ def test_resource_failure_closes_session_stream_and_removes_partial_outputs(tmp_
     assert list(tmp_path.iterdir()) == []
 
 
-@pytest.mark.parametrize("indices", [(1, 0), (0,), (0, 1, 1)])
+@pytest.mark.parametrize("indices", [(1, 0, 2), (1, 2), (1, 2, 2), (1, 2, 0, 0)])
 def test_incomplete_duplicate_or_reordered_stream_cannot_publish(tmp_path, indices):
     class InvalidPredictor(Predictor):
         def handle_stream_request(self, payload):
@@ -157,7 +158,7 @@ def test_incomplete_duplicate_or_reordered_stream_cannot_publish(tmp_path, indic
     assert predictor.calls[-1]["type"] == "close_session"
 
 
-def test_oom_retry_reuses_refined_source_mapping_and_closes_failed_session(tmp_path):
+def test_targeted_oom_retry_recomputes_same_source_mapping(tmp_path):
     class OutOfMemoryError(Exception):
         pass
 
@@ -166,42 +167,105 @@ def test_oom_retry_reuses_refined_source_mapping_and_closes_failed_session(tmp_p
 
         def handle_stream_request(self, payload):
             self.streams += 1
-            if self.streams == 2:
+            if self.streams == 1:
                 def failed_stream():
-                    yield self.response(0)
+                    yield self.response(1)
                     raise OutOfMemoryError()
                 return failed_stream()
             return super().handle_stream_request(payload)
 
     predictor = OomPredictor()
     materialized = []
-    refined = []
 
     def frames(video, timeline, indices, destination):
         materialized.append(indices)
         return materialize(video, timeline, indices, destination)
 
-    def refine(*args):
-        refined.append(args)
-        return (30,)
-
     instance = sam31.Sam31EvidenceProvider(
         predictor=predictor,
         torch_module=SimpleNamespace(cuda=SimpleNamespace(OutOfMemoryError=OutOfMemoryError)),
         materialize_frames=frames,
-        initial_sampler=lambda *args: (20, 40), refinement_sampler=refine,
+        initial_sampler=lambda *args: (20, 40),
+        overlay_renderer=lambda **kwargs: kwargs["destination"].write_bytes(b"overlay"),
     )
     tmp_path.chmod(0o700)
-    long_request = request(duration_seconds=40.0)
+    targeted = request(spatial_prompts=[spatial()])
     with pytest.raises(CvOutOfMemoryError):
-        instance.analyze(long_request, tmp_path)
+        instance.analyze(targeted, tmp_path)
     assert list(tmp_path.iterdir()) == []
-    artifact = instance.analyze(long_request, tmp_path)
-    assert materialized == [(20, 40), (20, 30, 40), (20, 30, 40)]
-    assert len(refined) == 1
+    artifact = instance.analyze(targeted, tmp_path)
+    assert materialized == [(20, 30, 40), (20, 30, 40)]
     assert [point.frame_index for point in artifact.processed_timeline.frames] == [20, 30, 40]
     assert [item.frame_index for item in artifact.tracks[0].observations] == [20, 30, 40]
-    assert sum(call["type"] == "close_session" for call in predictor.calls) == 3
+    assert sum(call["type"] == "close_session" for call in predictor.calls) == 2
+
+
+@pytest.mark.parametrize("change", ["missing_entity", "missing_spatial", "multiple_entities", "multiple_spatial"])
+def test_provider_rejects_unsupported_untargeted_or_multi_entity_request(tmp_path, change):
+    targeted = request(spatial_prompts=[spatial()])
+    updates = {
+        "missing_entity": {"entities": ()},
+        "missing_spatial": {"spatial_prompts": ()},
+        "multiple_entities": {"entities": targeted.entities * 2},
+        "multiple_spatial": {"spatial_prompts": targeted.spatial_prompts * 2},
+    }
+    tmp_path.chmod(0o700)
+    with pytest.raises(CvProviderError):
+        provider(Predictor()).analyze(targeted.model_copy(update=updates[change]), tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_one_target_can_return_multiple_candidate_masks_and_reference_overlays(tmp_path):
+    class CandidatesPredictor(Predictor):
+        def response(self, index):
+            return arrays(index)
+
+    tmp_path.chmod(0o700)
+    artifact = provider(CandidatesPredictor()).analyze(request(mode="probe"), tmp_path)
+    assert [track.track_id for track in artifact.tracks] == ["cup_2", "cup_9"]
+    assert [record.track_id for record in artifact.overlay_records] == ["cup_2", "cup_9"]
+    assert all(track.observations[0].frame_index == 30 for track in artifact.tracks)
+    with numpy.load(tmp_path / "masks/cup.npz", allow_pickle=False) as archive:
+        assert archive["object_ids"].tolist() == [2, 9]
+        assert archive["frame_indices"].tolist() == [30, 30]
+
+
+def test_targeted_zero_detection_retains_available_evidence_and_empty_archive(tmp_path):
+    class EmptyPredictor(Predictor):
+        def response(self, index):
+            return arrays(index, ids=(), probabilities=())
+
+    tmp_path.chmod(0o700)
+    artifact = provider(EmptyPredictor()).analyze(request(mode="probe"), tmp_path)
+    assert artifact.status.value == "available"
+    assert artifact.tracks == ()
+    assert artifact.overlay_records == ()
+    with numpy.load(tmp_path / "masks/cup.npz", allow_pickle=False) as archive:
+        assert archive["object_ids"].tolist() == []
+        assert archive["sampled_frame_indices"].tolist() == [30]
+
+
+@pytest.mark.parametrize("fail_body", [False, True])
+def test_stream_cleanup_failure_removes_partial_outputs_without_losing_body_error(tmp_path, fail_body):
+    class ClosingStream:
+        def __iter__(self):
+            if fail_body:
+                raise RuntimeError("stream failed")
+            return iter(arrays(index, ids=(1,), probabilities=(0.9,)) for index in (1, 2, 0))
+
+        def close(self):
+            raise KeyboardInterrupt("close failed")
+
+    class ClosingPredictor(Predictor):
+        def handle_stream_request(self, payload):
+            return ClosingStream()
+
+    predictor = ClosingPredictor()
+    tmp_path.chmod(0o700)
+    with pytest.raises(CvProviderError):
+        provider(predictor).analyze(request(), tmp_path)
+    assert list(tmp_path.iterdir()) == []
+    assert predictor.calls[-1]["type"] == "close_session"
 
 
 def git(repository, *arguments):

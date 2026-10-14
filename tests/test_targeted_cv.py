@@ -24,9 +24,10 @@ def request(**updates):
         video_path=Path('/tmp/source.mp4'), video_identity='source-video', checkpoint_identity='fixture-checkpoint',
         duration_seconds=20.0, frame_count=100,
         timeline={'frames': [{'frame_index': i, 'timestamp_seconds': t} for i,t in [(20,2.0),(30,3.0),(40,4.0)]]},
-        entities=[{'entity_id':'cup','canonical_label':'red cup','aliases':['mug'],'role':'other'}],
-        sampling={'short_video_seconds':30.0,'scan_fps':1.0,'max_fps':4.0,'refinement_radius_seconds':1.0},
-        thresholds={'min_confidence':0.1,'min_area_fraction':0.001,'occlusion_visibility_drop':0.5})
+        entities=[{'entity_id':'cup','canonical_label':'red cup'}],
+        sampling={'max_fps':4.0},
+        spatial_prompts=[spatial()],
+        thresholds={'min_confidence':0.1})
     payload.update(updates)
     return CvEvidenceRequest.model_validate(payload)
 
@@ -70,7 +71,8 @@ def materialize(video, timeline, indices, destination):
     frames=[]
     for local, original in enumerate(indices):
         path=destination/f'{local:06d}.jpg'
-        path.write_bytes(b'\xff\xd8\xff\xc0\x00\x07\x08\x00\x04\x00\x04\xff\xd9')
+        from PIL import Image
+        Image.new('RGB', (4, 4), 'red').save(path)
         frames.append(SampledFrame(local,original,times[original],path))
     return SampledFrameSet(tuple(frames))
 
@@ -92,7 +94,7 @@ class TargetedCvTests(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 request(mode='probe',spatial_prompts=[invalid])
         with self.assertRaises(ValidationError):
-            request(mode='probe')
+            request(mode='probe', spatial_prompts=[])
         with self.assertRaises(ValidationError):
             request(spatial_prompts=[spatial(),spatial()])
 
@@ -204,6 +206,50 @@ class TargetedCvTests(unittest.TestCase):
             prompt=next(c for c in predictor.calls if c['type']=='add_prompt')
             self.assertEqual(prompt['frame_index'],1)
             self.assertEqual(prompt['bounding_boxes'],[[0.25,0.25,0.5,0.5]])
+
+
+
+class TargetedSchemaTests(unittest.TestCase):
+    def test_targeted_request_rejects_retired_options_and_multiple_targets(self):
+        for field, update in (
+            ('entities', [{'entity_id': 'cup', 'canonical_label': 'cup', 'aliases': ['mug']}]),
+            ('entities', [{'entity_id': 'cup', 'canonical_label': 'cup', 'role': 'other'}]),
+            ('sampling', {'max_fps': 4.0, 'scan_fps': 1.0}),
+            ('thresholds', {'min_confidence': 0.1, 'min_area_fraction': 0.01}),
+            ('thresholds', {'min_confidence': 0.1, 'occlusion_visibility_drop': 0.5}),
+            ('entities', []),
+            ('entities', [{'entity_id': 'cup', 'canonical_label': 'cup'},
+                          {'entity_id': 'plate', 'canonical_label': 'plate'}]),
+            ('spatial_prompts', []),
+        ):
+            with self.assertRaises(ValidationError):
+                request(**{field: update})
+        original = request()
+        self.assertEqual(CvEvidenceRequest.model_validate_json(original.model_dump_json()), original)
+
+
+    def test_artifact_references_and_resource_bounds_survive_schema_simplification(self):
+        current = request()
+        base = dict(schema_version='cv_evidence_v1', status='available',
+                    provider=current.provider, model_identity=current.model_identity,
+                    video_identity=current.video_identity, checkpoint_identity=current.checkpoint_identity,
+                    processed_timeline=current.timeline, entities=current.entities,
+                    tracks=[], files=[], overlay_records=[])
+        self.assertEqual(CvEvidenceArtifact.model_validate(base).processed_timeline, current.timeline)
+        observation = dict(frame_index=30, timestamp_seconds=3.0, bbox_xyxy=[0.1, 0.1, 0.8, 0.8],
+                           mask_ref='masks/cup.npz', visible=True, confidence=0.9,
+                           area_fraction=0.1, center_xy=[0.5, 0.5])
+        track = dict(track_id='cup_1', entity_id='cup', observations=[observation])
+        with self.assertRaisesRegex(ValidationError, 'mask_ref must reference'):
+            CvEvidenceArtifact.model_validate({**base, 'tracks': [track]})
+        with self.assertRaisesRegex(ValidationError, 'processed timeline'):
+            CvEvidenceArtifact.model_validate({**base, 'tracks': [{**track, 'observations': [
+                {**observation, 'timestamp_seconds': 3.1, 'mask_ref': None}]}]})
+        with self.assertRaisesRegex(ValidationError, 'at most 24'):
+            CvEvidenceArtifact.model_validate({**base, 'overlay_records': [{}] * 25})
+        with self.assertRaisesRegex(ValidationError, 'too many total observations'):
+            CvEvidenceArtifact.model_validate({**base, 'tracks': [{'observations': [None] * 64_001}]})
+
 
 if __name__=='__main__':
     unittest.main()

@@ -166,84 +166,12 @@ def initial_sample_indices(
     """Select bounded, decoder-order source frames for the initial SAM pass."""
     try:
         start, end = _timeline_bounds(timeline)
-        if end - start <= Fraction(str(policy.short_video_seconds)):
-            max_rate = Fraction(str(policy.max_fps))
-            if _rate_at_or_below(timeline, start, end, max_rate):
-                return tuple(point.frame_index for point in timeline.frames)
-            rate = max_rate
-        else:
-            rate = Fraction(str(policy.scan_fps))
+        rate = Fraction(str(policy.max_fps))
+        if _rate_at_or_below(timeline, start, end, rate):
+            return tuple(point.frame_index for point in timeline.frames)
         return _select_pts_at_or_after(timeline, start, end, rate)
     except (AttributeError, TypeError, ValueError, ZeroDivisionError):
         raise TimelineError("unable to sample video frames") from None
-
-
-def refinement_sample_indices(
-    timeline: FrameTimeline,
-    change_indices: tuple[int, ...],
-    policy: SamplingPolicy,
-) -> tuple[int, ...]:
-    """Densely resample bounded source-PTS windows around source-frame changes."""
-    try:
-        start, end = _timeline_bounds(timeline)
-        points_by_index = {point.frame_index: point for point in timeline.frames}
-        radius = Fraction(str(policy.refinement_radius_seconds))
-        rate = Fraction(str(policy.max_fps))
-        windows: list[tuple[Fraction, Fraction]] = []
-        for index in change_indices:
-            if isinstance(index, bool) or index not in points_by_index:
-                raise ValueError
-            change_time = Fraction(str(points_by_index[index].timestamp_seconds))
-            windows.append(
-                (
-                    max(start, change_time - radius),
-                    min(end, change_time + radius),
-                )
-            )
-        selected: set[int] = set()
-        for window_start, window_end in _merge_overlapping_windows(windows):
-            selected.update(
-                _select_pts_at_or_after(
-                    timeline,
-                    window_start,
-                    window_end,
-                    rate,
-                    retain_timeline_bounds=False,
-                )
-            )
-        return _cap_selected_pts(timeline, selected, rate)
-    except (AttributeError, TypeError, ValueError, ZeroDivisionError):
-        raise TimelineError("unable to sample video frames") from None
-
-
-def _merge_overlapping_windows(
-    windows: list[tuple[Fraction, Fraction]],
-) -> tuple[tuple[Fraction, Fraction], ...]:
-    merged: list[tuple[Fraction, Fraction]] = []
-    for start, end in sorted(windows):
-        if merged and start <= merged[-1][1]:
-            merged[-1] = merged[-1][0], max(merged[-1][1], end)
-        else:
-            merged.append((start, end))
-    return tuple(merged)
-
-
-def _cap_selected_pts(
-    timeline: FrameTimeline, selected: set[int], rate: Fraction
-) -> tuple[int, ...]:
-    points_by_index = {point.frame_index: point for point in timeline.frames}
-    interval = Fraction(1, 1) / rate
-    capped: list[int] = []
-    previous: Fraction | None = None
-    for index in sorted(selected):
-        timestamp = Fraction(str(points_by_index[index].timestamp_seconds))
-        if (
-            previous is None
-            or timestamp - previous + _PTS_COMPARISON_TOLERANCE >= interval
-        ):
-            capped.append(index)
-            previous = timestamp
-    return tuple(capped)
 
 
 def _timeline_bounds(timeline: FrameTimeline) -> tuple[Fraction, Fraction]:
@@ -271,14 +199,12 @@ def _select_pts_at_or_after(
     start: Fraction,
     end: Fraction,
     rate: Fraction,
-    *,
-    retain_timeline_bounds: bool = True,
 ) -> tuple[int, ...]:
     if rate <= 0:
         raise ValueError
     points = timeline.frames
     timestamps = tuple(Fraction(str(point.timestamp_seconds)) for point in points)
-    selected: list[int] = [points[0].frame_index] if retain_timeline_bounds else []
+    selected: list[int] = [points[0].frame_index]
     interval = Fraction(1, 1) / rate
     target = start
     cursor = 0
@@ -295,8 +221,7 @@ def _select_pts_at_or_after(
             break
         selected.append(points[cursor].frame_index)
         target += interval
-    if retain_timeline_bounds:
-        selected.append(points[-1].frame_index)
+    selected.append(points[-1].frame_index)
     return tuple(sorted(set(selected)))
 
 

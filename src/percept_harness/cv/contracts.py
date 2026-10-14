@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any, Literal, get_args, get_origin
+from typing import Annotated, Any, Literal, get_origin
 
 from pydantic import (
     BaseModel,
@@ -19,31 +18,18 @@ from pydantic import (
 )
 
 
-_MAX_IDENTIFIER_CHARS = 128
-_MAX_MODEL_IDENTITY_CHARS = 256
-_MAX_ENTITY_LABEL_CHARS = 256
-_MAX_ENTITY_ALIASES = 256
-_MAX_ALIAS_CHARS = 128
-_MAX_TIMELINE_FRAMES = 100_000
-_MAX_PROCESSED_FRAMES = 10_000
-_MAX_ARTIFACT_ENTITIES = 64
-_MAX_ARTIFACT_TRACKS = 256
-_MAX_TRACK_OBSERVATIONS = 10_000
-_MAX_TOTAL_ARTIFACT_OBSERVATIONS = 64_000
-_MAX_ARTIFACT_FILES = 1_024
-_MAX_ARTIFACT_WARNINGS = 64
-_MAX_WARNING_CHARS = 256
-_MAX_ARTIFACT_PATH_CHARS = 512
-_MAX_OVERLAY_RECORDS = 24
-_MAX_CANONICAL_INT = 2**63 - 1
-_MAX_UNANNOTATED_JSON_SEQUENCE = 100_000
+# Shared limits used by schema validation and the SAM/cache runtime.
+MAX_OVERLAYS = 24
+MAX_PROCESSED_FRAMES = 10_000
+MAX_OBSERVATIONS = 64_000
 
 
+Label = Annotated[StrictStr, Field(min_length=1, max_length=256, pattern=r"\S")]
 CacheIdentity = Annotated[StrictStr, Field(min_length=1, max_length=4096)]
 ObjectId = Annotated[
     StrictStr,
     Field(
-        max_length=_MAX_IDENTIFIER_CHARS,
+        max_length=128,
         pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$",
     ),
 ]
@@ -52,9 +38,9 @@ Timestamp = Annotated[float, Field(ge=0, allow_inf_nan=False, strict=True)]
 PositiveTimestamp = Annotated[float, Field(gt=0, allow_inf_nan=False, strict=True)]
 Confidence = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False, strict=True)]
 Fraction = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False, strict=True)]
-PositiveInt = Annotated[int, Field(gt=0, le=_MAX_CANONICAL_INT, strict=True)]
+PositiveInt = Annotated[int, Field(gt=0, le=2**63 - 1, strict=True)]
 NonnegativeInt = Annotated[
-    int, Field(ge=0, le=_MAX_CANONICAL_INT, strict=True)
+    int, Field(ge=0, le=2**63 - 1, strict=True)
 ]
 
 
@@ -66,60 +52,19 @@ class StrictModel(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def freeze_json_sequences(cls, value: Any) -> Any:
-        """Bound and freeze only this model's direct JSON tuple fields."""
-        if isinstance(value, cls):
+        """Accept JSON arrays for immutable tuple fields; Pydantic validates items."""
+        if not isinstance(value, dict):
             return value
-        if type(value) is not dict:
-            if isinstance(value, (Mapping, list, tuple)):
-                raise ValueError("custom model containers are forbidden")
-            return value
-
-        # Discover malformed keys before inspecting declared fields.  Never
-        # read an unknown value here: pydantic-core owns extra-field rejection,
-        # preserving its precise field location without traversing the value.
-        for name in value:
-            if type(name) is not str:
-                raise ValueError("model keys must be JSON strings")
-
-        normalized = value.copy()
+        value = value.copy()
         for name, field in cls.model_fields.items():
-            if name not in value or get_origin(field.annotation) is not tuple:
-                continue
-            sequence = value[name]
-            if not isinstance(sequence, (list, tuple)):
-                continue
-            if type(sequence) not in {list, tuple}:
-                raise ValueError(f"{name} uses a custom sequence container")
-            maximum = _tuple_field_maximum(field.annotation, field.metadata)
-            if len(sequence) > maximum:
-                raise ValueError(f"{name} must have at most {maximum} items")
-            if type(sequence) is list:
-                normalized[name] = tuple(sequence)
-        return normalized
-
-
-def _tuple_field_maximum(annotation: Any, metadata: list[Any]) -> int:
-    declared = tuple(
-        maximum
-        for item in metadata
-        for maximum in (getattr(item, "max_length", None),)
-        if isinstance(maximum, int)
-    )
-    if declared:
-        return min(declared)
-    arguments = get_args(annotation)
-    if arguments and arguments[-1] is not Ellipsis:
-        return len(arguments)
-    return _MAX_UNANNOTATED_JSON_SEQUENCE
-
-
-class EntityRole(StrEnum):
-    ACTOR = "actor"
-    MANIPULATED_OBJECT = "manipulated_object"
-    CONTAINER = "container"
-    OCCLUDER = "occluder"
-    SURFACE = "surface"
-    OTHER = "other"
+            sequence = value.get(name)
+            if get_origin(field.annotation) is tuple and isinstance(sequence, (list, tuple)):
+                maximum = next((item.max_length for item in field.metadata
+                                if getattr(item, "max_length", None) is not None), None)
+                if maximum is not None and len(sequence) > maximum:
+                    raise ValueError(f"{name} must have at most {maximum} items")
+                value[name] = tuple(sequence)
+        return value
 
 
 class EvidenceStatus(StrEnum):
@@ -130,30 +75,7 @@ class EvidenceStatus(StrEnum):
 
 class EntityPrompt(StrictModel):
     entity_id: ObjectId
-    canonical_label: Annotated[
-        StrictStr, Field(max_length=_MAX_ENTITY_LABEL_CHARS)
-    ]
-    aliases: Annotated[
-        tuple[Annotated[StrictStr, Field(max_length=_MAX_ALIAS_CHARS)], ...],
-        Field(max_length=_MAX_ENTITY_ALIASES),
-    ]
-    role: EntityRole
-
-    @field_validator("role", mode="before")
-    @classmethod
-    def parse_role(cls, value: EntityRole | str) -> EntityRole:
-        if type(value) is EntityRole:
-            return value
-        if type(value) is not str:
-            raise ValueError("entity role must be a plain string or EntityRole")
-        return EntityRole(value)
-
-    @field_validator("canonical_label")
-    @classmethod
-    def require_canonical_label(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("canonical_label must not be blank")
-        return value
+    canonical_label: Label
 
 
 class FrameTimestamp(StrictModel):
@@ -163,7 +85,7 @@ class FrameTimestamp(StrictModel):
 
 class FrameTimeline(StrictModel):
     frames: Annotated[
-        tuple[FrameTimestamp, ...], Field(max_length=_MAX_TIMELINE_FRAMES)
+        tuple[FrameTimestamp, ...], Field(max_length=100_000)
     ]
 
     @model_validator(mode="after")
@@ -179,29 +101,11 @@ class FrameTimeline(StrictModel):
 
 
 class SamplingPolicy(StrictModel):
-    short_video_seconds: PositiveTimestamp
-    scan_fps: PositiveTimestamp
     max_fps: PositiveTimestamp
-    refinement_radius_seconds: PositiveTimestamp
-
-    @model_validator(mode="after")
-    def require_scan_rate_not_to_exceed_maximum(self) -> SamplingPolicy:
-        if self.scan_fps > self.max_fps:
-            raise ValueError("scan_fps must not exceed max_fps")
-        return self
 
 
 class EvidenceThresholds(StrictModel):
     min_confidence: Confidence
-    min_area_fraction: Fraction
-    occlusion_visibility_drop: Fraction
-
-    @field_validator("*", mode="before")
-    @classmethod
-    def require_json_float(cls, value: Any) -> Any:
-        if type(value) is not float:
-            raise ValueError("evidence thresholds require JSON floating-point values")
-        return value
 
 
 class SpatialPrompt(StrictModel):
@@ -222,9 +126,7 @@ class SpatialPrompt(StrictModel):
 class CvEvidenceRequest(StrictModel):
     schema_version: Literal["cv_request_v1"]
     provider: Literal["fake", "sam31"]
-    model_identity: Annotated[
-        StrictStr, Field(max_length=_MAX_MODEL_IDENTITY_CHARS)
-    ]
+    model_identity: Label
     video_path: Path
     video_identity: CacheIdentity
     duration_seconds: PositiveTimestamp
@@ -232,14 +134,14 @@ class CvEvidenceRequest(StrictModel):
     checkpoint_identity: CacheIdentity
     timeline: FrameTimeline
     entities: Annotated[
-        tuple[EntityPrompt, ...], Field(max_length=_MAX_ARTIFACT_ENTITIES)
+        tuple[EntityPrompt, ...], Field(min_length=1, max_length=1)
     ]
     sampling: SamplingPolicy
     thresholds: EvidenceThresholds
     mode: Literal["probe", "track"] = "track"
     spatial_prompts: Annotated[
-        tuple[SpatialPrompt, ...], Field(max_length=_MAX_ARTIFACT_ENTITIES)
-    ] = ()
+        tuple[SpatialPrompt, ...], Field(min_length=1, max_length=1)
+    ]
 
     @field_validator("video_path", mode="before")
     @classmethod
@@ -250,25 +152,11 @@ class CvEvidenceRequest(StrictModel):
             return value
         return Path(value) if isinstance(value, str) else value
 
-    @field_validator("model_identity")
-    @classmethod
-    def require_model_identity(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("model_identity must not be blank")
-        return value
 
     @model_validator(mode="after")
     def validate_source_alignment(self) -> CvEvidenceRequest:
-        entity_ids = [entity.entity_id for entity in self.entities]
-        if len(entity_ids) != len(set(entity_ids)):
-            raise ValueError("entity IDs must be unique")
-        prompt_ids = [prompt.entity_id for prompt in self.spatial_prompts]
-        if len(prompt_ids) != len(set(prompt_ids)):
-            raise ValueError("spatial prompt entity IDs must be unique")
-        if not set(prompt_ids) <= set(entity_ids):
-            raise ValueError("spatial prompts must reference request entities")
-        if self.mode == "probe" and (not entity_ids or set(prompt_ids) != set(entity_ids)):
-            raise ValueError("probe requires one spatial prompt for every entity")
+        if self.spatial_prompts[0].entity_id != self.entities[0].entity_id:
+            raise ValueError("spatial prompt must reference the target entity")
         known_frames = {frame.frame_index for frame in self.timeline.frames}
         if any(prompt.frame_index not in known_frames for prompt in self.spatial_prompts):
             raise ValueError("spatial prompt frame must belong to the request timeline")
@@ -283,7 +171,7 @@ class CvEvidenceRequest(StrictModel):
 def _validate_relative_posix_path(value: str) -> str:
     if (
         not value
-        or len(value) > _MAX_ARTIFACT_PATH_CHARS
+        or len(value) > 512
         or "\\" in value
         or value.startswith("/")
     ):
@@ -326,20 +214,10 @@ class CvTrack(StrictModel):
     track_id: TrackId
     entity_id: ObjectId
     observations: Annotated[
-        tuple[TrackObservation, ...], Field(max_length=_MAX_TRACK_OBSERVATIONS)
+        tuple[TrackObservation, ...], Field(max_length=MAX_PROCESSED_FRAMES)
     ]
-    status: EvidenceStatus = EvidenceStatus.AVAILABLE
+    status: EvidenceStatus = Field(default=EvidenceStatus.AVAILABLE, strict=False)
 
-    @field_validator("status", mode="before")
-    @classmethod
-    def parse_status(cls, value: EvidenceStatus | str) -> EvidenceStatus:
-        if type(value) is EvidenceStatus:
-            return value
-        if type(value) is not str:
-            raise ValueError(
-                "track status must be a plain string or EvidenceStatus"
-            )
-        return EvidenceStatus(value)
 
     @model_validator(mode="after")
     def require_ordered_observations(self) -> CvTrack:
@@ -356,7 +234,7 @@ class CvTrack(StrictModel):
 
 
 class ArtifactFile(StrictModel):
-    path: Annotated[StrictStr, Field(max_length=_MAX_ARTIFACT_PATH_CHARS)]
+    path: Annotated[StrictStr, Field(max_length=512)]
     size_bytes: NonnegativeInt
 
     @field_validator("path")
@@ -368,7 +246,7 @@ class ArtifactFile(StrictModel):
 class OverlayRecord(StrictModel):
     """Structured provenance for one prompt-safe rendered overlay."""
 
-    path: Annotated[StrictStr, Field(max_length=_MAX_ARTIFACT_PATH_CHARS)]
+    path: Annotated[StrictStr, Field(max_length=512)]
     track_id: TrackId
     frame_index: NonnegativeInt
 
@@ -387,144 +265,36 @@ class OverlayRecord(StrictModel):
 
 class CvEvidenceArtifact(StrictModel):
     schema_version: Literal["cv_evidence_v1"]
-    status: EvidenceStatus
+    status: EvidenceStatus = Field(strict=False)
     provider: Literal["fake", "sam31"]
-    model_identity: Annotated[
-        StrictStr, Field(max_length=_MAX_MODEL_IDENTITY_CHARS)
-    ]
+    model_identity: Label
     video_identity: CacheIdentity
     checkpoint_identity: CacheIdentity
     processed_timeline: FrameTimeline | None
     entities: Annotated[
-        tuple[EntityPrompt, ...], Field(max_length=_MAX_ARTIFACT_ENTITIES)
+        tuple[EntityPrompt, ...], Field(min_length=1, max_length=1)
     ]
     tracks: Annotated[
-        tuple[CvTrack, ...], Field(max_length=_MAX_ARTIFACT_TRACKS)
+        tuple[CvTrack, ...], Field(max_length=256)
     ]
-    files: Annotated[
-        tuple[ArtifactFile, ...], Field(max_length=_MAX_ARTIFACT_FILES)
-    ]
+    files: tuple[ArtifactFile, ...]
     overlay_records: Annotated[
-        tuple[OverlayRecord, ...], Field(max_length=_MAX_OVERLAY_RECORDS)
+        tuple[OverlayRecord, ...], Field(max_length=MAX_OVERLAYS)
     ]
-    warnings: Annotated[
-        tuple[Annotated[StrictStr, Field(max_length=_MAX_WARNING_CHARS)], ...],
-        Field(max_length=_MAX_ARTIFACT_WARNINGS),
-    ] = ()
+
 
     @model_validator(mode="before")
     @classmethod
-    def enforce_raw_structural_bounds(cls, value: Any) -> Any:
-        """Reject oversized nested containers before validating their items."""
-        if isinstance(value, cls):
-            return value
-        if type(value) is not dict:
-            if isinstance(value, (Mapping, list, tuple)):
-                raise ValueError("artifact uses a custom model container")
-            return value
-        def bounded_sequence(name: str, maximum: int) -> tuple[Any, ...] | list[Any]:
-            sequence = value.get(name, ())
-            if isinstance(sequence, (tuple, list)) and type(sequence) not in {
-                list,
-                tuple,
-            }:
-                raise ValueError(f"artifact {name} uses a custom sequence")
-            if type(sequence) in {tuple, list} and len(sequence) > maximum:
-                raise ValueError(f"artifact {name} exceeds its structural bound")
-            return sequence if type(sequence) in {tuple, list} else []
-
-        entities = bounded_sequence("entities", _MAX_ARTIFACT_ENTITIES)
-        for entity in entities:
-            if not isinstance(entity, EntityPrompt) and type(entity) is not dict:
-                if isinstance(entity, Mapping):
-                    raise ValueError("artifact entity uses a custom mapping")
-                continue
-            aliases = (
-                entity.aliases
-                if isinstance(entity, EntityPrompt)
-                else entity.get("aliases", ())
-                if type(entity) is dict
-                else ()
-            )
-            if isinstance(aliases, (tuple, list)) and type(aliases) not in {
-                list,
-                tuple,
-            }:
-                raise ValueError("artifact entity aliases use a custom sequence")
-            if type(aliases) in {tuple, list} and len(aliases) > _MAX_ENTITY_ALIASES:
-                raise ValueError("artifact entity aliases exceed their structural bound")
-
-        tracks = bounded_sequence("tracks", _MAX_ARTIFACT_TRACKS)
-        total_observations = 0
-        for track in tracks:
-            if not isinstance(track, CvTrack) and type(track) is not dict:
-                if isinstance(track, Mapping):
-                    raise ValueError("artifact track uses a custom mapping")
-                continue
-            observations = (
-                track.observations
-                if isinstance(track, CvTrack)
-                else track.get("observations", ())
-                if type(track) is dict
-                else ()
-            )
-            if isinstance(observations, (tuple, list)) and type(observations) not in {
-                list,
-                tuple,
-            }:
-                raise ValueError("artifact observations use a custom sequence")
-            if type(observations) in {tuple, list}:
-                if len(observations) > _MAX_TRACK_OBSERVATIONS:
-                    raise ValueError(
-                        "artifact track observations exceed their structural bound"
-                    )
-                total_observations += len(observations)
-                if total_observations > _MAX_TOTAL_ARTIFACT_OBSERVATIONS:
-                    raise ValueError("artifact has too many total observations")
-
-        bounded_sequence("files", _MAX_ARTIFACT_FILES)
-        bounded_sequence("overlay_records", _MAX_OVERLAY_RECORDS)
-        bounded_sequence("warnings", _MAX_ARTIFACT_WARNINGS)
-        processed_timeline = value.get("processed_timeline")
-        if (
-            not isinstance(processed_timeline, (FrameTimeline, type(None)))
-            and type(processed_timeline) is not dict
-        ):
-            if isinstance(processed_timeline, Mapping):
-                raise ValueError("processed timeline uses a custom mapping")
-        processed_frames = (
-            processed_timeline.frames
-            if isinstance(processed_timeline, FrameTimeline)
-            else processed_timeline.get("frames", ())
-            if type(processed_timeline) is dict
-            else ()
-        )
-        if isinstance(processed_frames, (tuple, list)) and type(
-            processed_frames
-        ) not in {list, tuple}:
-            raise ValueError("processed frames use a custom sequence")
-        if type(processed_frames) in {tuple, list} and len(
-            processed_frames
-        ) > _MAX_PROCESSED_FRAMES:
-            raise ValueError("processed timeline exceeds its artifact bound")
-        return value
-
-    @field_validator("status", mode="before")
-    @classmethod
-    def parse_artifact_status(cls, value: EvidenceStatus | str) -> EvidenceStatus:
-        if type(value) is EvidenceStatus:
-            return value
-        if type(value) is not str:
-            raise ValueError(
-                "artifact status must be a plain string or EvidenceStatus"
-            )
-        return EvidenceStatus(value)
-
-    @field_validator("model_identity")
-    @classmethod
-    def require_artifact_model_identity(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("model_identity must not be blank")
+    def bound_observations(cls, value: Any) -> Any:
+        """Cap the nested workload before constructing observation models."""
+        if isinstance(value, dict) and isinstance(value.get("tracks"), (list, tuple)):
+            total = 0
+            for track in value["tracks"]:
+                observations = track.get("observations", ()) if isinstance(track, dict) else getattr(track, "observations", ())
+                if isinstance(observations, (list, tuple)):
+                    total += len(observations)
+                    if total > MAX_OBSERVATIONS:
+                        raise ValueError("artifact has too many total observations")
         return value
 
     @model_validator(mode="after")
@@ -532,7 +302,7 @@ class CvEvidenceArtifact(StrictModel):
         if self.status is EvidenceStatus.AVAILABLE and self.processed_timeline is None:
             raise ValueError("available artifact requires a processed timeline")
         if self.processed_timeline is not None and (
-            len(self.processed_timeline.frames) > _MAX_PROCESSED_FRAMES
+            len(self.processed_timeline.frames) > MAX_PROCESSED_FRAMES
         ):
             raise ValueError("processed timeline exceeds its artifact bound")
         if self.status is not EvidenceStatus.AVAILABLE and (
@@ -570,7 +340,7 @@ class CvEvidenceArtifact(StrictModel):
             if track.entity_id not in known_entities:
                 raise ValueError("track entity_id must reference an artifact entity")
             total_observations += len(track.observations)
-            if total_observations > _MAX_TOTAL_ARTIFACT_OBSERVATIONS:
+            if total_observations > MAX_OBSERVATIONS:
                 raise ValueError("artifact has too many total observations")
             for observation in track.observations:
                 if processed_clock.get(observation.frame_index) != (

@@ -16,11 +16,10 @@ def payload(root):
     return dict(schema_version='cv_request_v1', provider='sam31', model_identity='sam3.1',
         video_path=str(root / 'source.mp4'), video_identity='source-video',
         checkpoint_identity='fixture-checkpoint', duration_seconds=1.0, frame_count=1,
-        timeline={'frames': [{'frame_index': 0, 'timestamp_seconds': 0.0}]}, entities=[],
-        sampling={'short_video_seconds': 30.0, 'scan_fps': 1.0, 'max_fps': 4.0,
-                  'refinement_radius_seconds': 1.0},
-        thresholds={'min_confidence': 0.1, 'min_area_fraction': 0.001,
-                    'occlusion_visibility_drop': 0.5})
+        timeline={'frames': [{'frame_index': 0, 'timestamp_seconds': 0.0}]}, entities=[{'entity_id': 'target', 'canonical_label': 'target'}],
+        sampling={'max_fps': 4.0},
+        spatial_prompts=[{'entity_id': 'target', 'frame_index': 0, 'bbox_xyxy': [0.1, 0.1, 0.8, 0.8]}],
+        thresholds={'min_confidence': 0.1})
 
 
 class CountingProvider(FakeCvEvidenceProvider):
@@ -34,7 +33,14 @@ class CountingProvider(FakeCvEvidenceProvider):
         self.calls += 1
         if self.oom and self.calls == 1:
             raise CvOutOfMemoryError('fixture allocation failure')
-        return super().analyze(request, staging)
+        from percept_harness.cv.contracts import CvEvidenceArtifact
+        self._metrics = {'processed_frames': 1, 'execution_chunk_frames': self.execution_chunk_frames,
+                         'peak_allocated_bytes': 0}
+        return CvEvidenceArtifact(schema_version='cv_evidence_v1', status='available',
+            provider=request.provider, model_identity=request.model_identity,
+            video_identity=request.video_identity, checkpoint_identity=request.checkpoint_identity,
+            processed_timeline=request.timeline, entities=request.entities,
+            tracks=(), files=(), overlay_records=())
 
     def close(self):
         self.closed = True

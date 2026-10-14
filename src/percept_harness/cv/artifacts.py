@@ -18,7 +18,7 @@ import stat
 import tempfile
 from typing import Iterator
 
-from .contracts import CvEvidenceArtifact, CvEvidenceRequest
+from .contracts import CvEvidenceArtifact, CvEvidenceRequest, MAX_OVERLAYS
 
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _MANIFEST_NAME = "manifest.json"
@@ -197,7 +197,7 @@ class CvArtifactStore:
     def read_overlays(self, handle: CvArtifactHandle, paths: tuple[str, ...], *,
                       max_total_bytes: int = 64 * 1024**2) -> dict[str, bytes]:
         try:
-            if (type(paths) is not tuple or len(paths) > 24
+            if (type(paths) is not tuple or len(paths) > MAX_OVERLAYS
                     or any(type(path) is not str for path in paths)
                     or len(set(paths)) != len(paths) or type(max_total_bytes) is not int
                     or not 0 < max_total_bytes <= 64 * 1024**2):

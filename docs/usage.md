@@ -96,7 +96,7 @@ Use the pinned SAM source revision `660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7`, i
 SAM loads the clean pinned checkout, checkpoint and tokenizer directly from
 these local paths. Keep them unchanged for the lifetime of a run. The loader
 checks the source revision, tokenizer identity and imported module locations;
-it does not create private copies of the source tree or checkpoint. NumPy and
+it does not create private copies of the source tree or checkpoint. NumPy, Pillow and
 OpenCV belong to the SAM runtime and are imported only when that runtime is used.
 
 The core install neither installs this runtime nor validates a live GPU run. Run a small production annotation and inspect the `.audit.json` sidecar (`status`, `error`, `metadata.evidence`), overlay counts and archived CV manifests before scaling up. `--backend fake --model fake --cv fake` is a synthetic offline test path; fake CV cannot be paired with a production model. A successful zero-detection SAM result may have `no_tracks: true` and no overlays; the reviewer still sees the original video, and missing tracks do not prove absence.
@@ -202,8 +202,16 @@ The CV cache is a private, user-owned local directory. Cooperating workers use
 per-key process locks and publish complete artifact directories atomically.
 Each read checks the request identity, frame mapping, registered files, sizes
 and overlay signatures. Do not modify cache entries while a run is using them.
-Incomplete legacy cache manifests are treated as misses and recomputed; current
-request identities and annotation JSON formats are unchanged.
+The simplified internal CV schema accepts one target and one spatial prompt.
+Old CV entries containing retired entity/sampling fields become cache misses and
+are recomputed. Public annotation JSON and completed-result resume rules are
+unchanged; use `--force` to regenerate an already completed annotation.
+
+Targeted tracking samples the selected window at `PERCEPT_CV_MAX_FPS` and always
+includes its reference frame. OOM retries use the same original frame indices.
+Unused full-video scan/refinement settings and area/occlusion thresholds were
+removed. Shared limits cover overlays (24), processed frames (10,000) and total
+observations (64,000); cache file/byte budgets remain configurable.
 
 ## Video frame sampling
 
@@ -315,4 +323,4 @@ For a reported run, record input paths and pair IDs; model/provider configuratio
 
 Save `python --version`, `python -m pip freeze` and `python -m pip check` for each evaluator environment. The motion-only VBench environment deliberately differs from the full upstream dependency metadata. A successful local check does not establish successful real-model inference or a complete benchmark run.
 
-Run the current regression suite with `python -m unittest discover -s tests -v`. Earlier development tests are preserved in [Git history](https://github.com/lindaxhy/WM-PerceptHarness/tree/ace1be715038296d445d904934d297a10ef6fbde/tests). Historical LAS tools remain on [archive/las-comparison-viewer](https://github.com/lindaxhy/WM-PerceptHarness/tree/archive/las-comparison-viewer) and [legacy-las-service](https://github.com/lindaxhy/WM-PerceptHarness/tree/legacy-las-service).
+Run the full regression suite with `python -m pytest -q` (install pytest in the development environment). The unittest-compatible subset also runs with `python -m unittest discover -s tests -v`. Earlier development tests are preserved in [Git history](https://github.com/lindaxhy/WM-PerceptHarness/tree/ace1be715038296d445d904934d297a10ef6fbde/tests). Historical LAS tools remain on [archive/las-comparison-viewer](https://github.com/lindaxhy/WM-PerceptHarness/tree/archive/las-comparison-viewer) and [legacy-las-service](https://github.com/lindaxhy/WM-PerceptHarness/tree/legacy-las-service).

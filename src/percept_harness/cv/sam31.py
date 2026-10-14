@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 import hashlib
 import importlib
@@ -16,7 +16,6 @@ import logging
 import re
 import shutil
 import stat
-import struct
 import subprocess
 import sys
 import tempfile
@@ -26,6 +25,7 @@ import zipfile
 from .base import CvOutOfMemoryError, CvProviderError
 from .contracts import (
     ArtifactFile,
+    MAX_OVERLAYS,
     CvEvidenceArtifact,
     CvEvidenceRequest,
     CvTrack,
@@ -39,7 +39,6 @@ from .timeline import (
     SampledFrameSet,
     initial_sample_indices,
     materialize_sampled_frames,
-    refinement_sample_indices,
 )
 
 
@@ -50,25 +49,13 @@ _OOM_FAILURE = "SAM3.1 CV evidence inference ran out of memory"
 _CLOSE_FAILURE = "Unable to close SAM3.1 runtime"
 _logger = logging.getLogger(__name__)
 _HASH_READ_BYTES = 1024 * 1024
-_MAX_OVERLAYS = 24
 _MAX_OBJECTS = 16
 _DEFAULT_MAX_ARTIFACT_BYTES = 8 * 1024 * 1024 * 1024
 _DEFAULT_MAX_ARTIFACT_FILES = 10_000
 _ZIP_ENTRY_ALLOWANCE = 1024
-_MAX_GIT_TREE_BYTES = 16 * 1024 * 1024
 _BPE_REPOSITORY_PATH = "sam3/assets/bpe_simple_vocab_16e6.txt.gz"
 # Pinned sam3_multiplex_base.py uses this score for removed objects.
 _REMOVED_OBJECT_SCORE = -10000.0
-# Alias fallback tuning: a canonical-label run covering at least this fraction
-# of the sampled frames is trusted outright; below it, aliases are probed.
-_ALIAS_RETRY_MAX_COVERAGE = 0.5
-# An alias run replaces the canonical one only when it covers at least this
-# much more of the video, so near-ties never churn the track.
-_ALIAS_MIN_COVERAGE_GAIN = 0.15
-# Where both runs observe the entity, their per-frame union boxes must agree
-# at least this well; an alias that matched a different object is rejected.
-_ALIAS_CONSISTENCY_MIN_IOU = 0.4
-_ALIAS_CONSISTENCY_MIN_FRAMES = 1
 _NETWORK_PREFIX = re.compile(
     r"(?i)^(?:https?|ssh|git|ftp|s3|gs|hf)://|^[^/\\\s]+@[^/\\\s]+:"
 )
@@ -94,7 +81,7 @@ class _PromptRun:
     present_ids_by_frame: tuple[frozenset[int], ...]
     mask_height: int
     mask_width: int
-    mask_relative: str | None
+    mask_relative: str
 
 
 class _CleanupFailure(Exception):
@@ -134,23 +121,16 @@ class _MaskArchiveWriter:
         self.budget = budget
         self.mask_count = 0
         self._closed = False
-        descriptor = os.open(
-            path,
-            os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-            0o600,
-        )
+        self._output = os.fdopen(os.open(
+            path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600
+        ), "w+b")
         try:
-            self._output = os.fdopen(descriptor, "w+b")
-            descriptor = -1
             self._archive = zipfile.ZipFile(
-                self._output,
-                mode="w",
-                compression=zipfile.ZIP_DEFLATED,
-                compresslevel=9,
+                self._output, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=9
             )
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
+        except BaseException:
+            self._output.close()
+            raise
 
     def write_mask(self, mask: Any) -> int:
         """Archive one visible mask without retaining masks from other frames."""
@@ -167,22 +147,18 @@ class _MaskArchiveWriter:
     ) -> None:
         if self._closed or len(detections) != self.mask_count:
             raise ValueError
-        arrays = (
-            (
-                "local_frame_indices.npy",
-                tuple(item.local_frame_index for item in detections),
-            ),
-            (
-                "frame_indices.npy",
-                tuple(item.source_frame_index for item in detections),
-            ),
-            ("object_ids.npy", tuple(item.object_id for item in detections)),
-            ("mask_indices.npy", tuple(item.mask_index for item in detections)),
-            (
-                "sampled_frame_indices.npy",
-                tuple(item.source_frame_index for item in sampled.frames),
-            ),
-        )
+        arrays = [
+            (name, [getattr(item, attribute) for item in detections])
+            for name, attribute in (
+                ("local_frame_indices.npy", "local_frame_index"),
+                ("frame_indices.npy", "source_frame_index"),
+                ("object_ids.npy", "object_id"), ("mask_indices.npy", "mask_index"),
+            )
+        ]
+        arrays.append((
+            "sampled_frame_indices.npy",
+            [item.source_frame_index for item in sampled.frames],
+        ))
         try:
             numpy = importlib.import_module("numpy")
             for name, values in arrays:
@@ -204,18 +180,12 @@ class _MaskArchiveWriter:
         if self._closed:
             return
         self._closed = True
-        try:
-            self._archive.close()
-        except BaseException:
-            pass
-        try:
-            self._output.close()
-        except BaseException:
-            pass
-        try:
-            self.path.unlink(missing_ok=True)
-        except BaseException:
-            pass
+        for cleanup in (
+            self._archive.close, self._output.close,
+            lambda: self.path.unlink(missing_ok=True),
+        ):
+            with suppress(BaseException):
+                cleanup()
 
 
 class Sam31EvidenceProvider:
@@ -229,7 +199,6 @@ class Sam31EvidenceProvider:
         execution_chunk_frames: int = 8,
         materialize_frames: Callable[..., SampledFrameSet] = materialize_sampled_frames,
         initial_sampler: Callable[..., tuple[int, ...]] = initial_sample_indices,
-        refinement_sampler: Callable[..., tuple[int, ...]] = refinement_sample_indices,
         repository_revision: str = _PINNED_REPOSITORY_REVISION,
         max_artifact_bytes: int = _DEFAULT_MAX_ARTIFACT_BYTES,
         max_artifact_files: int = _DEFAULT_MAX_ARTIFACT_FILES,
@@ -243,7 +212,6 @@ class Sam31EvidenceProvider:
         self._torch = torch_module
         self._materialize_frames = materialize_frames
         self._initial_sampler = initial_sampler
-        self._refinement_sampler = refinement_sampler
         self._execution_chunk_frames = _positive_integer(
             execution_chunk_frames, "execution_chunk_frames"
         )
@@ -258,16 +226,8 @@ class Sam31EvidenceProvider:
         self._overlay_renderer = overlay_renderer or _render_context_overlay
         self._import_snapshot = import_snapshot
         self._sam_source_root = sam_source_root
-        self._retry_request: CvEvidenceRequest | None = None
-        self._retry_final_indices: tuple[int, ...] | None = None
         self._closed = False
-        self._metrics = {
-            "processed_frames": 0,
-            "execution_chunk_frames": self.execution_chunk_frames,
-            "entity_prompts": 0,
-            "track_count": 0,
-            "peak_allocated_bytes": 0,
-        }
+        self._metrics: dict[str, int] = {}
 
     @classmethod
     def load(
@@ -366,380 +326,109 @@ class Sam31EvidenceProvider:
                 if getattr(model, name) != self._execution_chunk_frames:
                     raise ValueError
 
-    def analyze(
-        self, request: CvEvidenceRequest, staging_dir: Path
-    ) -> CvEvidenceArtifact:
-        """Track normalized prompts over one immutable sampled-frame mapping."""
-        work_directory: Path | None = None
-        output_directories: list[Path] = []
-        completed = False
-        primary_error: BaseException | None = None
+    def analyze(self, request: CvEvidenceRequest, staging_dir: Path) -> CvEvidenceArtifact:
+        """Probe or track one nominated entity within its selected source window."""
+        outputs: list[Path] = []
         try:
-            if self._closed:
-                raise RuntimeError
-            validated_request = CvEvidenceRequest.model_validate(request, strict=True)
-            if validated_request.provider != "sam31":
+            request = CvEvidenceRequest.model_validate(request, strict=True)
+            if (
+                self._closed or request.provider != "sam31"
+                or request.mode not in ("probe", "track")
+                or len(request.entities) != 1 or len(request.spatial_prompts) != 1
+            ):
                 raise ValueError
+            self._metrics = {}
             staging = _prepare_staging_directory(staging_dir)
             _reset_peak_memory(self._torch)
-            self._metrics = {
-                "processed_frames": 0,
-                "execution_chunk_frames": self.execution_chunk_frames,
-                "entity_prompts": 0,
-                "track_count": 0,
-                "peak_allocated_bytes": 0,
-            }
-            if not validated_request.entities:
-                artifact = _empty_artifact(validated_request)
-                self._metrics["peak_allocated_bytes"] = _peak_memory(self._torch)
-                self._clear_retry_plan()
-                completed = True
-                return artifact
-
-            work_directory = Path(
-                tempfile.mkdtemp(prefix=".sam31-frames-", dir=staging)
-            )
-            budget = _ArtifactBudget(
-                max_bytes=self._max_artifact_bytes,
-                max_files=self._max_artifact_files,
-            )
-            retry_indices = (
-                self._retry_final_indices
-                if self._retry_request == validated_request
-                else None
-            )
-            if retry_indices is not None:
-                final_frames = self._materialize(
-                    validated_request,
-                    retry_indices,
-                    work_directory / "final",
+            reference = request.spatial_prompts[0].frame_index
+            indices = (reference,) if request.mode == "probe" else tuple(sorted(
+                set(self._initial_sampler(request.timeline, request.sampling)) | {reference}
+            ))
+            budget = _ArtifactBudget(self._max_artifact_bytes, self._max_artifact_files)
+            with tempfile.TemporaryDirectory(prefix=".sam31-frames-", dir=staging) as work:
+                destination = Path(work) / "frames"
+                sampled = self._materialize_frames(
+                    request.video_path, request.timeline, indices, destination
                 )
-            else:
-                self._clear_retry_plan()
-                initial_indices = tuple(
-                    self._initial_sampler(
-                        validated_request.timeline, validated_request.sampling
+                _validate_sampled_frames(sampled, request, indices, destination)
+                masks_directory = _create_private_directory(staging / "masks")
+                outputs.append(masks_directory)
+                with _predictor_session(self._predictor, sampled) as session_id:
+                    run = self._run_prompt(
+                        request, sampled, session_id,
+                        masks_directory / f"{request.entities[0].entity_id}.npz", budget,
                     )
+                artifact = _build_artifact(
+                    request, staging, sampled, run, outputs, budget, self._overlay_renderer
                 )
-                reference_indices = {
-                    prompt.frame_index for prompt in validated_request.spatial_prompts
+                if self._sam_source_root is not None:
+                    _verify_loaded_sam_modules(self._sam_source_root)
+                self._metrics = {
+                    "processed_frames": len(sampled.frames),
+                    "execution_chunk_frames": self.execution_chunk_frames,
+                    "entity_prompts": 1,
+                    "track_count": len(artifact.tracks),
+                    "peak_allocated_bytes": _peak_memory(self._torch),
                 }
-                if validated_request.mode == "probe":
-                    initial_indices = tuple(sorted(reference_indices))
-                else:
-                    initial_indices = tuple(
-                        sorted(set(initial_indices) | reference_indices)
-                    )
-                _validate_source_indices(validated_request, initial_indices)
-                if (
-                    validated_request.mode == "probe"
-                    or validated_request.spatial_prompts
-                    or validated_request.duration_seconds
-                    <= validated_request.sampling.short_video_seconds
-                ):
-                    final_indices = initial_indices
-                else:
-                    scan_frames = self._materialize(
-                        validated_request,
-                        initial_indices,
-                        work_directory / "scan",
-                    )
-                    preliminary = self._run_all_prompts(
-                        validated_request, scan_frames
-                    )
-                    change_indices = _visibility_change_source_indices(
-                        preliminary, scan_frames
-                    )
-                    refined = tuple(
-                        self._refinement_sampler(
-                            validated_request.timeline,
-                            change_indices,
-                            validated_request.sampling,
-                        )
-                    )
-                    _validate_source_indices(
-                        validated_request, refined, allow_empty=True
-                    )
-                    final_indices = tuple(
-                        sorted(set(initial_indices) | set(refined))
-                    )
-                    del preliminary, scan_frames
-                self._retry_request = validated_request
-                self._retry_final_indices = final_indices
-                final_frames = self._materialize(
-                    validated_request,
-                    final_indices,
-                    work_directory / "final",
-                )
-
-            masks_directory = _create_private_directory(staging / "masks")
-            output_directories.append(masks_directory)
-            prompt_runs = self._run_all_prompts(
-                validated_request,
-                final_frames,
-                masks_directory=masks_directory,
-                budget=budget,
-            )
-            artifact = _build_artifact(
-                validated_request,
-                staging,
-                final_frames,
-                prompt_runs,
-                output_directories,
-                budget,
-                self._overlay_renderer,
-            )
-            if self._sam_source_root is not None:
-                _verify_loaded_sam_modules(self._sam_source_root)
-            self._metrics = {
-                "processed_frames": len(final_frames.frames),
-                "execution_chunk_frames": self.execution_chunk_frames,
-                "entity_prompts": len(validated_request.entities),
-                "track_count": len(artifact.tracks),
-                "peak_allocated_bytes": _peak_memory(self._torch),
-            }
-            self._clear_retry_plan()
-            completed = True
             return artifact
-        except Exception as error:
-            primary_error = error
+        except BaseException as error:
+            for directory in reversed(outputs):
+                with suppress(BaseException):
+                    shutil.rmtree(directory)
             if _is_cuda_oom(self._torch, error):
                 _empty_cuda_cache(self._torch)
                 raise CvOutOfMemoryError(_OOM_FAILURE) from None
-            self._clear_retry_plan()
-            raise CvProviderError(_INFERENCE_FAILURE) from None
-        except BaseException as error:
-            primary_error = error
-            raise
-        finally:
-            cleanup_error: BaseException | None = None
-            if work_directory is not None:
-                try:
-                    _remove_tree(work_directory)
-                except BaseException as error:
-                    cleanup_error = error
-            if not completed or cleanup_error is not None:
-                for directory in reversed(output_directories):
-                    try:
-                        _remove_tree(directory)
-                    except BaseException as error:
-                        if cleanup_error is None:
-                            cleanup_error = error
-            if cleanup_error is not None and primary_error is None:
+            if isinstance(error, Exception):
                 raise CvProviderError(_INFERENCE_FAILURE) from None
+            raise
 
     def request_metrics(self) -> dict[str, int]:
         """Return bounded metrics for the most recent completed request."""
         return dict(self._metrics)
 
-    def runtime_identity(self) -> dict[str, str]:
-        """Report the loaded Torch/CUDA identity for this provider's device."""
-        torch_module = self._torch
-        if torch_module is None:
-            return {}
-        identity = {"torch_version": str(getattr(torch_module, "__version__", ""))}
-        cuda = getattr(torch_module, "cuda", None)
-        get_device_name = getattr(cuda, "get_device_name", None)
-        if callable(get_device_name):
-            try:
-                identity["device_name"] = str(get_device_name(0))
-            except Exception:
-                pass
-        return identity
-
-    def _clear_retry_plan(self) -> None:
-        self._retry_request = None
-        self._retry_final_indices = None
-
     def close(self) -> None:
-        """Release predictor-owned process state once."""
+        """Release predictor and imported modules, including after shutdown failure."""
         if self._closed:
             return
         self._closed = True
-        predictor = self._predictor
-        self._predictor = None
-        cleanup_error: BaseException | None = None
         try:
-            shutdown = getattr(predictor, "shutdown", None)
-            if callable(shutdown):
-                shutdown()
-        except BaseException as error:
-            cleanup_error = error
-        try:
-            if self._import_snapshot is not None:
-                _restore_sam_modules(self._import_snapshot)
-        except BaseException as error:
-            if cleanup_error is None:
-                cleanup_error = error
-        finally:
-            self._import_snapshot = None
-        self._sam_source_root = None
-        if cleanup_error is not None:
+            try:
+                shutdown = getattr(self._predictor, "shutdown", None)
+                if callable(shutdown):
+                    shutdown()
+            finally:
+                if self._import_snapshot is not None:
+                    _restore_sam_modules(self._import_snapshot)
+        except BaseException:
             raise CvProviderError(_CLOSE_FAILURE) from None
-
-    def _materialize(
-        self,
-        request: CvEvidenceRequest,
-        indices: tuple[int, ...],
-        destination: Path,
-    ) -> SampledFrameSet:
-        sampled = self._materialize_frames(
-            request.video_path,
-            request.timeline,
-            indices,
-            destination,
-        )
-        _validate_sampled_frames(sampled, request, indices, destination)
-        return sampled
-
-    def _run_all_prompts(
-        self,
-        request: CvEvidenceRequest,
-        sampled: SampledFrameSet,
-        *,
-        masks_directory: Path | None = None,
-        budget: _ArtifactBudget | None = None,
-    ) -> tuple[_PromptRun, ...]:
-        dimensions = _sampled_frame_dimensions(sampled)
-
-        def run_with_alias_fallback(entity: Any) -> _PromptRun:
-            """Prefer the canonical label; adopt an alias with clearly better coverage.
-
-            The canonical label is a VLM-chosen name; a wrong attribute in it
-            (for example a misjudged color) can push open-vocabulary matching
-            under threshold even though the entity is plainly visible —
-            sometimes only during part of the video. Aliases from the same
-            nomination frequently still match. An alias run replaces the
-            canonical one only when it covers clearly more sampled frames
-            AND, on frames where both runs see the entity, their detections
-            agree on where it is, so an alias that matched some other object
-            can never hijack the track.
-            """
-            mask_path = (
-                masks_directory / f"{entity.entity_id}.npz"
-                if masks_directory is not None
-                else None
-            )
-            # Keep the verified spatial/text prompt fixed during targeted tracking.
-            labels = (
-                (entity.canonical_label,) if request.spatial_prompts
-                else (entity.canonical_label, *tuple(entity.aliases)[:2])
-            )
-
-            def execute(label: str, destination: Path | None) -> _PromptRun:
-                return self._run_prompt(
-                    request,
-                    sampled,
-                    session_id,
-                    entity,
-                    dimensions,
-                    mask_path=destination,
-                    budget=budget,
-                    prompt_text=label,
-                )
-
-            canonical = execute(labels[0], mask_path)
-            coverage = _prompt_coverage(canonical)
-            if len(labels) == 1 or coverage >= _ALIAS_RETRY_MAX_COVERAGE:
-                return canonical
-            if coverage == 0.0:
-                # Nothing to protect: the first alias that sees the entity wins.
-                last = canonical
-                for label in labels[1:]:
-                    if mask_path is not None:
-                        mask_path.unlink(missing_ok=True)
-                    run = execute(label, mask_path)
-                    if _prompt_coverage(run) > 0.0:
-                        return run
-                    last = run
-                return last
-            # The canonical label sees the entity in only part of the video.
-            # Probe the aliases without masks and keep the best clear improver.
-            best: tuple[str, float, _PromptRun] | None = None
-            for label in labels[1:]:
-                probe = execute(label, None)
-                probe_coverage = _prompt_coverage(probe)
-                if probe_coverage < coverage + _ALIAS_MIN_COVERAGE_GAIN:
-                    continue
-                if best is None or probe_coverage > best[1]:
-                    best = (label, probe_coverage, probe)
-            if best is None:
-                return canonical
-            if mask_path is None:
-                return best[2]
-            mask_path.unlink(missing_ok=True)
-            replacement = execute(best[0], mask_path)
-            if _alias_replacement_consistent(canonical, replacement):
-                return replacement
-            # The alias matched something else; restore the canonical masks.
-            mask_path.unlink(missing_ok=True)
-            return execute(labels[0], mask_path)
-
-        with _predictor_session(self._predictor, sampled) as session_id:
-            return tuple(
-                run_with_alias_fallback(entity) for entity in request.entities
-            )
+        finally:
+            self._predictor = None
+            self._import_snapshot = None
+            self._sam_source_root = None
 
     def _run_prompt(
-        self,
-        request: CvEvidenceRequest,
-        sampled: SampledFrameSet,
-        session_id: str,
-        entity: Any,
-        frame_dimensions: tuple[int, int],
-        *,
-        mask_path: Path | None,
-        budget: _ArtifactBudget | None,
-        prompt_text: str | None = None,
+        self, request: CvEvidenceRequest, sampled: SampledFrameSet,
+        session_id: str, mask_path: Path, budget: _ArtifactBudget,
     ) -> _PromptRun:
-        self._predictor.handle_request(
-            {"type": "reset_session", "session_id": session_id}
+        entity = request.entities[0]
+        spatial = request.spatial_prompts[0]
+        dimensions = _sampled_frame_dimensions(sampled)
+        reference_index = next(
+            index for index, frame in enumerate(sampled.frames)
+            if frame.source_frame_index == spatial.frame_index
         )
-        spatial = next(
-            (prompt for prompt in request.spatial_prompts
-             if prompt.entity_id == entity.entity_id), None
-        )
-        reference_index = (
-            next(index for index, frame in enumerate(sampled.frames)
-                 if frame.source_frame_index == spatial.frame_index)
-            if spatial is not None else 0
-        )
-        prompt_request = {
-            "type": "add_prompt",
-            "session_id": session_id,
-            "frame_index": reference_index,
-            "text": prompt_text or entity.canonical_label,
+        left, top, right, bottom = spatial.bbox_xyxy
+        prompt_response = self._predictor.handle_request({
+            "type": "add_prompt", "session_id": session_id,
+            "frame_index": reference_index, "text": entity.canonical_label,
             "output_prob_thresh": request.thresholds.min_confidence,
-        }
-        if spatial is not None:
-            left, top, right, bottom = spatial.bbox_xyxy
-            prompt_request.update(
-                bounding_boxes=[[left, top, right - left, bottom - top]],
-                bounding_box_labels=[1],
-            )
-        prompt_response = self._predictor.handle_request(prompt_request)
+            "bounding_boxes": [[left, top, right - left, bottom - top]],
+            "bounding_box_labels": [1],
+        })
         frame_count = len(sampled.frames)
-        detections: list[_Detection] = []
         present: list[frozenset[int]] = [frozenset()] * frame_count
-        writer = (
-            _MaskArchiveWriter(mask_path, budget)
-            if mask_path is not None and budget is not None
-            else None
-        )
-        stream_request = {
-            "type": "propagate_in_video",
-            "session_id": session_id,
-            "propagation_direction": "both" if spatial is not None else "forward",
-            "start_frame_index": reference_index,
-            "max_frame_num_to_track": frame_count,
-            "output_prob_thresh": request.thresholds.min_confidence,
-        }
-        if spatial is not None:
-            # The pinned detector adds this limit to start_frame_index without
-            # clamping its image batch. None uses the complete sampled window
-            # and keeps a nonzero reference from extending past its final frame.
-            stream_request.pop("max_frame_num_to_track")
-        # Pinned SAM3MultiplexTracking excludes the reference on reverse passes.
+        detections: list[_Detection] = []
+        writer = _MaskArchiveWriter(mask_path, budget)
         expected_indices = (
             (reference_index,) if request.mode == "probe" else
             tuple(range(reference_index, frame_count))
@@ -747,65 +436,34 @@ class Sam31EvidenceProvider:
         )
         try:
             stream = (
-                iter((prompt_response,)) if request.mode == "probe"
-                else self._predictor.handle_stream_request(stream_request)
+                iter((prompt_response,)) if request.mode == "probe" else
+                self._predictor.handle_stream_request({
+                    "type": "propagate_in_video", "session_id": session_id,
+                    "propagation_direction": "both", "start_frame_index": reference_index,
+                    "output_prob_thresh": request.thresholds.min_confidence,
+                })
             )
-            try:
+            with _cleanup(lambda: getattr(stream, "close", lambda: None)()):
                 for expected, response in zip(expected_indices, stream, strict=True):
                     local_index, parsed, _ = _parse_frame_response(
-                        response,
-                        sampled,
-                        allowed_indices=range(frame_count),
-                        expected_dimensions=frame_dimensions,
-                        mask_writer=writer,
+                        response, sampled, allowed_indices=range(frame_count),
+                        expected_dimensions=dimensions, mask_writer=writer,
                     )
                     if local_index != expected:
                         raise ValueError
                     present[local_index] = frozenset(item.object_id for item in parsed)
-                    if writer is not None:
-                        detections.extend(parsed)
-            finally:
-                body_failed = sys.exc_info()[0] is not None
-                close_stream = getattr(stream, "close", None)
-                if callable(close_stream):
-                    try:
-                        close_stream()
-                    except BaseException:
-                        if not body_failed:
-                            raise _CleanupFailure from None
+                    detections.extend(parsed)
             ordered = tuple(sorted(
                 detections, key=lambda item: (item.local_frame_index, item.object_id)
             ))
-            if writer is not None:
-                writer.finish(ordered, sampled)
+            writer.finish(ordered, sampled)
             return _PromptRun(
-                entity_id=entity.entity_id,
-                detections=ordered,
-                present_ids_by_frame=tuple(present),
-                mask_height=frame_dimensions[0],
-                mask_width=frame_dimensions[1],
-                mask_relative=f"masks/{entity.entity_id}.npz" if writer is not None else None,
+                entity.entity_id, ordered, tuple(present), *dimensions,
+                f"masks/{entity.entity_id}.npz",
             )
         except BaseException:
-            if writer is not None:
-                writer.abort()
+            writer.abort()
             raise
-
-
-def _empty_artifact(request: CvEvidenceRequest) -> CvEvidenceArtifact:
-    return CvEvidenceArtifact(
-        schema_version="cv_evidence_v1",
-        status=EvidenceStatus.DISABLED,
-        provider="sam31",
-        model_identity=request.model_identity,
-        video_identity=request.video_identity,
-        checkpoint_identity=request.checkpoint_identity,
-        processed_timeline=None,
-        entities=request.entities,
-        tracks=(),
-        files=(),
-        overlay_records=(),
-    )
 
 
 def _require_predictor_interface(predictor: Any) -> None:
@@ -821,10 +479,7 @@ def _install_pinned_multiplex_init_compatibility(predictor: Any) -> None:
     init_state = getattr(model, "init_state", None)
     if not callable(init_state):
         return
-    try:
-        parameters = inspect.signature(init_state).parameters
-    except (TypeError, ValueError):
-        raise TypeError from None
+    parameters = inspect.signature(init_state).parameters
     if "offload_state_to_cpu" in parameters:
         return
 
@@ -832,7 +487,6 @@ def _install_pinned_multiplex_init_compatibility(predictor: Any) -> None:
         if "offload_state_to_cpu" in kwargs:
             if kwargs["offload_state_to_cpu"] is not False:
                 raise ValueError
-            kwargs = dict(kwargs)
             kwargs.pop("offload_state_to_cpu")
         return init_state(*args, **kwargs)
 
@@ -850,22 +504,13 @@ def _shutdown_predictor(predictor: Any) -> None:
 
 def _validated_repository(value: Path | str) -> Path:
     raw = _local_path(value)
-    try:
-        status = raw.lstat()
-        if stat.S_ISLNK(status.st_mode) or not stat.S_ISDIR(status.st_mode):
-            raise ValueError
-        resolved = raw.resolve(strict=True)
-        if resolved != raw.absolute():
-            raise ValueError
-        package = resolved / "sam3" / "__init__.py"
-        package_status = package.lstat()
-        if stat.S_ISLNK(package_status.st_mode) or not stat.S_ISREG(
-            package_status.st_mode
-        ):
-            raise ValueError
-        return resolved
-    except (OSError, RuntimeError, ValueError):
-        raise ValueError from None
+    resolved = raw.resolve(strict=True)
+    if (
+        not stat.S_ISDIR(raw.lstat().st_mode) or resolved != raw.absolute()
+        or not stat.S_ISREG((resolved / "sam3" / "__init__.py").lstat().st_mode)
+    ):
+        raise ValueError
+    return resolved
 
 
 def _validated_local_asset(value: Path | str) -> Path:
@@ -898,101 +543,27 @@ def _local_path(value: Path | str) -> Path:
 
 
 def _verify_repository_revision(repository: Path) -> None:
-    revision = _bounded_git_output(repository, ("rev-parse", "--verify", "HEAD^{commit}"), 41)
-    if revision.decode("ascii").strip() != _PINNED_REPOSITORY_REVISION:
+    if _git(repository, "rev-parse", "--verify", "HEAD^{commit}") != _PINNED_REPOSITORY_REVISION:
         raise ValueError
-    status = _bounded_git_output(
-        repository, ("status", "--porcelain=v1", "--untracked-files=all", "--", "sam3"),
-        _MAX_GIT_TREE_BYTES,
-    )
-    if status:
+    if _git(repository, "status", "--porcelain=v1", "--untracked-files=all", "--", "sam3"):
         raise ValueError
 
 
 def _pinned_blob_object_id(repository: Path, path: str) -> str:
-    payload = _bounded_git_output(
-        repository, ("rev-parse", "--verify", f"{_PINNED_REPOSITORY_REVISION}:{path}"), 41,
-    ).decode("ascii")
-    if re.fullmatch(r"[0-9a-f]{40}\n?", payload) is None:
-        raise ValueError
-    return payload.strip()
+    return _git(repository, "rev-parse", "--verify", f"{_PINNED_REPOSITORY_REVISION}:{path}")
 
 
-def _bounded_git_output(
-    repository: Path, arguments: tuple[str, ...], max_bytes: int
-) -> bytes:
-    if max_bytes <= 0:
-        raise ValueError
-    process = subprocess.Popen(
-        _git_command(repository, *arguments),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        shell=False,
-        env=_git_environment(),
-    )
-    output = bytearray()
-    try:
-        if process.stdout is None:
-            raise ValueError
-        while True:
-            payload = process.stdout.read(
-                min(_HASH_READ_BYTES, max_bytes - len(output) + 1)
-            )
-            if not payload:
-                break
-            output.extend(payload)
-            if len(output) > max_bytes:
-                raise ValueError
-        if process.wait() != 0:
-            raise ValueError
-        return bytes(output)
-    except BaseException:
-        _stop_process(process)
-        raise
-    finally:
-        if process.stdout is not None:
-            try:
-                process.stdout.close()
-            except BaseException:
-                pass
-
-
-def _stop_process(process: subprocess.Popen[bytes]) -> None:
-    try:
-        if process.poll() is None:
-            process.kill()
-    except BaseException:
-        pass
-    try:
-        process.wait()
-    except BaseException:
-        pass
-
-
-def _git_command(repository: Path, *arguments: str) -> list[str]:
-    return [
-        "git",
-        "--no-replace-objects",
-        "-C",
-        str(repository),
-        *arguments,
-    ]
-
-
-def _git_environment() -> dict[str, str]:
+def _git(repository: Path, *arguments: str) -> str:
+    # The checkout is trusted and local; Git must not redirect to another repo.
     environment = {
-        name: value
-        for name, value in os.environ.items()
-        if not name.startswith("GIT_")
+        name: value for name, value in os.environ.items() if not name.startswith("GIT_")
     }
-    environment.update(
-        {
-            "GIT_NO_REPLACE_OBJECTS": "1",
-            "LC_ALL": "C",
-        }
+    completed = subprocess.run(
+        ["git", "--no-replace-objects", "-C", str(repository), *arguments],
+        check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        text=True, env=environment,
     )
-    return environment
+    return completed.stdout.strip()
 
 
 def _sam_modules() -> dict[str, Any]:
@@ -1043,168 +614,79 @@ def _restore_sam_modules(snapshot: dict[str, Any]) -> None:
 
 def _prepare_staging_directory(value: Path) -> Path:
     path = _local_path(value)
-    try:
-        if path.exists() or path.is_symlink():
-            status = path.lstat()
-            if stat.S_ISLNK(status.st_mode) or not stat.S_ISDIR(status.st_mode):
-                raise ValueError
-        else:
-            path.mkdir(mode=0o700, parents=True, exist_ok=False)
-        resolved = path.resolve(strict=True)
-        status = resolved.stat()
-        if (
-            resolved != path.absolute()
-            or status.st_uid != os.getuid()
-            or stat.S_IMODE(status.st_mode) & 0o077
-        ):
-            raise ValueError
-        return resolved
-    except (OSError, RuntimeError, ValueError):
-        raise ValueError from None
-
-
-def _validate_source_indices(
-    request: CvEvidenceRequest,
-    indices: tuple[int, ...],
-    *,
-    allow_empty: bool = False,
-) -> None:
-    known = {point.frame_index for point in request.timeline.frames}
-    if not indices and not allow_empty:
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    resolved = path.resolve(strict=True)
+    status = path.lstat()
+    if (
+        resolved != path.absolute() or not stat.S_ISDIR(status.st_mode)
+        or status.st_uid != os.getuid() or stat.S_IMODE(status.st_mode) & 0o077
+    ):
         raise ValueError
-    if indices != tuple(sorted(set(indices))):
-        raise ValueError
-    if any(isinstance(index, bool) or not isinstance(index, int) for index in indices):
-        raise ValueError
-    if not set(indices) <= known:
-        raise ValueError
+    return resolved
 
 
 def _validate_sampled_frames(
-    sampled: SampledFrameSet,
-    request: CvEvidenceRequest,
-    indices: tuple[int, ...],
-    destination: Path,
+    sampled: SampledFrameSet, request: CvEvidenceRequest,
+    indices: tuple[int, ...], destination: Path,
 ) -> None:
-    if not isinstance(sampled, SampledFrameSet):
-        raise TypeError
-    if len(sampled.frames) != len(indices):
-        raise ValueError
-    directory_status = destination.lstat()
-    if stat.S_ISLNK(directory_status.st_mode) or not stat.S_ISDIR(
-        directory_status.st_mode
+    clock = {point.frame_index: point.timestamp_seconds for point in request.timeline.frames}
+    if (
+        not indices or any(type(index) is not int for index in indices)
+        or indices != tuple(sorted(set(indices)))
+        or not set(indices) <= clock.keys()
+        or not isinstance(sampled, SampledFrameSet) or len(sampled.frames) != len(indices)
+        or destination.is_symlink() or not destination.is_dir()
+        or {path.name for path in destination.iterdir()}
+        != {f"{index:06d}.jpg" for index in range(len(indices))}
     ):
         raise ValueError
-    expected_names = {f"{index:06d}.jpg" for index in range(len(indices))}
-    actual_names = {entry.name for entry in destination.iterdir()}
-    if actual_names != expected_names:
-        raise ValueError
-    by_index = {point.frame_index: point for point in request.timeline.frames}
-    for local_index, (frame, source_index) in enumerate(zip(sampled.frames, indices)):
-        expected_path = destination / f"{local_index:06d}.jpg"
+    for index, (frame, source) in enumerate(zip(sampled.frames, indices)):
         if (
-            frame.sam_index != local_index
-            or frame.source_frame_index != source_index
-            or frame.source_timestamp_seconds
-            != by_index[source_index].timestamp_seconds
-            or frame.path != expected_path
+            frame.sam_index != index or frame.source_frame_index != source
+            or frame.source_timestamp_seconds != clock[source]
+            or frame.path != destination / f"{index:06d}.jpg"
+            or not stat.S_ISREG(frame.path.lstat().st_mode)
         ):
-            raise ValueError
-        status = frame.path.lstat()
-        if stat.S_ISLNK(status.st_mode) or not stat.S_ISREG(status.st_mode):
             raise ValueError
 
 
 def _sampled_frame_dimensions(sampled: SampledFrameSet) -> tuple[int, int]:
-    dimensions = tuple(_jpeg_dimensions(frame.path) for frame in sampled.frames)
-    if not dimensions or len(set(dimensions)) != 1:
+    image_module = importlib.import_module("PIL.Image")
+    dimensions = set()
+    for frame in sampled.frames:
+        with image_module.open(frame.path) as image:
+            dimensions.add((image.height, image.width))
+    if len(dimensions) != 1:
         raise ValueError
-    return dimensions[0]
-
-
-def _jpeg_dimensions(path: Path) -> tuple[int, int]:
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-    try:
-        with os.fdopen(descriptor, "rb") as source:
-            descriptor = -1
-            if source.read(2) != b"\xff\xd8":
-                raise ValueError
-            while True:
-                prefix = source.read(1)
-                if not prefix:
-                    raise ValueError
-                if prefix != b"\xff":
-                    continue
-                marker = source.read(1)
-                while marker == b"\xff":
-                    marker = source.read(1)
-                if not marker or marker in {b"\xd8", b"\x01"}:
-                    continue
-                if marker == b"\xd9":
-                    raise ValueError
-                length_payload = source.read(2)
-                if len(length_payload) != 2:
-                    raise ValueError
-                segment_length = struct.unpack(">H", length_payload)[0]
-                if segment_length < 2:
-                    raise ValueError
-                if marker[0] in {
-                    0xC0,
-                    0xC1,
-                    0xC2,
-                    0xC3,
-                    0xC5,
-                    0xC6,
-                    0xC7,
-                    0xC9,
-                    0xCA,
-                    0xCB,
-                    0xCD,
-                    0xCE,
-                    0xCF,
-                }:
-                    payload = source.read(segment_length - 2)
-                    if len(payload) < 5:
-                        raise ValueError
-                    height, width = struct.unpack(">HH", payload[1:5])
-                    if height <= 0 or width <= 0:
-                        raise ValueError
-                    return height, width
-                source.seek(segment_length - 2, os.SEEK_CUR)
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
+    return dimensions.pop()
 
 
 @contextmanager
-def _predictor_session(
-    predictor: Any, sampled: SampledFrameSet
-) -> Iterator[str]:
-    response = predictor.handle_request(
-        {
-            "type": "start_session",
-            "resource_path": str(sampled.frames[0].path.parent),
-        }
-    )
-    if not isinstance(response, Mapping):
-        raise ValueError
-    session_id = response.get("session_id")
-    if not isinstance(session_id, str) or not session_id:
-        raise ValueError
-    body_failed = False
+def _cleanup(action: Callable[[], Any]) -> Iterator[None]:
+    """Close a resource while preserving an exception from its body."""
     try:
-        yield session_id
-    except BaseException:
-        body_failed = True
-        raise
+        yield
     finally:
+        body_failed = sys.exc_info()[0] is not None
         try:
-            predictor.handle_request(
-                {"type": "close_session", "session_id": session_id}
-            )
+            action()
         except BaseException:
             if not body_failed:
                 raise _CleanupFailure from None
+
+
+@contextmanager
+def _predictor_session(predictor: Any, sampled: SampledFrameSet) -> Iterator[str]:
+    response = predictor.handle_request({
+        "type": "start_session", "resource_path": str(sampled.frames[0].path.parent),
+    })
+    session_id = response.get("session_id") if isinstance(response, Mapping) else None
+    if not isinstance(session_id, str) or not session_id:
+        raise ValueError
+    with _cleanup(lambda: predictor.handle_request({
+        "type": "close_session", "session_id": session_id,
+    })):
+        yield session_id
 
 
 def _parse_frame_response(
@@ -1319,198 +801,69 @@ def _write_npy(archive: zipfile.ZipFile, name: str, array: Any) -> None:
         numpy.save(member, array, allow_pickle=False)
 
 
-def _prompt_coverage(run: _PromptRun) -> float:
-    """Fraction of sampled frames where the prompt detected the entity."""
-    if not run.present_ids_by_frame:
-        return 0.0
-    detected = sum(1 for identifiers in run.present_ids_by_frame if identifiers)
-    return detected / len(run.present_ids_by_frame)
-
-
-def _frame_union_boxes(
-    run: _PromptRun,
-) -> dict[int, tuple[float, float, float, float]]:
-    """Per-frame union of the run's detection boxes as (x0, y0, x1, y1)."""
-    boxes: dict[int, tuple[float, float, float, float]] = {}
-    for detection in run.detections:
-        x, y, width, height = detection.box_xywh
-        candidate = (x, y, x + width, y + height)
-        existing = boxes.get(detection.local_frame_index)
-        if existing is not None:
-            candidate = (
-                min(existing[0], candidate[0]),
-                min(existing[1], candidate[1]),
-                max(existing[2], candidate[2]),
-                max(existing[3], candidate[3]),
-            )
-        boxes[detection.local_frame_index] = candidate
-    return boxes
-
-
-def _box_iou(
-    first: tuple[float, float, float, float],
-    second: tuple[float, float, float, float],
-) -> float:
-    width = min(first[2], second[2]) - max(first[0], second[0])
-    height = min(first[3], second[3]) - max(first[1], second[1])
-    if width <= 0.0 or height <= 0.0:
-        return 0.0
-    intersection = width * height
-    first_area = (first[2] - first[0]) * (first[3] - first[1])
-    second_area = (second[2] - second[0]) * (second[3] - second[1])
-    union = first_area + second_area - intersection
-    return intersection / union if union > 0.0 else 0.0
-
-
-def _alias_replacement_consistent(
-    canonical: _PromptRun, replacement: _PromptRun
-) -> bool:
-    """Do both runs point at the same physical entity where both see it?"""
-    reference = _frame_union_boxes(canonical)
-    candidate = _frame_union_boxes(replacement)
-    if not reference:
-        return True
-    common = sorted(set(reference) & set(candidate))
-    if len(common) < _ALIAS_CONSISTENCY_MIN_FRAMES:
-        return False
-    overlaps = sorted(
-        _box_iou(reference[index], candidate[index]) for index in common
-    )
-    return overlaps[len(overlaps) // 2] >= _ALIAS_CONSISTENCY_MIN_IOU
-
-
-def _visibility_change_source_indices(
-    prompt_runs: tuple[_PromptRun, ...], sampled: SampledFrameSet
-) -> tuple[int, ...]:
-    changed: set[int] = set()
-    for prompt_run in prompt_runs:
-        object_ids = sorted(set().union(*prompt_run.present_ids_by_frame))
-        for object_id in object_ids:
-            previous = object_id in prompt_run.present_ids_by_frame[0]
-            for local_index, present_ids in enumerate(
-                prompt_run.present_ids_by_frame[1:], start=1
-            ):
-                current = object_id in present_ids
-                if current != previous:
-                    changed.add(sampled.frames[local_index].source_frame_index)
-                previous = current
-    return tuple(sorted(changed))
-
-
 def _build_artifact(
-    request: CvEvidenceRequest,
-    staging: Path,
-    sampled: SampledFrameSet,
-    prompt_runs: tuple[_PromptRun, ...],
-    output_directories: list[Path],
-    budget: _ArtifactBudget,
+    request: CvEvidenceRequest, staging: Path, sampled: SampledFrameSet,
+    run: _PromptRun, output_directories: list[Path], budget: _ArtifactBudget,
     overlay_renderer: Callable[..., None],
 ) -> CvEvidenceArtifact:
-    artifact_files: list[ArtifactFile] = []
-    overlay_records: list[OverlayRecord] = []
-    tracks: list[CvTrack] = []
-    for prompt_run in prompt_runs:
-        mask_relative = prompt_run.mask_relative
-        if mask_relative is None:
-            raise ValueError
-        mask_path = staging / mask_relative
-        ordered_detections = tuple(
-            sorted(
-                prompt_run.detections,
-                key=lambda item: (item.local_frame_index, item.object_id),
-            )
+    files = [_artifact_file(staging, staging / run.mask_relative)]
+    records: list[OverlayRecord] = []
+    tracks = tuple(
+        CvTrack(
+            track_id=f"{run.entity_id}_{object_id}", entity_id=run.entity_id,
+            observations=tuple(
+                _observation(item, run.mask_relative) for item in run.detections
+                if item.object_id == object_id
+            ),
         )
-        artifact_files.append(_artifact_file(staging, mask_path))
-        object_ids = sorted({item.object_id for item in ordered_detections})
-        for object_id in object_ids:
-            observations = tuple(
-                _observation(detection, mask_relative)
-                for detection in ordered_detections
-                if detection.object_id == object_id
-            )
-            tracks.append(
-                CvTrack(
-                    track_id=f"{prompt_run.entity_id}_{object_id}",
-                    entity_id=prompt_run.entity_id,
-                    observations=observations,
-                )
-            )
-
-    overlays = _select_overlays(prompt_runs)
-    if request.spatial_prompts:
-        reference_frames = {
-            prompt.entity_id: prompt.frame_index for prompt in request.spatial_prompts
-        }
-        references = tuple(
-            (run.entity_id, item.object_id, item)
-            for run in prompt_runs for item in run.detections
-            if item.source_frame_index == reference_frames.get(run.entity_id)
-        )
-        reference_keys = {
-            (entity, obj, item.source_frame_index) for entity, obj, item in references
-        }
-        overlays = references + tuple(
-            entry for entry in overlays
-            if (entry[0], entry[1], entry[2].source_frame_index) not in reference_keys
-        )
+        for object_id in sorted({item.object_id for item in run.detections})
+    )
+    references = tuple(
+        item for item in run.detections
+        if item.source_frame_index == request.spatial_prompts[0].frame_index
+    )
+    reference_keys = {(item.object_id, item.source_frame_index) for item in references}
+    overlays = references + tuple(
+        item for item in _select_overlays(run)
+        if (item.object_id, item.source_frame_index) not in reference_keys
+    )
     if overlays:
-        overlays_directory = _create_private_directory(staging / "overlays")
-        output_directories.append(overlays_directory)
-        for entity_id, object_id, detection in overlays[:_MAX_OVERLAYS]:
-            prompt_run = next(
-                item for item in prompt_runs if item.entity_id == entity_id
-            )
-            if prompt_run.mask_relative is None or detection.mask_index < 0:
-                raise ValueError
+        output_directories.append(_create_private_directory(staging / "overlays"))
+        for item in overlays[:MAX_OVERLAYS]:
             budget.reserve(
-                (prompt_run.mask_height * prompt_run.mask_width * 3)
-                + _ZIP_ENTRY_ALLOWANCE,
-                file_count=1,
+                run.mask_height * run.mask_width * 3 + _ZIP_ENTRY_ALLOWANCE, file_count=1
             )
             relative = (
-                f"overlays/{entity_id}-{object_id}-"
-                f"{detection.source_frame_index:08d}.png"
+                f"overlays/{run.entity_id}-{item.object_id}-{item.source_frame_index:08d}.png"
             )
-            overlay_path = staging / relative
-            x, y, width, height = detection.box_xywh
+            x, y, width, height = item.box_xywh
             overlay_renderer(
-                frame_path=sampled.frames[detection.local_frame_index].path,
-                archive_path=staging / prompt_run.mask_relative,
-                mask_member=f"masks/{detection.mask_index:08d}.npy",
-                bbox_xyxy=(x, y, x + width, y + height),
-                destination=overlay_path,
+                frame_path=sampled.frames[item.local_frame_index].path,
+                archive_path=staging / run.mask_relative,
+                mask_member=f"masks/{item.mask_index:08d}.npy",
+                bbox_xyxy=(x, y, x + width, y + height), destination=staging / relative,
             )
-            overlay_file = _artifact_file(staging, overlay_path)
+            overlay_file = _artifact_file(staging, staging / relative)
             budget.record_file(overlay_file.size_bytes)
-            artifact_files.append(overlay_file)
-            overlay_records.append(
-                OverlayRecord(
-                    path=relative,
-                    track_id=f"{entity_id}_{object_id}",
-                    frame_index=detection.source_frame_index,
-                )
-            )
-
+            files.append(overlay_file)
+            records.append(OverlayRecord(
+                path=relative, track_id=f"{run.entity_id}_{item.object_id}",
+                frame_index=item.source_frame_index,
+            ))
     return CvEvidenceArtifact(
-        schema_version="cv_evidence_v1",
-        status=EvidenceStatus.AVAILABLE,
-        provider="sam31",
-        model_identity=request.model_identity,
-        video_identity=request.video_identity,
-        checkpoint_identity=request.checkpoint_identity,
-        processed_timeline=FrameTimeline(
-            frames=tuple(
-                FrameTimestamp(
-                    frame_index=frame.source_frame_index,
-                    timestamp_seconds=frame.source_timestamp_seconds,
-                )
-                for frame in sampled.frames
+        schema_version="cv_evidence_v1", status=EvidenceStatus.AVAILABLE,
+        provider="sam31", model_identity=request.model_identity,
+        video_identity=request.video_identity, checkpoint_identity=request.checkpoint_identity,
+        processed_timeline=FrameTimeline(frames=tuple(
+            FrameTimestamp(
+                frame_index=frame.source_frame_index,
+                timestamp_seconds=frame.source_timestamp_seconds,
             )
-        ),
-        entities=request.entities,
-        tracks=tuple(tracks),
-        files=tuple(sorted(artifact_files, key=lambda item: item.path)),
-        overlay_records=tuple(sorted(overlay_records, key=lambda item: item.path)),
+            for frame in sampled.frames
+        )),
+        entities=request.entities, tracks=tracks,
+        files=tuple(sorted(files, key=lambda item: item.path)),
+        overlay_records=tuple(sorted(records, key=lambda item: item.path)),
     )
 
 
@@ -1528,40 +881,18 @@ def _observation(detection: _Detection, mask_relative: str) -> TrackObservation:
     )
 
 
-def _select_overlays(
-    prompt_runs: tuple[_PromptRun, ...],
-) -> tuple[tuple[str, int, _Detection], ...]:
-    selected: dict[tuple[str, int, int], _Detection] = {}
-    for prompt_run in prompt_runs:
-        by_frame_and_object = {
-            (item.local_frame_index, item.object_id): item
-            for item in prompt_run.detections
-        }
-        object_ids = sorted(set().union(*prompt_run.present_ids_by_frame))
-        for object_id in object_ids:
-            previous = object_id in prompt_run.present_ids_by_frame[0]
-            for local_index, present_ids in enumerate(
-                prompt_run.present_ids_by_frame[1:], start=1
-            ):
-                current = object_id in present_ids
-                if current != previous:
-                    candidates = (
-                        by_frame_and_object.get((local_index - 1, object_id)),
-                        by_frame_and_object.get((local_index, object_id)),
-                    )
-                    for detection in candidates:
-                        if detection is not None:
-                            key = (
-                                prompt_run.entity_id,
-                                object_id,
-                                detection.source_frame_index,
-                            )
-                            selected.setdefault(key, detection)
-                previous = current
-    return tuple(
-        (entity_id, object_id, selected[(entity_id, object_id, frame_index)])
-        for entity_id, object_id, frame_index in sorted(selected)
-    )
+def _select_overlays(run: _PromptRun) -> tuple[_Detection, ...]:
+    detections = {(item.local_frame_index, item.object_id): item for item in run.detections}
+    selected: dict[tuple[int, int], _Detection] = {}
+    for index, (before, after) in enumerate(zip(
+        run.present_ids_by_frame, run.present_ids_by_frame[1:]
+    ), start=1):
+        for object_id in before ^ after:
+            for frame_index in (index - 1, index):
+                item = detections.get((frame_index, object_id))
+                if item is not None:
+                    selected[(object_id, item.source_frame_index)] = item
+    return tuple(selected[key] for key in sorted(selected))
 
 
 def _create_private_directory(path: Path) -> Path:
@@ -1609,40 +940,18 @@ def _render_context_overlay(
 
 
 def _write_exclusive_bytes(path: Path, payload: memoryview) -> None:
-    descriptor = os.open(
-        path,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-        0o600,
-    )
-    try:
-        view = payload
-        while view:
-            written = os.write(descriptor, view)
-            if written <= 0:
-                raise OSError
-            view = view[written:]
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as output:
+        output.write(payload)
+        output.flush()
+        os.fsync(output.fileno())
 
 
 def _artifact_file(staging: Path, path: Path) -> ArtifactFile:
-    size = 0
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-    try:
-        status = os.fstat(descriptor)
-        if not stat.S_ISREG(status.st_mode):
-            raise ValueError
-        while payload := os.read(descriptor, _HASH_READ_BYTES):
-            size += len(payload)
-        if size != status.st_size:
-            raise ValueError
-    finally:
-        os.close(descriptor)
-    return ArtifactFile(
-        path=path.relative_to(staging).as_posix(),
-        size_bytes=size,
-    )
+    status = path.lstat()
+    if not stat.S_ISREG(status.st_mode):
+        raise ValueError
+    return ArtifactFile(path=path.relative_to(staging).as_posix(), size_bytes=status.st_size)
 
 
 def _reset_peak_memory(torch_module: Any) -> None:
@@ -1679,24 +988,3 @@ def _positive_integer(value: int, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{name} must be a positive integer")
     return value
-
-
-def _remove_tree(path: Path) -> None:
-    try:
-        status = path.lstat()
-    except FileNotFoundError:
-        return
-    if stat.S_ISLNK(status.st_mode) or not stat.S_ISDIR(status.st_mode):
-        raise OSError("refusing to remove a replaced cleanup directory")
-    for directory in [path, *path.rglob("*")]:
-        try:
-            if directory.is_dir() and not directory.is_symlink():
-                directory.chmod(0o700)
-        except OSError:
-            pass
-    shutil.rmtree(path)
-    try:
-        path.lstat()
-    except FileNotFoundError:
-        return
-    raise OSError("cleanup directory still exists")
