@@ -18,13 +18,12 @@ def payload(root):
         checkpoint_identity='fixture-checkpoint', duration_seconds=1.0, frame_count=1,
         timeline={'frames': [{'frame_index': 0, 'timestamp_seconds': 0.0}]}, entities=[{'entity_id': 'target', 'canonical_label': 'target'}],
         sampling={'max_fps': 4.0},
-        spatial_prompts=[{'entity_id': 'target', 'frame_index': 0, 'bbox_xyxy': [0.1, 0.1, 0.8, 0.8]}],
-        thresholds={'min_confidence': 0.1})
+        spatial_prompts=[{'entity_id': 'target', 'frame_index': 0, 'bbox_xyxy': [0.1, 0.1, 0.8, 0.8]}])
 
 
 class CountingProvider:
     def __init__(self, *, oom=False):
-        self.execution_chunk_frames = 1
+        self.execution_chunk_frames = 8
         self._metrics = {}
         self.calls = 0
         self.closed = False
@@ -59,7 +58,7 @@ class LazyCvTests(unittest.TestCase):
         self.settings = Settings(cv_cache_root=self.root / 'cache',
             cv_repository_path=self.root / 'missing-sam',
             cv_checkpoint_path=self.root / 'missing-checkpoint',
-            cv_bpe_path=self.root / 'missing-bpe', cv_execution_chunk_frames=8)
+            cv_bpe_path=self.root / 'missing-bpe')
 
     def assets(self):
         self.settings.cv_repository_path.mkdir()

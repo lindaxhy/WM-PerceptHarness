@@ -2,58 +2,18 @@
 
 from __future__ import annotations
 
-import math
 import re
 from pathlib import Path
-from typing import Annotated, Any, Literal, Self
+from typing import Any, Literal, Self
 
-from pydantic import BeforeValidator, Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-
-def _integer(value: Any) -> int:
-    if isinstance(value, bool):
-        raise ValueError("value must be an integer")
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str) and re.fullmatch(r"[+-]?[0-9]+", value):
-        return int(value)
-    raise ValueError("value must be an integer")
-
-
-def _finite_number(value: Any) -> float:
-    if isinstance(value, bool):
-        raise ValueError("value must be a finite number")
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        raise ValueError("value must be a finite number") from None
-    if not math.isfinite(parsed):
-        raise ValueError("value must be a finite number")
-    return parsed
-
-
-def _strict_boolean(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str) and value.lower() in {"true", "false"}:
-        return value.lower() == "true"
-    raise ValueError("value must be a boolean")
-
-
-StrictInteger = Annotated[int, BeforeValidator(_integer)]
-NonnegativeInteger = Annotated[StrictInteger, Field(ge=0)]
-PositiveInteger = Annotated[StrictInteger, Field(gt=0)]
-FiniteNumber = Annotated[float, BeforeValidator(_finite_number)]
-PositiveFinite = Annotated[FiniteNumber, Field(gt=0)]
-PositiveFraction = Annotated[FiniteNumber, Field(gt=0, le=1)]
-StrictEnvironmentBool = Annotated[bool, BeforeValidator(_strict_boolean)]
 
 
 class Settings(BaseSettings):
     """Configuration for the local evaluation harness."""
 
-    model_config = SettingsConfigDict(env_prefix="PERCEPT_", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="PERCEPT_", extra="ignore", allow_inf_nan=False)
 
     # Local workspace and model selection.
     work_root: Path = Path("work")
@@ -65,26 +25,20 @@ class Settings(BaseSettings):
     openai_response_format: Literal["json_schema", "json_object", "none"] = "json_object"
     openai_extra_body: dict[str, Any] = Field(default_factory=dict)
     openai_extra_headers: dict[str, str] = Field(default_factory=dict)
-    openai_timeout_seconds: PositiveFinite = 180.0
+    openai_timeout_seconds: float = Field(default=180.0, gt=0)
     # Replay validated per-request results for byte-identical inputs across
     # repair-loop retries and task reruns (openai backend only).
-    semantic_result_cache: StrictEnvironmentBool = True
+    semantic_result_cache: bool = True
     openai_proxy: SecretStr | None = None
     event_workflow: Literal["reviewed", "confidence-gated"] = "reviewed"
     # Optional computer-vision evidence.
-    cv_device: NonnegativeInteger = 3
+    cv_device: int = Field(default=3, ge=0)
     cv_provider: Literal["disabled", "sam31"] = "sam31"
-    cv_model_alias: Literal["sam3.1"] = "sam3.1"
     cv_repository_path: Path = Path("models/sam3")
     cv_checkpoint_path: Path = Path("models/sam3/checkpoints/sam3.pt")
     cv_bpe_path: Path = Path("models/sam3/sam3/assets/bpe_simple_vocab_16e6.txt.gz")
     cv_cache_root: Path = Path("work/cv-cache")
-    cv_cache_max_bytes: PositiveInteger = 8 * 1024 * 1024 * 1024
-    cv_cache_max_files: PositiveInteger = 10_000
-    cv_max_fps: PositiveFinite = 30.0
-    cv_min_confidence: PositiveFraction = 0.5
-    cv_execution_chunk_frames: PositiveInteger = 8
-    cv_compile_model: StrictEnvironmentBool = False
+    cv_max_fps: float = Field(default=30.0, gt=0)
 
     @property
     def openai_model_aliases(self) -> dict[str, str]:

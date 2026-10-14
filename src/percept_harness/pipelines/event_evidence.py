@@ -5,7 +5,7 @@ import hashlib
 import re
 import unicodedata
 from ..cv.artifacts import CvArtifactStore, CvArtifactHandle, cv_cache_key
-from ..cv.contracts import CvEvidenceRequest, SamplingPolicy, EvidenceThresholds, FrameTimeline, SpatialPrompt, EntityPrompt
+from ..cv.contracts import CvEvidenceRequest, SamplingPolicy, FrameTimeline, SpatialPrompt, EntityPrompt
 from ..cv.timeline import probe_frame_timeline
 from ..models.base import VisualEvidence
 from .base import SafePipelineError
@@ -82,18 +82,16 @@ class EvidenceOrchestrator:
         spatial = SpatialPrompt(entity_id=entity.entity_id,
                                 frame_index=reference.frame_index, bbox_xyxy=target.bbox_xyxy)
         request = CvEvidenceRequest(schema_version='cv_request_v1', provider=settings.cv_provider,
-            model_identity=settings.cv_model_alias, video_path=self.media_path, video_identity=self.video_identity,
-            duration_seconds=self.duration, frame_count=len(self.timeline.frames), checkpoint_identity=(local_asset_identity(settings.cv_checkpoint_path)
-                if settings.cv_checkpoint_path else settings.cv_model_alias),
+            model_identity="sam3.1", video_path=self.media_path, video_identity=self.video_identity,
+            duration_seconds=self.duration, frame_count=len(self.timeline.frames), checkpoint_identity=local_asset_identity(settings.cv_checkpoint_path),
             timeline=selected, entities=(entity,), mode=mode, spatial_prompts=(spatial,),
-            sampling=SamplingPolicy(max_fps=settings.cv_max_fps),
-            thresholds=EvidenceThresholds(min_confidence=settings.cv_min_confidence))
+            sampling=SamplingPolicy(max_fps=settings.cv_max_fps))
         result = self.context.executor.execute('cv_evidence', request.model_dump(mode='json'))
         if result.get('status') != 'available' or result.get('artifact_key') != cv_cache_key(request):
             raise SafePipelineError('Targeted SAM evidence unavailable or mismatched')
         handle = CvArtifactHandle(result['artifact_key'])
         scope = f'{mode}_{ordinal}'
-        with CvArtifactStore(settings.cv_cache_root, max_files=settings.cv_cache_max_files, max_bytes=settings.cv_cache_max_bytes) as store:
+        with CvArtifactStore(settings.cv_cache_root) as store:
             artifact = store.load(handle)
             if artifact.video_identity != self.video_identity or artifact.entities != request.entities or artifact.provider != request.provider:
                 raise SafePipelineError('SAM artifact does not match the evidence request')

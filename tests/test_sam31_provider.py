@@ -43,7 +43,7 @@ def parse(response, tmp_path, writer):
 
 
 def test_strided_masks_roundtrip_and_sorted_metadata_keep_source_mapping(tmp_path):
-    budget = sam31._ArtifactBudget(100_000, 10)
+    budget = sam31._ArtifactBudget()
     path = tmp_path / "masks.npz"
     writer = sam31._MaskArchiveWriter(path, budget)
     _, detections = parse(arrays(), tmp_path, writer)
@@ -67,7 +67,7 @@ def test_strided_masks_roundtrip_and_sorted_metadata_keep_source_mapping(tmp_pat
 def test_removed_and_empty_masks_do_not_create_tracks_or_mask_members(tmp_path):
     response = arrays(ids=(1, 2, 3), probabilities=(-10000.0, 0.8, 0.9))
     response["outputs"]["out_binary_masks"][1] = False
-    writer = sam31._MaskArchiveWriter(tmp_path / "masks.npz", sam31._ArtifactBudget(100_000, 10))
+    writer = sam31._MaskArchiveWriter(tmp_path / "masks.npz", sam31._ArtifactBudget())
     _, detections = parse(response, tmp_path, writer)
     writer.finish(detections, sampled(tmp_path))
     assert [item.object_id for item in detections] == [3]
@@ -125,7 +125,7 @@ def provider(predictor, **options):
     )
 
 
-def test_resource_failure_closes_session_stream_and_removes_partial_outputs(tmp_path):
+def test_resource_failure_closes_session_stream_and_removes_partial_outputs(tmp_path, monkeypatch):
     class StreamingPredictor(Predictor):
         stream_closed = False
 
@@ -140,7 +140,8 @@ def test_resource_failure_closes_session_stream_and_removes_partial_outputs(tmp_
     predictor = StreamingPredictor()
     tmp_path.chmod(0o700)
     with pytest.raises(CvProviderError):
-        provider(predictor, max_artifact_bytes=1100).analyze(request(), tmp_path)
+        monkeypatch.setattr(sam31, "MAX_ARTIFACT_BYTES", 1100)
+        provider(predictor).analyze(request(), tmp_path)
     assert predictor.stream_closed
     assert predictor.calls[-1]["type"] == "close_session"
     assert list(tmp_path.iterdir()) == []
@@ -314,6 +315,7 @@ def test_loader_uses_local_assets_without_copying_and_restores_imports(tmp_path,
     try:
         assert builder_arguments["checkpoint_path"] == str(checkpoint)
         assert builder_arguments["bpe_path"] == str(repository / sam31._BPE_REPOSITORY_PATH)
+        assert set(builder_arguments) == {"checkpoint_path", "bpe_path", "use_fa3"}
         assert checkpoint.read_bytes() == b"checkpoint"
     finally:
         instance.close()
@@ -390,9 +392,9 @@ def test_load_failure_shuts_down_allocated_predictor(tmp_path, monkeypatch):
     monkeypatch.setattr(sam31.importlib, "import_module", lambda name: (
         SimpleNamespace() if name == "torch" else original_import(name)
     ))
+    predictor.handle_stream_request = None
     with pytest.raises(CvProviderError):
         sam31.Sam31EvidenceProvider.load(
             repository, checkpoint, predictor_factory=lambda **kwargs: predictor,
-            max_artifact_bytes=0,
         )
     assert shutdown == [True]

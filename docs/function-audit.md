@@ -1,3 +1,19 @@
+# 配置与上游默认值精简（2026-10-14）
+
+本轮以 `0800cfc` 为基线，按功能必要性和上游默认行为审查，而不是按是否存在调用保留接口。
+
+- 删除配置的三个手写解析函数、七个类型别名；Pydantic 直接解析环境变量，保留正数、非负数及有限值限制。接受标准布尔／数字转换。
+- 删除六个 CV 设置及传递链：模型别名、置信度、编译开关、执行分块、缓存文件数、缓存字节数。
+- 删除 `EvidenceThresholds`；SAM 使用固定上游版本的默认置信度 0.5、compile=False、对象容量 16。保留 `use_fa3=False`，因为它与上游默认不同，关系到运行依赖。
+- 删除文件计数预算、配置 setter 包装、整数检查助手和动态 provider 兼容分支。执行器直接调用协议方法并在 OOM 后将分块减半。字节上限保留为内部存储边界。
+- 清理无效 checkpoint SHA256 环境示例；同步请求 fixtures 和使用文档。旧 CV 请求缓存 key 自然失效，已完成标注的跳过规则不变。
+
+上游核查：[固定版本 builder](https://github.com/facebookresearch/sam3/blob/660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7/sam3/model_builder.py#L1005-L1016)、[请求默认参数](https://github.com/facebookresearch/sam3/blob/660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7/sam3/model/sam3_base_predictor.py)。
+
+验证：130 项测试通过，core 安装检查 6/6，离线 wheel 构建通过；未运行真实 GPU/SAM 或付费 API 推理。
+
+以下为此前审查历史，部分“保留”结论已被本轮替代。
+
 # 全源码精简审查
 
 本轮基线：`0f0eaf9`。三个并行 agent 与主 agent 分工审查全部 **36 个 `src/` Python 文件**，追踪调用方后落实删减；另检查并更新安装验证脚本。没有新建生产模块，也没有压缩排版来减少行数。

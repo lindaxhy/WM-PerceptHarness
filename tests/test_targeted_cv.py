@@ -24,8 +24,7 @@ def request(**updates):
         timeline={'frames': [{'frame_index': i, 'timestamp_seconds': t} for i,t in [(20,2.0),(30,3.0),(40,4.0)]]},
         entities=[{'entity_id':'cup','canonical_label':'red cup'}],
         sampling={'max_fps':4.0},
-        spatial_prompts=[spatial()],
-        thresholds={'min_confidence':0.1})
+        spatial_prompts=[spatial()])
     payload.update(updates)
     return CvEvidenceRequest.model_validate(payload)
 

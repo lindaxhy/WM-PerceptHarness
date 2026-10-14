@@ -221,7 +221,21 @@ Targeted tracking samples the selected window at `PERCEPT_CV_MAX_FPS` and always
 includes its reference frame. OOM retries use the same original frame indices.
 Unused full-video scan/refinement settings and area/occlusion thresholds were
 removed. Shared limits cover overlays (24), processed frames (10,000) and total
-observations (64,000); cache file/byte budgets remain configurable.
+observations (64,000). SAM uses its pinned upstream defaults for confidence
+(0.5), compilation (off), and object capacity (16). These defaults are not
+separate environment settings. Artifact byte limits are internal storage
+bounds, not model parameters or limits on the entire cache directory.
+
+The retired `PERCEPT_CV_MIN_CONFIDENCE`, `PERCEPT_CV_MODEL_ALIAS`,
+`PERCEPT_CV_COMPILE_MODEL`, `PERCEPT_CV_EXECUTION_CHUNK_FRAMES`,
+`PERCEPT_CV_CACHE_MAX_FILES`, and `PERCEPT_CV_CACHE_MAX_BYTES` variables are
+ignored; remove them from existing environments. CV requests no longer carry
+a configurable confidence threshold, so previous CV cache keys are not reused.
+Completed annotations still follow the existing resume rules.
+
+Environment numbers and booleans use Pydantic Settings parsing, including
+standard boolean spellings such as `true`/`false` and `1`/`0`. FPS and timeouts
+must remain finite and positive.
 
 ## Video frame sampling
 

@@ -16,8 +16,7 @@ def cache_request():
         duration_seconds=1.0, frame_count=1,
         timeline={'frames': [{'frame_index': 0, 'timestamp_seconds': 0.0}]},
         entities=[{'entity_id': 'target', 'canonical_label': 'target'}], sampling={'max_fps': 4.0},
-        spatial_prompts=[{'entity_id': 'target', 'frame_index': 0, 'bbox_xyxy': [0.1, 0.1, 0.8, 0.8]}],
-        thresholds={'min_confidence': 0.1}))
+        spatial_prompts=[{'entity_id': 'target', 'frame_index': 0, 'bbox_xyxy': [0.1, 0.1, 0.8, 0.8]}]))
 
 
 def cache_artifact(request, stage, content=b'mask'):
@@ -85,7 +84,7 @@ def test_failed_publication_leaves_no_result_or_staging(tmp_path):
 @pytest.mark.parametrize('kind', ['symlink', 'hardlink', 'extra', 'oversize', 'fifo'])
 def test_invalid_artifact_files_cannot_be_published(tmp_path, kind):
     request = cache_request()
-    with CvArtifactStore(tmp_path / 'cache', max_bytes=4) as store:
+    with CvArtifactStore(tmp_path / 'cache') as store:
         with store.staging(cv_cache_key(request)) as stage:
             artifact = cache_artifact(request, stage)
             mask = stage / 'masks/fixture.mask'

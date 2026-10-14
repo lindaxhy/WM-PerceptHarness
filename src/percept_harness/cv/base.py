@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 from .contracts import CvEvidenceArtifact, CvEvidenceRequest
 
@@ -16,9 +16,13 @@ class CvOutOfMemoryError(CvProviderError):
     """A provider-reported allocation failure eligible for one retry."""
 
 
-@runtime_checkable
 class CvEvidenceProvider(Protocol):
+    execution_chunk_frames: int
+
     def analyze(
         self, request: CvEvidenceRequest, staging_dir: Path
     ) -> CvEvidenceArtifact:
         """Write provider-owned files and return their strict manifest."""
+
+    def request_metrics(self) -> dict[str, int]:
+        """Return execution metrics for the most recent completed request."""

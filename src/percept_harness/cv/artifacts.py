@@ -18,10 +18,11 @@ import stat
 import tempfile
 from typing import Iterator
 
-from .contracts import CvEvidenceArtifact, CvEvidenceRequest, MAX_OVERLAYS
+from .contracts import CvEvidenceArtifact, CvEvidenceRequest, MAX_ARTIFACT_BYTES, MAX_OVERLAYS
 
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _MANIFEST_NAME = "manifest.json"
+_MAX_MANIFEST_BYTES = 8 * 1024**2
 
 
 class CvArtifactError(RuntimeError):
@@ -49,21 +50,13 @@ def cv_cache_key(request: CvEvidenceRequest) -> str:
 class CvArtifactStore:
     """Validate files once per read and publish complete directories by rename."""
 
-    def __init__(self, root: Path, *, max_files: int = 10_000,
-                 max_bytes: int = 8 * 1024**3,
-                 max_manifest_bytes: int = 8 * 1024**2) -> None:
-        if any(type(value) is not int or value <= 0
-               for value in (max_files, max_bytes, max_manifest_bytes)):
-            raise ValueError("artifact limits must be positive integers")
+    def __init__(self, root: Path) -> None:
         root = Path(root).absolute()
         if root.is_symlink():
             raise CvArtifactError("CV cache root must not be a symlink")
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         self._root = root.resolve()
         self._directory(self._root, private=True)
-        self._max_files = max_files
-        self._max_bytes = max_bytes
-        self._max_manifest_bytes = max_manifest_bytes
         self._staging: dict[Path, tuple[str, int, int]] = {}
         self._closed = False
 
@@ -157,7 +150,7 @@ class CvArtifactStore:
             self._validate_files(stage, artifact, include_manifest=False)
             manifest = _canonical_json({"cache_identity": _cache_identity(request),
                                         "artifact": artifact.model_dump(mode="json")})
-            if len(manifest) > self._max_manifest_bytes:
+            if len(manifest) > _MAX_MANIFEST_BYTES:
                 raise ValueError("manifest exceeds byte budget")
             with (stage / _MANIFEST_NAME).open("xb") as stream:
                 stream.write(manifest)
@@ -224,8 +217,8 @@ class CvArtifactStore:
     def _validate_entry(self, entry: Path, key: str) -> CvEvidenceArtifact:
         self._directory(entry, private=True)
         with self._open_file(entry, _MANIFEST_NAME) as stream:
-            data = stream.read(self._max_manifest_bytes + 1)
-        if len(data) > self._max_manifest_bytes:
+            data = stream.read(_MAX_MANIFEST_BYTES + 1)
+        if len(data) > _MAX_MANIFEST_BYTES:
             raise ValueError("manifest exceeds byte budget")
         payload = json.loads(data)
         if type(payload) is not dict or set(payload) != {"cache_identity", "artifact"}:
@@ -261,24 +254,26 @@ class CvArtifactStore:
     def _validate_files(self, directory: Path, artifact: CvEvidenceArtifact, *, include_manifest: bool) -> None:
         self._directory(directory, private=True)
         files = {file.path: file for file in artifact.files}
-        if (len(files) > self._max_files
-                or _MANIFEST_NAME in files or sum(file.size_bytes for file in files.values()) > self._max_bytes):
+        if (_MANIFEST_NAME in files
+                or sum(file.size_bytes for file in files.values()) > MAX_ARTIFACT_BYTES):
             raise ValueError("artifact file budget exceeded")
         expected = set(files) | ({_MANIFEST_NAME} if include_manifest else set())
         directories = {parent.as_posix() for name in files for parent in Path(name).parents if parent != Path('.')}
         seen, seen_directories = set(), set()
         # os.walk does not follow symlinks; explicitly reject them and special files.
-        count = 0
         for parent, dirs, names in os.walk(directory, followlinks=False):
-            count += len(dirs) + len(names)
-            if count > max(64, self._max_files * 4):
-                raise ValueError("artifact tree budget exceeded")
             for name in dirs:
                 path = Path(parent) / name
+                relative = path.relative_to(directory).as_posix()
+                if relative not in directories:
+                    raise ValueError("artifact files do not match manifest")
                 self._directory(path)
-                seen_directories.add(path.relative_to(directory).as_posix())
+                seen_directories.add(relative)
             for name in names:
-                seen.add((Path(parent) / name).relative_to(directory).as_posix())
+                relative = (Path(parent) / name).relative_to(directory).as_posix()
+                if relative not in expected:
+                    raise ValueError("artifact files do not match manifest")
+                seen.add(relative)
         if seen != expected or seen_directories != directories:
             raise ValueError("artifact files do not match manifest")
         for name, file in files.items():

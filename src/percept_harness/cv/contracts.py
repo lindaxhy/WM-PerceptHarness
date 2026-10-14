@@ -19,6 +19,7 @@ from pydantic import (
 
 
 # Shared limits used by schema validation and the SAM/cache runtime.
+MAX_ARTIFACT_BYTES = 8 * 1024**3
 MAX_OVERLAYS = 24
 MAX_PROCESSED_FRAMES = 10_000
 MAX_OBSERVATIONS = 64_000
@@ -104,10 +105,6 @@ class SamplingPolicy(StrictModel):
     max_fps: PositiveTimestamp
 
 
-class EvidenceThresholds(StrictModel):
-    min_confidence: Confidence
-
-
 class SpatialPrompt(StrictModel):
     """One entity's reference box on the original decoder-order timeline."""
 
@@ -137,7 +134,6 @@ class CvEvidenceRequest(StrictModel):
         tuple[EntityPrompt, ...], Field(min_length=1, max_length=1)
     ]
     sampling: SamplingPolicy
-    thresholds: EvidenceThresholds
     mode: Literal["probe", "track"] = "track"
     spatial_prompts: Annotated[
         tuple[SpatialPrompt, ...], Field(min_length=1, max_length=1)

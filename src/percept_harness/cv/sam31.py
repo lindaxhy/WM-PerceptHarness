@@ -25,6 +25,7 @@ import zipfile
 from .base import CvOutOfMemoryError, CvProviderError
 from .contracts import (
     ArtifactFile,
+    MAX_ARTIFACT_BYTES,
     MAX_OVERLAYS,
     CvEvidenceArtifact,
     CvEvidenceRequest,
@@ -49,9 +50,8 @@ _OOM_FAILURE = "SAM3.1 CV evidence inference ran out of memory"
 _CLOSE_FAILURE = "Unable to close SAM3.1 runtime"
 _logger = logging.getLogger(__name__)
 _HASH_READ_BYTES = 1024 * 1024
+# Maximum candidates returned by the pinned upstream builder default.
 _MAX_OBJECTS = 16
-_DEFAULT_MAX_ARTIFACT_BYTES = 8 * 1024 * 1024 * 1024
-_DEFAULT_MAX_ARTIFACT_FILES = 10_000
 _ZIP_ENTRY_ALLOWANCE = 1024
 _BPE_REPOSITORY_PATH = "sam3/assets/bpe_simple_vocab_16e6.txt.gz"
 # Pinned sam3_multiplex_base.py uses this score for removed objects.
@@ -90,24 +90,19 @@ class _CleanupFailure(Exception):
 
 @dataclass(slots=True)
 class _ArtifactBudget:
-    max_bytes: int
-    max_files: int
     projected_bytes: int = 0
     actual_bytes: int = 0
-    files: int = 0
 
-    def reserve(self, byte_count: int, *, file_count: int = 0) -> None:
-        if byte_count < 0 or file_count < 0:
+    def reserve(self, byte_count: int) -> None:
+        if byte_count < 0:
             raise ValueError
         projected = self.projected_bytes + byte_count
-        files = self.files + file_count
-        if projected > self.max_bytes or files > self.max_files:
+        if projected > MAX_ARTIFACT_BYTES:
             raise ValueError
         self.projected_bytes = projected
-        self.files = files
 
     def record_file(self, size: int) -> None:
-        if size < 0 or self.actual_bytes + size > self.max_bytes:
+        if size < 0 or self.actual_bytes + size > MAX_ARTIFACT_BYTES:
             raise ValueError
         self.actual_bytes += size
 
@@ -116,7 +111,7 @@ class _MaskArchiveWriter:
     """Incrementally deflate one prompt's masks without retaining mask tensors."""
 
     def __init__(self, path: Path, budget: _ArtifactBudget) -> None:
-        budget.reserve(_ZIP_ENTRY_ALLOWANCE, file_count=1)
+        budget.reserve(_ZIP_ENTRY_ALLOWANCE)
         self.path = path
         self.budget = budget
         self.mask_count = 0
@@ -196,12 +191,9 @@ class Sam31EvidenceProvider:
         *,
         predictor: Any,
         torch_module: Any,
-        execution_chunk_frames: int = 8,
         materialize_frames: Callable[..., SampledFrameSet] = materialize_sampled_frames,
         initial_sampler: Callable[..., tuple[int, ...]] = initial_sample_indices,
         repository_revision: str = _PINNED_REPOSITORY_REVISION,
-        max_artifact_bytes: int = _DEFAULT_MAX_ARTIFACT_BYTES,
-        max_artifact_files: int = _DEFAULT_MAX_ARTIFACT_FILES,
         overlay_renderer: Callable[..., None] | None = None,
         import_snapshot: dict[str, Any] | None = None,
         sam_source_root: Path | None = None,
@@ -212,17 +204,9 @@ class Sam31EvidenceProvider:
         self._torch = torch_module
         self._materialize_frames = materialize_frames
         self._initial_sampler = initial_sampler
-        self._execution_chunk_frames = _positive_integer(
-            execution_chunk_frames, "execution_chunk_frames"
-        )
+        self._execution_chunk_frames = 8
         self._apply_execution_chunk_frames()
         self.repository_revision = repository_revision
-        self._max_artifact_bytes = _positive_integer(
-            max_artifact_bytes, "max_artifact_bytes"
-        )
-        self._max_artifact_files = _positive_integer(
-            max_artifact_files, "max_artifact_files"
-        )
         self._overlay_renderer = overlay_renderer or _render_context_overlay
         self._import_snapshot = import_snapshot
         self._sam_source_root = sam_source_root
@@ -235,11 +219,8 @@ class Sam31EvidenceProvider:
         repository_path: Path | str,
         checkpoint_path: Path | str,
         *,
-        compile_model: bool = False,
         predictor_factory: Callable[..., Any] | None = None,
         bpe_path: Path | str | None = None,
-        max_artifact_bytes: int = _DEFAULT_MAX_ARTIFACT_BYTES,
-        max_artifact_files: int = _DEFAULT_MAX_ARTIFACT_FILES,
     ) -> Sam31EvidenceProvider:
         """Load a clean pinned checkout and local assets without downloading.
 
@@ -248,8 +229,6 @@ class Sam31EvidenceProvider:
         imported_snapshot: dict[str, Any] | None = None
         predictor: Any = None
         try:
-            if not isinstance(compile_model, bool):
-                raise ValueError
             repository = _validated_repository(repository_path)
             _verify_repository_revision(repository)
             checkpoint = _validated_local_asset(checkpoint_path)
@@ -276,9 +255,6 @@ class Sam31EvidenceProvider:
             predictor = builder(
                 checkpoint_path=str(checkpoint),
                 bpe_path=str(bpe),
-                max_num_objects=_MAX_OBJECTS,
-                multiplex_count=_MAX_OBJECTS,
-                compile=compile_model,
                 use_fa3=False,
             )
             if predictor_factory is None or _sam_modules():
@@ -287,8 +263,6 @@ class Sam31EvidenceProvider:
                 predictor=predictor,
                 torch_module=torch_module,
                 repository_revision=_PINNED_REPOSITORY_REVISION,
-                max_artifact_bytes=max_artifact_bytes,
-                max_artifact_files=max_artifact_files,
                 import_snapshot=imported_snapshot,
                 sam_source_root=repository if _sam_modules() else None,
             )
@@ -307,14 +281,8 @@ class Sam31EvidenceProvider:
 
     @execution_chunk_frames.setter
     def execution_chunk_frames(self, value: int) -> None:
-        self._execution_chunk_frames = _positive_integer(
-            value, "execution_chunk_frames"
-        )
+        self._execution_chunk_frames = value
         self._apply_execution_chunk_frames()
-
-    def set_execution_chunk_frames(self, value: int) -> None:
-        """Expose Task-5's positive worker-owned OOM batching interface."""
-        self.execution_chunk_frames = value
 
     def _apply_execution_chunk_frames(self) -> None:
         model = getattr(self._predictor, "model", None)
@@ -339,7 +307,7 @@ class Sam31EvidenceProvider:
             indices = (reference,) if request.mode == "probe" else tuple(sorted(
                 set(self._initial_sampler(request.timeline, request.sampling)) | {reference}
             ))
-            budget = _ArtifactBudget(self._max_artifact_bytes, self._max_artifact_files)
+            budget = _ArtifactBudget()
             with tempfile.TemporaryDirectory(prefix=".sam31-frames-", dir=staging) as work:
                 destination = Path(work) / "frames"
                 sampled = self._materialize_frames(
@@ -416,7 +384,6 @@ class Sam31EvidenceProvider:
         prompt_response = self._predictor.handle_request({
             "type": "add_prompt", "session_id": session_id,
             "frame_index": reference_index, "text": entity.canonical_label,
-            "output_prob_thresh": request.thresholds.min_confidence,
             "bounding_boxes": [[left, top, right - left, bottom - top]],
             "bounding_box_labels": [1],
         })
@@ -435,7 +402,6 @@ class Sam31EvidenceProvider:
                 self._predictor.handle_stream_request({
                     "type": "propagate_in_video", "session_id": session_id,
                     "propagation_direction": "both", "start_frame_index": reference_index,
-                    "output_prob_thresh": request.thresholds.min_confidence,
                 })
             )
             with _cleanup(lambda: getattr(stream, "close", lambda: None)()):
@@ -821,7 +787,7 @@ def _build_artifact(
         output_directories.append(_create_private_directory(staging / "overlays"))
         for item in overlays[:MAX_OVERLAYS]:
             budget.reserve(
-                run.mask_height * run.mask_width * 3 + _ZIP_ENTRY_ALLOWANCE, file_count=1
+                run.mask_height * run.mask_width * 3 + _ZIP_ENTRY_ALLOWANCE
             )
             relative = (
                 f"overlays/{run.entity_id}-{item.object_id}-{item.source_frame_index:08d}.png"
@@ -972,9 +938,3 @@ def _empty_cuda_cache(torch_module: Any) -> None:
 def _is_cuda_oom(torch_module: Any, error: Exception) -> bool:
     oom_type = getattr(getattr(torch_module, "cuda", None), "OutOfMemoryError", None)
     return isinstance(oom_type, type) and isinstance(error, oom_type)
-
-
-def _positive_integer(value: int, name: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValueError(f"{name} must be a positive integer")
-    return value

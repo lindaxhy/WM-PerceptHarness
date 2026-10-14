@@ -246,11 +246,7 @@ def _loaded_cv_executor(provider_name: str, arguments: argparse.Namespace, setti
     from .cv.artifacts import CvArtifactStore
     from .cv.executor import SyncCvExecutor
 
-    artifact_store = CvArtifactStore(
-        settings.cv_cache_root,
-        max_files=settings.cv_cache_max_files,
-        max_bytes=settings.cv_cache_max_bytes,
-    )
+    artifact_store = CvArtifactStore(settings.cv_cache_root)
     provider = None
     try:
         cv_device = (
@@ -265,33 +261,14 @@ def _loaded_cv_executor(provider_name: str, arguments: argparse.Namespace, setti
             settings.cv_repository_path,
             settings.cv_checkpoint_path,
             bpe_path=settings.cv_bpe_path,
-            compile_model=settings.cv_compile_model,
-            max_artifact_bytes=settings.cv_cache_max_bytes,
-            max_artifact_files=settings.cv_cache_max_files,
-        )
-        _configure_execution_chunk_frames(
-            provider, settings.cv_execution_chunk_frames
         )
         yield SyncCvExecutor(provider, artifact_store)
     finally:
         try:
             if provider is not None:
-                close = getattr(provider, "close", None)
-                if callable(close):
-                    close()
+                provider.close()
         finally:
             artifact_store.close()
-
-
-def _configure_execution_chunk_frames(provider, value: int) -> None:
-    setter = getattr(provider, "set_execution_chunk_frames", None)
-    if callable(setter):
-        setter(value)
-    else:
-        provider.execution_chunk_frames = value
-    configured = getattr(provider, "execution_chunk_frames", None)
-    if configured != value:
-        raise ValueError("CV provider execution chunk must equal the exact requested value")
 
 
 if __name__ == "__main__":
