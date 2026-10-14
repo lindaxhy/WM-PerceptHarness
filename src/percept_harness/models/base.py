@@ -7,13 +7,13 @@ import hashlib
 import base64
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from .response_contract import ModelResponseContract
 
-from ..media import FrameRef, TimeSpan, VideoMetadata
+from ..media import TimeSpan
 
 
 def validate_model_alias(value: Any) -> str:
@@ -37,15 +37,6 @@ class ModelOutputError(ValueError):
 
 class ModelRequestError(ValueError):
     """A worker attempted to construct an invalid local model request."""
-
-
-@dataclass
-class VideoSession:
-    """Worker-local video state reused by all stages for one task."""
-
-    metadata: VideoMetadata
-    sampled_frames: tuple[FrameRef, ...] = ()
-    backend_cache: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -96,12 +87,10 @@ class ModelRequest:
     fps: float
     prompt: str
     schema_name: str
-    video_session_id: str | None
     model_name: str
     media_resolution: TuningLevel | None = None
     reasoning_effort: TuningLevel | None = None
     clip_context: TuningLevel | None = None
-    video_session: VideoSession | None = None
     response_contract: ModelResponseContract | None = None
     visual_evidence: tuple[VisualEvidence, ...] = ()
 
@@ -129,19 +118,10 @@ class ModelRequest:
             raise ModelRequestError("prompt must be a string")
         if not isinstance(self.schema_name, str) or not self.schema_name.strip():
             raise ModelRequestError("schema_name must be a non-blank string")
-        if self.video_session_id is not None and (
-            not isinstance(self.video_session_id, str) or not self.video_session_id.strip()
-        ):
-            raise ModelRequestError("video_session_id must be a non-blank string or None")
         try:
             validate_model_alias(self.model_name)
         except ValueError:
             raise ModelRequestError("model_name must be a local model alias") from None
-        if self.video_session is not None and not isinstance(
-            self.video_session,
-            VideoSession,
-        ):
-            raise ModelRequestError("video_session must be a VideoSession or None")
         for field_name in ("media_resolution", "reasoning_effort", "clip_context"):
             value = getattr(self, field_name)
             if value is not None and (

@@ -102,7 +102,7 @@ class ModelResponseContract:
     schema_json: str
 
     def __post_init__(self) -> None:
-        if (type(self.name) is not str or self.name not in ('EntityNomination', 'GroundedEvents', 'ConfidenceDraft', 'EvidenceReview', 'SamPromptReview')
+        if (type(self.name) is not str or self.name not in ('GroundedEvents', 'ConfidenceDraft', 'EvidenceReview', 'SamPromptReview')
                 or type(self.schema_json) is not str
                 or len(self.schema_json) > MAX_SCHEMA_BYTES
                 or len(self.schema_json.encode()) > MAX_SCHEMA_BYTES):

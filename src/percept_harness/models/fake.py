@@ -28,7 +28,7 @@ class FakeVideoModel(VideoModel):
     copied so callers cannot alter later results by mutation.
     """
 
-    _STAGES = frozenset({'confidence_draft', 'entity_nomination', 'grounded_draft', 'evidence_review', 'grounded_revision', 'sam_prompt_review'})
+    _STAGES = frozenset({'confidence_draft', 'grounded_draft', 'evidence_review', 'grounded_revision', 'sam_prompt_review'})
 
     def __init__(
         self,
@@ -66,8 +66,6 @@ class FakeVideoModel(VideoModel):
                 {'start': request.span.start, 'end': request.span.end,
                  'description': 'A hand moves the red container.',
                  'confidence': 0.9, 'uncertainty': None}]}
-        if request.stage == 'entity_nomination':
-            return {'entities': [{'name': 'red container', 'aliases': [], 'role': 'manipulated_object'}]}
         if request.stage == 'sam_prompt_review':
             return {'accepted': True, 'reason': 'Synthetic fixture mask matches target.', 'correction': None}
         if request.stage == 'evidence_review':

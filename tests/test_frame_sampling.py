@@ -93,7 +93,7 @@ def test_old_sampling_contract_cannot_hit_model_request_cache(tmp_path):
     video = tmp_path / 'video'; video.write_bytes(b'cache identity input')
     request = ModelRequest(stage='grounded_draft', video_path=video, span=TimeSpan(0, 1),
                            fps=2, prompt='describe', schema_name='GroundedEvents',
-                           model_name='test', video_session_id=None)
+                           model_name='test')
     model = OpenAICompatVideoModel(base_url='https://example.test/v1', api_key='test',
                                   model_registry={'test': 'test'})
     try:
@@ -144,7 +144,7 @@ def test_real_sampling_respects_vlm_frame_budget(tmp_path):
     try:
         request = ModelRequest(stage='grounded_draft', video_path=video, span=TimeSpan(0, 2),
                                fps=100, prompt='describe', schema_name='GroundedEvents',
-                               model_name='test', video_session_id=None)
+                               model_name='test')
         assert model.generate(request)['events'] == []
         content = sent[0]['messages'][0]['content']
         assert sum(item['type'] == 'image_url' for item in content) == 4

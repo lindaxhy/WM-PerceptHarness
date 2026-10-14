@@ -1,6 +1,6 @@
 """Prompts for independent observable events grounded in original visual input."""
 import json
-from .event_schemas import EntityNomination, GroundedEvents, EvidenceReview, SamPromptReview, ConfidenceDraft
+from .event_schemas import GroundedEvents, EvidenceReview, SamPromptReview, ConfidenceDraft
 
 VERSION = 'grounded-events-v3'
 CONFIDENCE_VERSION = 'confidence-gated-events-v3'

@@ -205,7 +205,7 @@ The JSON includes the score and paths to the official evaluator result and log. 
 
 **Weights:** Install Python dependencies with `pip`, then download model weights
 with the `curl` commands above. The former `percept download` command has been
-removed. `weights.py` only records cache-relative paths;
+removed. `video_metrics/__init__.py` only records cache-relative paths;
 installation checks and scoring check that the files exist. No SHA-256 verification is performed. Use the same `--cache-dir`
 for checks and scoring; `./weights` is relative to the current directory.
 Other metrics require their own [checkpoint preparation](docs/metrics.md#checkpoint-preparation).
@@ -256,6 +256,10 @@ No project-wide open-source license has been granted yet. Third-party components
 Annotation flows through `cli → runner → pipelines → models`.
 `batch.py` adds batch scheduling and shared CV workers. Event scoring and video
 quality metrics have separate entry points.
+
+Within annotation, pipelines call `StageExecutor.execute()` directly for VLM
+and SAM requests. There is no internal job queue or wait/poll layer. VLM request
+caching and the separate multi-GPU batch scheduler remain available.
 
 | Module | Responsibility |
 |---|---|

@@ -24,7 +24,7 @@ class VisualEvidenceTests(unittest.TestCase):
             from percept_harness.config import Settings
             registry = Settings(openai_model='vendor/model-v1', openai_model_registry={}).openai_model_aliases
             request = base.ModelRequest(stage='grounded_draft', video_path=video, span=TimeSpan(0, 4), fps=2,
-                prompt='inspect', schema_name='GroundedEvents', video_session_id=None, model_name='vendor-model-v1', visual_evidence=(ev,))
+                prompt='inspect', schema_name='GroundedEvents', model_name='vendor-model-v1', visual_evidence=(ev,))
             received = []
             def handle(req):
                 received.append(json.loads(req.content))
@@ -50,7 +50,7 @@ class VisualEvidenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td); video=root/'video'; video.write_bytes(b'v'); frame=root/'f.jpg'; frame.write_bytes(b'jpg')
             ev=base.VisualEvidence(png_bytes=b'\x89PNG\r\n\x1a\n'+b'x'*4000, timestamp=0.0, entity_id='cup', track_id='b:cup', source='b')
-            request=base.ModelRequest(stage='grounded_draft',video_path=video,span=TimeSpan(0,4),fps=1,prompt='',schema_name='GroundedEvents',video_session_id=None,model_name='test',visual_evidence=(ev,))
+            request=base.ModelRequest(stage='grounded_draft',video_path=video,span=TimeSpan(0,4),fps=1,prompt='',schema_name='GroundedEvents',model_name='test',visual_evidence=(ev,))
             model=OpenAICompatVideoModel(base_url='https://example.test/v1',api_key='test',model_registry={'test':'test'},max_request_bytes=1500,
                 transport=httpx.MockTransport(lambda r: self.fail('oversize request reached HTTP')),frame_extractor=lambda *a:[FrameRef(timestamp=0.0,path=frame)])
             self.addCleanup(model.close)

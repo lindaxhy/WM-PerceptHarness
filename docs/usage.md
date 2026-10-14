@@ -93,6 +93,12 @@ Use the pinned SAM source revision `660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7`, i
 | `PERCEPT_CV_DEVICE` | GPU device index |
 | `PERCEPT_CV_CACHE_ROOT` | Writable evidence cache |
 
+SAM loads the clean pinned checkout, checkpoint and tokenizer directly from
+these local paths. Keep them unchanged for the lifetime of a run. The loader
+checks the source revision, tokenizer identity and imported module locations;
+it does not create private copies of the source tree or checkpoint. NumPy and
+OpenCV belong to the SAM runtime and are imported only when that runtime is used.
+
 The core install neither installs this runtime nor validates a live GPU run. Run a small production annotation and inspect the `.audit.json` sidecar (`status`, `error`, `metadata.evidence`), overlay counts and archived CV manifests before scaling up. `--backend fake --model fake --cv fake` is a synthetic offline test path; fake CV cannot be paired with a production model. A successful zero-detection SAM result may have `no_tracks: true` and no overlays; the reviewer still sees the original video, and missing tracks do not prove absence.
 
 ## Annotation
@@ -191,6 +197,13 @@ independent annotation repeat and also bypasses completed-result skipping. Merel
 changing the output directory does not disable request caching. SAM evidence has
 its own cache. Internal hashes name cache entries and assign jobs to shards;
 they are not file integrity checks.
+
+The CV cache is a private, user-owned local directory. Cooperating workers use
+per-key process locks and publish complete artifact directories atomically.
+Each read checks the request identity, frame mapping, registered files, sizes
+and overlay signatures. Do not modify cache entries while a run is using them.
+Incomplete legacy cache manifests are treated as misses and recomputed; current
+request identities and annotation JSON formats are unchanged.
 
 ## Video frame sampling
 

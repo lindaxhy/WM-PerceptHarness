@@ -7,10 +7,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from pydantic import ValidationError
+try:
+    import numpy
+except ImportError:
+    numpy = None
 
 from percept_harness.cv.contracts import CvEvidenceRequest, CvEvidenceArtifact
 from percept_harness.cv.base import FakeCvEvidenceProvider
-from percept_harness.cv.artifacts import cv_cache_key, CvArtifactStore, _cache_identity, _canonical_json
+from percept_harness.cv.artifacts import cv_cache_key, CvArtifactStore, CvArtifactError, _cache_identity, _canonical_json
 from percept_harness.cv.sam31 import Sam31EvidenceProvider
 from percept_harness.cv.timeline import SampledFrame, SampledFrameSet
 
@@ -31,26 +35,14 @@ def spatial(frame=30, box=(0.25,0.25,0.75,0.75)):
     return {'entity_id':'cup', 'frame_index':frame, 'bbox_xyxy':box}
 
 
-class Array:
-    def __init__(self, values, shape, kind):
-        self.values=values
-        self.shape=shape
-        self.dtype=SimpleNamespace(kind=kind)
-    def __getitem__(self, index):
-        value=self.values
-        for offset in index if isinstance(index,tuple) else (index,):
-            value=value[offset]
-        return value
-
-
 class Predictor:
     """Small external SAM boundary; masks expose which frames really ran."""
     def __init__(self):
         self.calls=[]
     def response(self, index):
-        return {'frame_index':index, 'outputs':{'out_obj_ids':Array([1],(1,),'i'),
-            'out_probs':Array([0.9],(1,),'f'),'out_boxes_xywh':Array([[0.25,0.25,0.5,0.5]],(1,4),'f'),
-            'out_binary_masks':Array([[bytes([1]*4)]*4],(1,4,4),'b')}}
+        return {'frame_index':index, 'outputs':{'out_obj_ids':numpy.array([1],dtype=numpy.int64),
+            'out_probs':numpy.array([0.9]),'out_boxes_xywh':numpy.array([[0.25,0.25,0.5,0.5]]),
+            'out_binary_masks':numpy.ones((1,4,4),dtype=numpy.bool_)}}
     def handle_request(self, payload):
         self.calls.append(payload)
         if payload['type']=='start_session':
@@ -95,8 +87,7 @@ class TargetedCvTests(unittest.TestCase):
         track=request(mode='track',spatial_prompts=[spatial()])
         shifted=request(mode='probe',spatial_prompts=[spatial(box=(0.1,0.1,0.5,0.5))])
         self.assertEqual(len({cv_cache_key(x) for x in [probe,track,shifted]}),3)
-        normalized,_=CvArtifactStore._validated_cache_identity(_cache_identity(probe))
-        self.assertEqual(normalized['mode'],'probe')
+        self.assertEqual(_cache_identity(probe)['mode'],'probe')
         for invalid in [spatial(frame=31),spatial(box=(0.7,0.2,0.1,0.8)),spatial(box=(0.1,0.2,1.1,0.8)),dict(spatial(),entity_id='other')]:
             with self.assertRaises(ValidationError):
                 request(mode='probe',spatial_prompts=[invalid])
@@ -122,6 +113,11 @@ class TargetedCvTests(unittest.TestCase):
                     artifact=FakeCvEvidenceProvider().analyze(probe,staging)
                     handle=store.publish(probe,staging,artifact)
                 self.assertEqual(store.lookup(key),handle)
+                overlays = tuple(record.path for record in artifact.overlay_records)
+                self.assertTrue(all(value.startswith(b'\x89PNG\r\n\x1a\n')
+                                    for value in store.read_overlays(handle, overlays).values()))
+                with self.assertRaises(CvArtifactError):
+                    store.read_overlays(handle, overlays, max_total_bytes=1)
                 self.assertIsNone(store.lookup(cv_cache_key(request(provider='fake',video_path=video,
                     mode='track',spatial_prompts=[spatial()]))))
                 self.assertEqual(set(artifact.files[0].model_dump()), {'path', 'size_bytes'})
@@ -134,14 +130,18 @@ class TargetedCvTests(unittest.TestCase):
                 mask.write_bytes(b'too long' + mask.read_bytes())
                 self.assertIsNone(store.lookup(key))
 
-    def test_legacy_manifest_identity_remains_readable_but_cannot_hit_new_key(self):
+    def test_incomplete_legacy_cache_is_a_miss(self):
         current=request()
         legacy={key:value for key,value in _cache_identity(current).items()
                 if key not in {'timeline','duration_seconds','frame_count','mode','spatial_prompts'}}
-        normalized,entities=CvArtifactStore._validated_cache_identity(legacy)
-        self.assertEqual(normalized,legacy)
-        self.assertEqual(entities,current.entities)
-        self.assertNotEqual(hashlib.sha256(_canonical_json(legacy)).hexdigest(),cv_cache_key(current))
+        key = hashlib.sha256(_canonical_json(legacy)).hexdigest()
+        self.assertNotEqual(key, cv_cache_key(current))
+        with tempfile.TemporaryDirectory() as root, CvArtifactStore(Path(root)/'cache') as store:
+            entry = store._entry_path(key)
+            entry.parent.mkdir(mode=0o700)
+            entry.mkdir(mode=0o700)
+            (entry/'manifest.json').write_bytes(_canonical_json({'cache_identity': legacy, 'artifact': {}}))
+            self.assertIsNone(store.lookup(key))
 
     def test_manifest_rejects_evidence_outside_selected_window(self):
         probe=request(mode='probe',spatial_prompts=[spatial()])
@@ -158,6 +158,7 @@ class TargetedCvTests(unittest.TestCase):
             materialize_frames=materialize,initial_sampler=lambda *args:(20,40),
             overlay_renderer=lambda **kwargs:kwargs['destination'].write_bytes(b'PNG fixture'))
 
+    @unittest.skipIf(numpy is None, 'SAM predictor tests require NumPy')
     def test_probe_returns_reference_mask_without_propagation(self):
         predictor=Predictor()
         with tempfile.TemporaryDirectory() as root:
@@ -171,6 +172,7 @@ class TargetedCvTests(unittest.TestCase):
             self.assertEqual(prompt['bounding_box_labels'],[1])
             self.assertEqual(prompt['text'],'red cup')
 
+    @unittest.skipIf(numpy is None, 'SAM predictor tests require NumPy')
     def test_middle_reference_does_not_extend_pinned_detector_past_video_end(self):
         class PinnedBoundsPredictor(Predictor):
             def handle_stream_request(self, payload):
@@ -193,6 +195,7 @@ class TargetedCvTests(unittest.TestCase):
                 [20, 30, 40],
             )
 
+    @unittest.skipIf(numpy is None, 'SAM predictor tests require NumPy')
     def test_track_keeps_unsampled_reference_and_covers_both_sides(self):
         predictor=Predictor()
         with tempfile.TemporaryDirectory() as root:

@@ -2,10 +2,7 @@
 import time
 from types import SimpleNamespace
 
-from ..cv.entities import EntityCandidate
-from ..runner import InferenceJobSpec
 from ..media import probe_video
-from ..runner import wait_for_jobs
 from .base import SafePipelineError
 from .event_evidence import EvidenceOrchestrator, targeted_windows
 from .event_prompts import VERSION, CONFIDENCE_VERSION, prompt
@@ -16,10 +13,10 @@ EMBODIED_PROMPT_VERSION = VERSION
 
 
 class EmbodiedActionPipeline:
-    def __init__(self, *, probe=probe_video, wait_jobs=wait_for_jobs, wait_timeout=300.0):
-        self._probe, self._wait_jobs, self._wait_timeout = probe, wait_jobs, wait_timeout
+    def __init__(self, *, probe=probe_video):
+        self._probe = probe
 
-    def run(self, task, context):
+    def run(self, context, *, prompt_context=None):
         if context.settings.cv_provider == 'disabled':
             raise SafePipelineError('Annotation requires SAM capability; disabled CV is not supported')
         media_path = context.media_path
@@ -33,7 +30,7 @@ class EmbodiedActionPipeline:
                                  'sam_checks': [], 'stage_timings': []})
         audit = context.metadata
         evidence = []
-        user_context = task.payload.get('task_context', {}).get('prompt_context')
+        user_context = prompt_context
 
         def stage(name, schema, *, draft=None, review=None, target=None, ordinal=0, visuals=None):
             supplied = evidence if visuals is None else visuals
@@ -48,9 +45,7 @@ class EmbodiedActionPipeline:
                 'visual_evidence': [image.payload() for e in supplied for image in e.images]}
             started = time.monotonic()
             try:
-                [job] = context.store.create_inference_jobs(task.task_id, [InferenceJobSpec(
-                    stage=name, ordinal=ordinal, payload=payload, model_name=task.payload.get('model_name'))])
-                [data] = self._wait_jobs(context.store, task.task_id, [job.job_id], self._wait_timeout)
+                data = context.executor.execute(name, payload)
                 if DEFAULT_OUTPUT_SCHEMAS.failure_codes(schema.__name__, data) is not None:
                     raise SafePipelineError(f'Invalid structured output from {name}')
                 result = validate_stage(schema, data, ctx, discarded_targets=(
@@ -99,14 +94,13 @@ class EmbodiedActionPipeline:
             audit['sam_checks'].append(check_record)
             try:
                 if orchestrator is None:
-                    orchestrator = EvidenceOrchestrator(task, context, media_path, duration, self._wait_jobs)
+                    orchestrator = EvidenceOrchestrator(context, media_path, duration)
                 for attempt in range(2):
-                    candidates = [EntityCandidate(name=target.description, aliases=(), role='other')]
                     ordinal = index * 3 + attempt + 1
                     started = time.monotonic()
                     calls += 1
                     try:
-                        probe = orchestrator.run(candidates, ordinal=ordinal, window=window, target=target, mode='probe')
+                        probe = orchestrator.run(ordinal=ordinal, window=window, target=target, mode='probe')
                     finally:
                         audit['stage_timings'].append({'stage': 'sam_probe', 'ordinal': ordinal, 'seconds': time.monotonic() - started})
                     audit['evidence'].append(probe.audit)
@@ -123,7 +117,7 @@ class EmbodiedActionPipeline:
                         started = time.monotonic()
                         calls += 1
                         try:
-                            tracked = orchestrator.run(candidates, ordinal=index * 3 + 3,
+                            tracked = orchestrator.run(ordinal=index * 3 + 3,
                                                        window=window, target=target, mode='track')
                         finally:
                             audit['stage_timings'].append({'stage': 'sam_track', 'ordinal': index * 3 + 3,

@@ -1,11 +1,12 @@
 """Targeted SAM probes and tracks on the original playback clock."""
 from dataclasses import dataclass
 from pathlib import Path
+import hashlib
+import re
+import unicodedata
 from ..cv.artifacts import CvArtifactStore, CvArtifactHandle, cv_cache_key
-from ..cv.contracts import CvEvidenceRequest, SamplingPolicy, EvidenceThresholds, FrameTimeline, SpatialPrompt
-from ..cv.entities import EntityCandidate, normalize_entities
+from ..cv.contracts import CvEvidenceRequest, SamplingPolicy, EvidenceThresholds, FrameTimeline, SpatialPrompt, EntityPrompt, EntityRole
 from ..cv.timeline import probe_frame_timeline
-from ..runner import InferenceJobSpec
 from ..models.base import VisualEvidence
 from .base import SafePipelineError
 
@@ -22,6 +23,22 @@ def local_asset_identity(path):
     except FileNotFoundError:
         return str(path)
     return f"{path}:{status.st_size}:{status.st_mtime_ns}"
+
+
+def target_entity(description: str) -> EntityPrompt:
+    """Stable identity for the single spatial target selected by the VLM."""
+    label = " ".join(description.split()).casefold()
+    if label in {"", "unknown"}:
+        raise SafePipelineError("Targeted SAM requires a named object")
+    if len(label) > 256:
+        label = label[:239] + "_" + hashlib.sha256(label.encode()).hexdigest()[:16]
+    ascii_label = unicodedata.normalize("NFKD", label).encode("ascii", "ignore").decode()
+    slug = re.sub(r"[^a-z0-9]+", "_", ascii_label.casefold()).strip("_")
+    if not slug or not slug[0].isalpha():
+        slug = f"entity_{slug}" if slug else "entity"
+    if len(slug) > 125:
+        slug = slug[:108].rstrip("_") + "_" + hashlib.sha256(slug.encode()).hexdigest()[:16]
+    return EntityPrompt(entity_id=slug, canonical_label=label, aliases=(), role=EntityRole.OTHER)
 
 
 @dataclass(frozen=True)
@@ -49,36 +66,32 @@ def targeted_windows(review, duration):
 
 
 class EvidenceOrchestrator:
-    def __init__(self, task, context, media_path, duration, wait_jobs):
-        self.task, self.context, self.media_path, self.duration, self.wait_jobs = task, context, media_path, duration, wait_jobs
+    def __init__(self, context, media_path, duration):
+        self.context, self.media_path, self.duration = context, media_path, duration
         self.timeline = probe_frame_timeline(media_path)
         self.video_identity = local_asset_identity(media_path)
 
-    def run(self, candidates, *, ordinal, window, target, mode):
+    def run(self, *, ordinal, window, target, mode):
         settings = self.context.settings
-        normalized = normalize_entities(candidates, limit=settings.cv_entity_limit)
-        if len(normalized.entities) != 1:
-            raise SafePipelineError('Targeted SAM requires exactly one object')
+        entity = target_entity(target.description)
         points = tuple(p for p in self.timeline.frames if window['start'] <= p.timestamp_seconds <= window['end'])
         if not points:
             raise SafePipelineError('Local SAM window contains no original frames')
         reference = min(points, key=lambda p: abs(p.timestamp_seconds - target.reference_time))
         selected = FrameTimeline(frames=(reference,) if mode == 'probe' else points)
-        spatial = SpatialPrompt(entity_id=normalized.entities[0].entity_id,
+        spatial = SpatialPrompt(entity_id=entity.entity_id,
                                 frame_index=reference.frame_index, bbox_xyxy=target.bbox_xyxy)
         request = CvEvidenceRequest(schema_version='cv_request_v1', provider=settings.cv_provider,
             model_identity=settings.cv_model_alias, video_path=self.media_path, video_identity=self.video_identity,
             duration_seconds=self.duration, frame_count=len(self.timeline.frames), checkpoint_identity=(local_asset_identity(settings.cv_checkpoint_path)
                 if settings.cv_checkpoint_path else settings.cv_model_alias),
-            timeline=selected, entities=normalized.entities, mode=mode, spatial_prompts=(spatial,),
+            timeline=selected, entities=(entity,), mode=mode, spatial_prompts=(spatial,),
             sampling=SamplingPolicy(short_video_seconds=settings.cv_short_video_seconds,
                 scan_fps=settings.cv_max_fps if window else settings.cv_scan_fps, max_fps=settings.cv_max_fps,
                 refinement_radius_seconds=settings.cv_refinement_radius_seconds),
             thresholds=EvidenceThresholds(min_confidence=settings.cv_min_confidence,
                 min_area_fraction=settings.cv_min_area_fraction, occlusion_visibility_drop=settings.cv_occlusion_visibility_drop))
-        [job] = self.context.store.create_inference_jobs(self.task.task_id, [InferenceJobSpec(
-            stage='cv_evidence', ordinal=ordinal, payload=request.model_dump(mode='json'), model_name=settings.cv_model_alias)])
-        [result] = self.wait_jobs(self.context.store, self.task.task_id, [job.job_id], settings.cv_timeout_seconds)
+        result = self.context.executor.execute('cv_evidence', request.model_dump(mode='json'))
         if result.get('status') != 'available' or result.get('artifact_key') != cv_cache_key(request):
             raise SafePipelineError('Targeted SAM evidence unavailable or mismatched')
         handle = CvArtifactHandle(result['artifact_key'])
@@ -114,7 +127,7 @@ class EvidenceOrchestrator:
                  'entity_mapping': {e.entity_id: e.canonical_label for e in artifact.entities},
                  'frame_mapping': [{'provider_frame_index': p.frame_index, 'original_frame_index': p.frame_index,
                                     'timestamp_seconds': p.timestamp_seconds} for p in artifact.processed_timeline.frames],
-                 'normalization_warnings': list(normalized.warnings),
+                 'normalization_warnings': [],
                  'overlay_count': len(images)}
         # Bound prompt observations to the actual overlay frames. Full raw tracks
         # remain in the immutable artifact; no hidden local-to-global rewriting.
