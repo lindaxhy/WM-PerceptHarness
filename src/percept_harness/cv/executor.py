@@ -42,7 +42,6 @@ class SyncCvExecutor:
             return _published_result(cached.key, artifact, True), metrics
 
         started = time.monotonic()
-        oom_retry = False
         for attempt_index in range(2):
             try:
                 with self.artifact_store.staging(key) as staging:
@@ -52,10 +51,8 @@ class SyncCvExecutor:
                     metrics = _cv_metrics(
                         artifact,
                         cache_hit=False,
-                        oom_retry=oom_retry,
-                        processed_frames=provider_metrics["processed_frames"],
-                        execution_chunk_frames=provider_metrics["execution_chunk_frames"],
-                        peak_allocated_bytes=provider_metrics["peak_allocated_bytes"],
+                        oom_retry=bool(attempt_index),
+                        **provider_metrics,
                         inference_seconds=inference_seconds,
                     )
                     handle = self.artifact_store.publish(request, staging, artifact)
@@ -63,9 +60,7 @@ class SyncCvExecutor:
             except CvOutOfMemoryError:
                 if attempt_index == 1:
                     raise
-                oom_retry = True
                 _halve_execution_chunk(self.provider)
-        raise RuntimeError("CV evidence execution did not produce an artifact")
 
 
 def _published_result(

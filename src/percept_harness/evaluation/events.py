@@ -62,7 +62,7 @@ def score_pair(reference: GroundedEvents, prediction: GroundedEvents, judge: Cal
     refs, preds = reference.events, prediction.events
     matrix = [[temporal_iou(a, b) for b in preds] for a in refs]
     temporal = match_weight_matrix(matrix, tiou_threshold)
-    decisions = {}
+    joint_matrix = [[0.0] * len(preds) for _ in refs]
     candidates = []
     for i, row in enumerate(matrix):
         for j, iou in enumerate(row):
@@ -71,11 +71,11 @@ def score_pair(reference: GroundedEvents, prediction: GroundedEvents, judge: Cal
                     decision = validate_decision(judge(refs[i].description, preds[j].description))
                 except Exception as error:
                     raise JudgeError(f"candidate ({i},{j}) failed: {error}") from error
-                decisions[i, j] = decision
+                if decision["match"]:
+                    joint_matrix[i][j] = iou
                 candidates.append({"reference_index": i, "prediction_index": j, "iou": iou, "reference_description": refs[i].description, "prediction_description": preds[j].description, **decision})
-    joint_matrix = [[iou if decisions.get((i, j), {}).get("match", False) else 0 for j, iou in enumerate(row)] for i, row in enumerate(matrix)]
     joint = match_weight_matrix(joint_matrix, tiou_threshold)
-    temporal_passes = sum(decisions[m.reference_index, m.prediction_index]["match"] for m in temporal)
+    temporal_passes = sum(joint_matrix[m.reference_index][m.prediction_index] > 0 for m in temporal)
     segment = _prf(len(temporal), len(refs), len(preds))
     both = _prf(len(joint), len(refs), len(preds))
     temporal_ref = {m.reference_index for m in temporal}
@@ -193,6 +193,6 @@ def evaluate(reference_dir: Path, systems: dict[str, Path], judge: Callable, tio
                 rows[sample_id] = {"status": "error", "error": f"{type(error).__name__}: {error}", "reference_path": refs[sample_id]["path"], "prediction_path": preds[sample_id]["path"]}
         invalid = len(rows) - len(valid)
         report["systems"][name] = {"samples": rows, "valid_count": len(valid), "invalid_count": invalid, "aggregate": aggregate(valid) if rows and not invalid else None}
-    if not refs and all(not load_group(directory) for directory in systems.values()):
+    if not refs and not any(system["samples"] for system in report["systems"].values()):
         raise ValueError("completely empty dataset")
     return report

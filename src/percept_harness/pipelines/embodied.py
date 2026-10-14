@@ -9,8 +9,6 @@ from .event_prompts import VERSION, CONFIDENCE_VERSION, prompt
 from .event_schemas import EvidenceReview, SamPromptReview, SpatialTarget, validate_stage, GroundedEvents, ConfidenceDraft, Concern, SAM_CONFIDENCE_THRESHOLD
 from .output_validation import DEFAULT_OUTPUT_SCHEMAS
 
-EMBODIED_PROMPT_VERSION = VERSION
-
 
 class EmbodiedActionPipeline:
     def __init__(self, *, probe=probe_video):
@@ -30,7 +28,6 @@ class EmbodiedActionPipeline:
                                  'sam_checks': [], 'stage_timings': []})
         audit = context.metadata
         evidence = []
-        user_context = prompt_context
 
         def stage(name, schema, *, draft=None, review=None, target=None, ordinal=0, visuals=None):
             supplied = evidence if visuals is None else visuals
@@ -39,7 +36,7 @@ class EmbodiedActionPipeline:
                 ctx.update(window_start=target['start'], window_end=target['end'])
             payload = {'video_path': str(media_path), 'span': {'start': 0.0, 'end': duration}, 'fps': 2.0,
                 'schema_name': schema.__name__, 'schema_context': ctx,
-                'prompt': prompt(name, duration=duration, context=user_context,
+                'prompt': prompt(name, duration=duration, context=prompt_context,
                     evidence=[e.prompt_record for e in supplied], draft=draft, review=review,
                     target=target, unresolved=audit['unresolved_concerns']),
                 'visual_evidence': [image.payload() for e in supplied for image in e.images]}

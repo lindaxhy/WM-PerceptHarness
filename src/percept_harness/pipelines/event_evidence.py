@@ -116,7 +116,7 @@ class EvidenceOrchestrator:
         # is still supplied and absence of tracks never establishes object absence.
         audit = {**result, 'scope': scope, 'provider': artifact.provider, 'video_identity': self.video_identity,
                  'time_basis': 'container-relative playback seconds; original decoder frame indices',
-                 'window': [window['start'], window['end']] if window else [0.0, self.duration],
+                 'window': [window['start'], window['end']],
                  'mode': mode, 'question': window['question'],
                  'spatial_prompt': spatial.model_dump(mode='json'),
                  'reference_time': reference.timestamp_seconds, 'no_tracks': not bool(artifact.tracks),

@@ -122,13 +122,13 @@ class OpenAICompatVideoModel:
             raise OpenAICompatBackendError("stage has no configured output budget")
         temporary = Path(tempfile.mkdtemp(prefix="percept-frames-"))
         try:
-            span_seconds = max(0.0, request.span.end - request.span.start)
+            span_seconds = request.span.end - request.span.start
             evidence_count = len(request.visual_evidence)
             original_budget = request.max_frames - evidence_count
             if original_budget < 1:
                 raise OpenAICompatBackendError('mandatory evidence exceeds frame budget')
             fps = request.fps
-            if span_seconds > 0 and fps * span_seconds > original_budget:
+            if fps * span_seconds > original_budget:
                 # A long clip at the requested cadence would exceed max_frames
                 # and previously failed outright. Spread the frame budget
                 # evenly across the span instead (0.5 guards the < end loop
@@ -160,9 +160,7 @@ class OpenAICompatVideoModel:
                 # first frame) instead of failing the whole task.
                 keep = max(_MIN_FRAMES, int(len(frames) * self.MAX_REQUEST_BYTES
                                             / len(encoded) * 0.9))
-                if keep >= len(frames):
-                    keep = len(frames) - 1
-                step = (len(frames) - 1) / (keep - 1) if keep > 1 else 1
+                step = (len(frames) - 1) / (keep - 1)
                 frames = [frames[round(i * step)] for i in range(keep)]
                 payload["messages"] = [
                     {"role": "user", "content": self._content(request, frames)}
@@ -200,9 +198,7 @@ class OpenAICompatVideoModel:
                         raise OpenAICompatBackendError(
                             f"service request failed with status {response.status_code}"
                         )
-            except (OpenAICompatBackendError, ModelOutputError):
-                raise
-            except (httpx.TimeoutException, httpx.TransportError) as error:
+            except httpx.TransportError as error:
                 retryable = f"transport {type(error).__name__}"
                 cause = error
             except (httpx.HTTPError, OSError) as error:

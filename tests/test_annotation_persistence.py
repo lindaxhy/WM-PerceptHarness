@@ -210,3 +210,29 @@ class AnnotationPersistenceTests(unittest.TestCase):
                 (self.root / 'clip.audit.json').write_text(text)
                 with self.assertRaises(ValueError):
                     load_group(self.root)
+
+
+def test_cli_setup_failure_closes_model_client(tmp_path):
+    from contextlib import nullcontext, redirect_stderr, redirect_stdout
+    from io import StringIO
+    from unittest.mock import Mock
+    from percept_harness import cli
+    video = tmp_path / 'clip.mp4'; video.write_bytes(b'video')
+    args = cli._parser().parse_args(['annotate', '--videos', str(video), '--output', str(tmp_path / 'out')])
+    closer = Mock()
+    with patch.object(cli, '_load_backend', return_value=(Mock(), 'model', closer)), \
+         patch.object(cli, '_cv_executor', return_value=nullcontext(Mock())), \
+         patch.object(cli, 'run_batch', side_effect=RuntimeError('run failed')), \
+         redirect_stderr(StringIO()), redirect_stdout(StringIO()):
+        assert cli._eval(args) == 2
+    closer.assert_called_once_with()
+
+
+def test_cli_rejects_invalid_override_before_creating_client(tmp_path):
+    from contextlib import redirect_stderr
+    from io import StringIO
+    from percept_harness import cli
+    args = cli._parser().parse_args(['annotate', '--videos', 'unused.mp4', '--output', str(tmp_path), '--cv-device', '-1'])
+    with patch.object(cli, '_load_backend') as load, redirect_stderr(StringIO()):
+        assert cli._eval(args) == 2
+    load.assert_not_called()

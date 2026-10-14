@@ -1,5 +1,4 @@
 import base64
-import hashlib
 import json
 import tempfile
 import unittest
@@ -14,7 +13,6 @@ from percept_harness.media import TimeSpan, FrameRef
 
 class VisualEvidenceTests(unittest.TestCase):
     def test_http_transmits_original_and_overlay_and_cache_tracks_content(self):
-        self.assertTrue(hasattr(base, 'VisualEvidence'), 'mandatory visual attachment contract is missing')
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             video = root / 'video'; video.write_bytes(b'video')
@@ -46,7 +44,6 @@ class VisualEvidenceTests(unittest.TestCase):
             self.assertNotEqual(key, cache.key(replace(request, visual_evidence=(replace(ev, timestamp=2.0),)), {}, {}))
 
     def test_visual_budget_never_silently_discards_evidence(self):
-        self.assertTrue(hasattr(base, 'VisualEvidence'), 'mandatory visual attachment contract is missing')
         with tempfile.TemporaryDirectory() as td:
             root=Path(td); video=root/'video'; video.write_bytes(b'v'); frame=root/'f.jpg'; frame.write_bytes(b'jpg')
             ev=base.VisualEvidence(png_bytes=b'\x89PNG\r\n\x1a\n'+b'x'*4000, timestamp=0.0, entity_id='cup', track_id='b:cup', source='b')
@@ -120,3 +117,62 @@ def test_configuration_and_request_boundaries_reject_invalid_values(tmp_path):
         with pytest.raises(RuntimeError, match='reserved keys'):
             OpenAICompatVideoModel(base_url='https://example.test/v1', api_key='test',
                 model_name='model', extra_body={key: 'override'})
+
+
+def test_transport_and_service_retries_stop_at_budget(caplog):
+    from unittest.mock import patch
+    import pytest
+    from percept_harness.models.openai_compat import OpenAICompatBackendError
+
+    failures = [429, 500, 502, 503, 504,
+                httpx.ReadTimeout('private transport detail'),
+                httpx.ConnectError('private transport detail')]
+    for failure in failures:
+        requests = []
+
+        def respond(request):
+            requests.append(request)
+            if isinstance(failure, Exception):
+                raise failure
+            return httpx.Response(failure, text='private response body')
+
+        model = OpenAICompatVideoModel(
+            base_url='https://example.test/v1', api_key='private-api-key',
+            model_name='test', transport=httpx.MockTransport(respond))
+        try:
+            with patch('percept_harness.models.openai_compat.time.sleep') as sleep:
+                with pytest.raises(OpenAICompatBackendError, match='after 4 attempts') as caught:
+                    model._post_with_retries(b'{}')
+            assert len(requests) == 4
+            assert sleep.call_count == 3
+            assert 'private' not in str(caught.value)
+            assert 'private' not in caplog.text
+        finally:
+            model.close()
+
+
+def test_deterministic_http_and_bounded_output_failures_are_not_retried():
+    from unittest.mock import patch
+    import pytest
+    from percept_harness.models.openai_compat import OpenAICompatBackendError
+
+    for status in (400, 401, 403, 404, 200):
+        requests = []
+
+        def respond(request):
+            requests.append(request)
+            return httpx.Response(status, content=b'x' * 1_000_005)
+
+        model = OpenAICompatVideoModel(
+            base_url='https://example.test/v1', api_key='test', model_name='test',
+            transport=httpx.MockTransport(respond))
+        model.MAX_OUTPUT_CHARS = 1
+        try:
+            expected = base.ModelOutputError if status == 200 else OpenAICompatBackendError
+            with patch('percept_harness.models.openai_compat.time.sleep') as sleep:
+                with pytest.raises(expected):
+                    model._post_with_retries(b'{}')
+            assert len(requests) == 1
+            sleep.assert_not_called()
+        finally:
+            model.close()

@@ -1,4 +1,53 @@
-# 顶层模块逐函数审查
+# 全源码精简审查
+
+本轮基线：`0f0eaf9`。三个并行 agent 与主 agent 分工审查全部 **36 个 `src/` Python 文件**，追踪调用方后落实删减；另检查并更新安装验证脚本。没有新建生产模块，也没有压缩排版来减少行数。
+
+本轮源码 **7,126 → 6,999 行（净减少 127 行）**；最大文件 `cv/sam31.py` 为 980 行。保留现有 CLI、公共标注与评分格式、多 GPU 调度、缓存、SAM 源帧映射及失败清理。未知外部代码若导入已删除的内部旧符号，需要自行迁移。
+
+| 文件（相对 `src/percept_harness/`） | 审查结论 |
+|---|---|
+| `__init__.py` | 保留包说明与版本号。 |
+| `cli.py` | 合并配置/覆盖参数/模型创建/执行的错误分支；用 ExitStack 统一释放；删除单后端分派。 |
+| `config.py` | 保留环境字符串到严格数值/布尔值的解析和实际使用配置。 |
+| `batch.py` | 删除已检查 SAM provider 后的重复预检；GPU 编号验证后直接复制到 lane 配置。保留 worker 协议、限流、归档和恢复检查。 |
+| `media.py` | 删除已由帧率解析保证的重复条件、重复异常类型和默认参数。保留 FFmpeg 输出及时间轴检查。 |
+| `results.py` | 简化缺失公共结果的状态分支和临时文件删除；保留原子发布、中断恢复、文件冲突和旧结果读取。 |
+| `runner.py` | 保留：执行、缓存损坏恢复、无效输出不缓存及阶段指标检查均有调用。 |
+| `models/__init__.py` | 保留当前协议、类型与解析器导出。 |
+| `models/base.py` | 删除中间返回变量；保留外部 JSON 与证据边界检查。 |
+| `models/openai_compat.py` | 删除原样重抛及重复 TimeoutException 捕获；删除合法时间段和减帧数学条件下不可达的防御分支。 |
+| `models/response_contract.py` | 删除旧 scene/boundary 常量；保留 schema 编译及大小/深度约束。 |
+| `pipelines/base.py` | 保留上下文和统一的可展示错误类型。 |
+| `pipelines/embodied.py` | 删除未用版本别名及多余变量；保留可选 SAM 失败恢复和审查记录。 |
+| `pipelines/event_evidence.py` | 删除当前必有 window 路径上的全视频回退分支。 |
+| `pipelines/event_prompts.py` | 五个提示阶段均在使用，保留以免改变评测行为。 |
+| `pipelines/event_schemas.py` | 删除 ValueError 已覆盖的 ValidationError；保留边界舍入和可恢复目标处理。 |
+| `pipelines/output_validation.py` | 保留 schema 注册与失败标记；它们决定修复流程及缓存资格。 |
+| `cv/__init__.py` | 保留延迟导入，避免普通 CLI 加载 GPU 依赖。 |
+| `cv/base.py` | 保留 provider 协议及可重试 OOM 类型。 |
+| `cv/contracts.py` | 单空间目标直接访问，删除无用遍历；保留帧时钟和引用一致性。 |
+| `cv/executor.py` | 由尝试次数推导 OOM 重试状态，直接传递已验证指标，删除不可达最终异常。 |
+| `cv/artifacts.py` | 删除 schema 已保证的文件名唯一性及私有函数重复路径语法检查；保留实际磁盘/link/权限、锁、预算与原子发布检查。 |
+| `cv/timeline.py` | 删除 schema 已保证的采样条件、单用辅助函数及重复 symlink 判断和异常转换。 |
+| `cv/sam31.py` | 删除始终等于全部帧的范围参数、原样返回尺寸、仅测试使用的不写 mask 模式和多余异常转换。 |
+| `evaluation/__init__.py` | 保留包说明。 |
+| `evaluation/event_matching.py` | 删除旧分类 Event、文本检查和 match_events 包装；安装检查改用当前匹配函数。 |
+| `evaluation/events.py` | 直接构造联合匹配矩阵，删除重复语义字典；复用已有报告判断空数据集，避免再次扫描目录。 |
+| `evaluation/events_cli.py` | 保留 CLI、凭据处理和失败返回码。 |
+| `video_metrics/__init__.py` | 保留共享权重文件路径与存在性检查。 |
+| `video_metrics/clipiqa.py` | 保留解码清理、上游缓存恢复、版本和协议参数。 |
+| `video_metrics/dover.py` | 保留官方命令、检查点、日志结果和状态持久化。 |
+| `video_metrics/external.py` | 删除未使用 source_label、恒为真的 needs_source 和不可达无源码分支。 |
+| `video_metrics/motion.py` | 保留上游执行入口和结果一致性检查。 |
+| `video_metrics/vbench_backend.py` | 七个指标共用的后端仍有用；保留外部结果各自的数值语义检查。 |
+| `video_metrics/vbench_clip.py` | 保留独立的上游 CLIP API、提示与结果检查。 |
+| `video_metrics/videophy_joint.py` | 保留文件关联、重复/未匹配路径检查和联合评分规则。 |
+
+验证：130 项 pytest 测试通过，安装检查 6/6 通过，离线 wheel 构建及 7 个隔离导入检查通过。另对照基线验证 300 组事件评分、17 个外部指标预检结果一致。未进行真实 API、GPU 或上游模型推理。
+
+以下保留先前各轮的历史逐函数审查；其中已删除的接口不代表当前实现。
+
+# 历史：顶层模块逐函数审查
 
 审查基线：`5ac95b1`（PR #33 第一轮清理之后）。覆盖用户列出的 11 个模块，包括类方法、协议声明、Pydantic/日志回调及嵌套函数；不把“仅一次调用”或“通过回调调用”当成无用代码。
 共逐项检查 **97 个显式函数/方法定义**。dataclass 自动生成的方法不计入。

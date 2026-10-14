@@ -71,9 +71,8 @@ class VisualEvidence:
         encoded = value['png_base64']
         if type(encoded) is not str or len(encoded) > 12 * 1024 * 1024:
             raise ModelRequestError('invalid visual evidence byte budget')
-        result = cls(png_bytes=base64.b64decode(encoded, validate=True), timestamp=value['timestamp'],
+        return cls(png_bytes=base64.b64decode(encoded, validate=True), timestamp=value['timestamp'],
                      entity_id=value['entity_id'], track_id=value['track_id'], source=value['source'])
-        return result
 
 
 @dataclass(frozen=True)

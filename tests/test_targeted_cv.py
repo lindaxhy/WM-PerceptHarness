@@ -76,6 +76,25 @@ def materialize(video, timeline, indices, destination):
 
 
 class TargetedCvTests(unittest.TestCase):
+    def test_sampling_keeps_source_indices_at_pts_targets_and_endpoints(self):
+        from percept_harness.cv.contracts import FrameTimeline, SamplingPolicy
+        from percept_harness.cv.timeline import initial_sample_indices
+
+        for timestamps, rate, expected in (
+            ((2.0,), 4.0, (20,)),
+            ((2.0, 2.5, 3.0), 4.0, (20, 21, 22)),
+            ((2.0, 2.1, 2.7, 2.8, 3.1), 2.0, (20, 22, 24)),
+        ):
+            timeline = FrameTimeline(frames=tuple(
+                {'frame_index': 20 + index, 'timestamp_seconds': timestamp}
+                for index, timestamp in enumerate(timestamps)
+            ))
+            with self.subTest(timestamps=timestamps, rate=rate):
+                self.assertEqual(
+                    initial_sample_indices(timeline, SamplingPolicy(max_fps=rate)),
+                    expected,
+                )
+
     def test_cache_separates_selected_timeline_and_source_clock(self):
         original=request()
         for changed in [request(timeline={'frames':[{'frame_index':30,'timestamp_seconds':3.0}]}),

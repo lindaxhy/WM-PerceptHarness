@@ -17,7 +17,6 @@ from .runner import (
     run_batch,
 )
 
-_BACKENDS = ("openai",)
 _SCORE_MODULES = {
     "events": ".evaluation.events_cli",
     "clipiqa": ".video_metrics.clipiqa",
@@ -86,7 +85,7 @@ def _parser() -> argparse.ArgumentParser:
     evaluate.add_argument(
         "--backend",
         default="openai",
-        choices=_BACKENDS,
+        choices=("openai",),
         help="VLM backend configured in the environment",
     )
     evaluate.add_argument(
@@ -137,62 +136,32 @@ def _eval(arguments: argparse.Namespace) -> int:
             print(f"error: {error}", file=sys.stderr)
             return 2
     try:
-        settings = Settings()
-    except Exception as error:
-        print(f"error: invalid configuration: {error}", file=sys.stderr)
-        return 2
-
-    try:
-        videos = collect_videos(list(arguments.videos))
-    except FileNotFoundError as error:
-        print(f"error: {error}", file=sys.stderr)
-        return 2
-    if not videos:
-        print("error: no videos found under the given sources", file=sys.stderr)
-        return 2
-
-    try:
-        model, alias, closer = _load_backend(arguments, settings)
-    except (ValueError, KeyError) as error:
-        print(f"error: {error}", file=sys.stderr)
-        return 2
-
-    cv_provider = arguments.cv if arguments.cv is not None else settings.cv_provider
-    overrides = {"cv_provider": cv_provider}
-    if arguments.event_workflow is not None:
-        overrides["event_workflow"] = arguments.event_workflow
-    if arguments.cv_device is not None:
-        overrides["cv_device"] = arguments.cv_device
-    if cv_provider != settings.cv_provider or arguments.cv_device is not None or arguments.event_workflow is not None:
-        # Validate typed configuration here; GPU assets are annotation-only.
-        try:
-            settings = type(settings).model_validate({**settings.model_dump(), **overrides})
-        except Exception as error:
-            closer()
-            print(f"error: invalid CV configuration: {error}", file=sys.stderr)
-            return 2
-
-    print(f"backend={arguments.backend} model={alias} cv={cv_provider} videos={len(videos)}")
-    try:
-        with _cv_executor(cv_provider, arguments, settings) as cv_executor:
-            runner = SyncRunner(
-                model,
-                settings,
-                model_alias=alias,
-                cv_executor=cv_executor,
+        overrides = {
+            name: value for name, value in (
+                ("cv_provider", arguments.cv),
+                ("cv_device", arguments.cv_device),
+                ("event_workflow", arguments.event_workflow),
+            ) if value is not None
+        }
+        settings = Settings(**overrides)
+        videos = collect_videos(arguments.videos)
+        if not videos:
+            raise ValueError("no videos found under the given sources")
+        with ExitStack() as resources:
+            model, alias, closer = _load_backend(arguments, settings)
+            resources.callback(closer)
+            cv_executor = resources.enter_context(
+                _cv_executor(settings.cv_provider, arguments, settings)
             )
+            print(f"backend={arguments.backend} model={alias} cv={settings.cv_provider} videos={len(videos)}")
+            runner = SyncRunner(model, settings, model_alias=alias, cv_executor=cv_executor)
             outcomes = run_batch(
-                runner,
-                videos,
-                arguments.output,
-                prompt_context=arguments.prompt_context,
-                force=arguments.force,
+                runner, videos, arguments.output,
+                prompt_context=arguments.prompt_context, force=arguments.force,
             )
-    except (ValueError, RuntimeError) as error:
+    except (ValueError, KeyError, OSError, RuntimeError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
-    finally:
-        closer()
 
     completed = sum(outcome.status == "completed" for outcome in outcomes)
     skipped = sum(outcome.status == "skipped" for outcome in outcomes)
@@ -203,37 +172,33 @@ def _eval(arguments: argparse.Namespace) -> int:
 
 def _load_backend(arguments: argparse.Namespace, settings: Settings):
     """Return (model, model_alias, closer) for the selected backend."""
-    backend = arguments.backend
-    if backend == "openai":
-        if settings.openai_api_key is None or not settings.openai_api_key.get_secret_value().strip():
-            raise ValueError("PERCEPT_OPENAI_API_KEY is not configured")
-        if not settings.openai_base_url:
-            raise ValueError("PERCEPT_OPENAI_BASE_URL is not configured")
-        registry = settings.openai_model_aliases
-        if not registry:
-            raise ValueError(
-                "PERCEPT_OPENAI_MODEL (or PERCEPT_OPENAI_MODEL_REGISTRY) is not configured"
-            )
-        alias = arguments.model or _single_alias(registry, "PERCEPT_OPENAI_MODEL_REGISTRY")
-        if alias not in registry:
-            raise KeyError(
-                f"model alias {alias!r} is absent from PERCEPT_OPENAI_MODEL_REGISTRY"
-            )
-        from .models.openai_compat import OpenAICompatVideoModel
-
-        model = OpenAICompatVideoModel(
-            base_url=settings.openai_base_url,
-            api_key=settings.openai_api_key.get_secret_value(),
-            model_name=registry[alias],
-            response_format=settings.openai_response_format,
-            extra_body=settings.openai_extra_body,
-            extra_headers=settings.openai_extra_headers,
-            timeout_seconds=settings.openai_timeout_seconds,
-            proxy=settings.openai_proxy.get_secret_value() if settings.openai_proxy else None,
+    if settings.openai_api_key is None or not settings.openai_api_key.get_secret_value().strip():
+        raise ValueError("PERCEPT_OPENAI_API_KEY is not configured")
+    if not settings.openai_base_url:
+        raise ValueError("PERCEPT_OPENAI_BASE_URL is not configured")
+    registry = settings.openai_model_aliases
+    if not registry:
+        raise ValueError(
+            "PERCEPT_OPENAI_MODEL (or PERCEPT_OPENAI_MODEL_REGISTRY) is not configured"
         )
-        return model, alias, model.close
+    alias = arguments.model or _single_alias(registry, "PERCEPT_OPENAI_MODEL_REGISTRY")
+    if alias not in registry:
+        raise KeyError(
+            f"model alias {alias!r} is absent from PERCEPT_OPENAI_MODEL_REGISTRY"
+        )
+    from .models.openai_compat import OpenAICompatVideoModel
 
-    raise ValueError(f"unsupported backend {backend!r}")
+    model = OpenAICompatVideoModel(
+        base_url=settings.openai_base_url,
+        api_key=settings.openai_api_key.get_secret_value(),
+        model_name=registry[alias],
+        response_format=settings.openai_response_format,
+        extra_body=settings.openai_extra_body,
+        extra_headers=settings.openai_extra_headers,
+        timeout_seconds=settings.openai_timeout_seconds,
+        proxy=settings.openai_proxy.get_secret_value() if settings.openai_proxy else None,
+    )
+    return model, alias, model.close
 
 
 def _single_alias(registry: dict, name: str) -> str:

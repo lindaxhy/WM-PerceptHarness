@@ -80,7 +80,6 @@ def probe_video(path: Path) -> VideoMetadata:
             check=True,
             capture_output=True,
             text=True,
-            shell=False,
         )
         payload = json.loads(completed.stdout)
         streams = payload["streams"]
@@ -92,7 +91,6 @@ def probe_video(path: Path) -> VideoMetadata:
     except (
         OSError,
         subprocess.SubprocessError,
-        json.JSONDecodeError,
         KeyError,
         StopIteration,
         TypeError,
@@ -107,8 +105,6 @@ def probe_video(path: Path) -> VideoMetadata:
         or duration <= 0
         or width <= 0
         or height <= 0
-        or not math.isfinite(fps)
-        or fps <= 0
     ):
         raise MediaProbeError("video metadata is invalid")
     return VideoMetadata(duration, width, height, fps)

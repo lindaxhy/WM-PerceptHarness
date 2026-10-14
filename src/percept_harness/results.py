@@ -46,9 +46,8 @@ def annotation_record(path: Path) -> dict[str, Any] | None:
         if is_annotation_record(audit):
             return data  # A literal *.audit.json annotation is not this file's sidecar.
         record = {**audit, "data": data}
-        if audit.get("status") == "completed":
-            if data is None:
-                record.update(status="failed", error="annotation data missing")
+        if audit.get("status") == "completed" and data is None:
+            record.update(status="failed", error="annotation data missing")
         return record
     return data
 
@@ -124,8 +123,7 @@ def atomic_text(path: Path, text: str) -> None:
             os.fsync(stream.fileno())
         os.replace(temporary, path)
     finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+        Path(temporary).unlink(missing_ok=True)
 
 
 def write_json(path: Path, value: Any) -> None:

@@ -440,8 +440,8 @@ class Sam31EvidenceProvider:
             )
             with _cleanup(lambda: getattr(stream, "close", lambda: None)()):
                 for expected, response in zip(expected_indices, stream, strict=True):
-                    local_index, parsed, _ = _parse_frame_response(
-                        response, sampled, allowed_indices=range(frame_count),
+                    local_index, parsed = _parse_frame_response(
+                        response, sampled,
                         expected_dimensions=dimensions, mask_writer=writer,
                     )
                     if local_index != expected:
@@ -526,10 +526,7 @@ def _git_blob_digest(path: Path) -> str:
 
 
 def _local_path(value: Path | str) -> Path:
-    try:
-        raw = os.fspath(value)
-    except TypeError:
-        raise ValueError from None
+    raw = os.fspath(value)
     if not isinstance(raw, str) or not raw or "\x00" in raw:
         raise ValueError
     if raw.startswith("//") or _NETWORK_PREFIX.search(raw):
@@ -688,18 +685,16 @@ def _parse_frame_response(
     response: Any,
     sampled: SampledFrameSet,
     *,
-    allowed_indices: range,
     expected_dimensions: tuple[int, int],
-    mask_writer: _MaskArchiveWriter | None,
-) -> tuple[int, tuple[_Detection, ...], tuple[int, int]]:
+    mask_writer: _MaskArchiveWriter,
+) -> tuple[int, tuple[_Detection, ...]]:
     if not isinstance(response, Mapping):
         raise TypeError
     local_index = response.get("frame_index")
     if (
         isinstance(local_index, bool)
         or not isinstance(local_index, Integral)
-        or int(local_index) not in allowed_indices
-        or int(local_index) >= len(sampled.frames)
+        or not 0 <= local_index < len(sampled.frames)
     ):
         raise ValueError
     local_index = int(local_index)
@@ -755,7 +750,7 @@ def _parse_frame_response(
         if statistics is None:
             continue
         area_fraction, center_xy = statistics
-        mask_index = mask_writer.write_mask(mask) if mask_writer is not None else -1
+        mask_index = mask_writer.write_mask(mask)
         detections.append(
             _Detection(
                 local_frame_index=local_index,
@@ -769,7 +764,7 @@ def _parse_frame_response(
                 mask_index=mask_index,
             )
         )
-    return local_index, tuple(detections), expected_dimensions
+    return local_index, tuple(detections)
 
 
 def _mask_statistics(mask: Any) -> tuple[float, tuple[float, float]] | None:

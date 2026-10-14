@@ -35,9 +35,9 @@ def sampled(tmp_path):
     return SampledFrameSet((SampledFrame(0, 30, 3.0, tmp_path / "0.jpg"),))
 
 
-def parse(response, tmp_path, writer=None):
+def parse(response, tmp_path, writer):
     return sam31._parse_frame_response(
-        response, sampled(tmp_path), allowed_indices=range(1),
+        response, sampled(tmp_path),
         expected_dimensions=(4, 4), mask_writer=writer,
     )
 
@@ -46,9 +46,8 @@ def test_strided_masks_roundtrip_and_sorted_metadata_keep_source_mapping(tmp_pat
     budget = sam31._ArtifactBudget(100_000, 10)
     path = tmp_path / "masks.npz"
     writer = sam31._MaskArchiveWriter(path, budget)
-    _, detections, dimensions = parse(arrays(), tmp_path, writer)
+    _, detections = parse(arrays(), tmp_path, writer)
     writer.finish(detections, sampled(tmp_path))
-    assert dimensions == (4, 4)
     assert [item.object_id for item in detections] == [2, 9]
     assert [item.mask_index for item in detections] == [0, 1]
     assert all(item.area_fraction == 0.125 for item in detections)
@@ -69,7 +68,7 @@ def test_removed_and_empty_masks_do_not_create_tracks_or_mask_members(tmp_path):
     response = arrays(ids=(1, 2, 3), probabilities=(-10000.0, 0.8, 0.9))
     response["outputs"]["out_binary_masks"][1] = False
     writer = sam31._MaskArchiveWriter(tmp_path / "masks.npz", sam31._ArtifactBudget(100_000, 10))
-    _, detections, _ = parse(response, tmp_path, writer)
+    _, detections = parse(response, tmp_path, writer)
     writer.finish(detections, sampled(tmp_path))
     assert [item.object_id for item in detections] == [3]
     with zipfile.ZipFile(tmp_path / "masks.npz") as archive:
@@ -110,8 +109,11 @@ def test_reverse_propagation_mask_indices_follow_sorted_source_frames(tmp_path):
 def test_malformed_predictor_arrays_are_rejected_before_archiving(tmp_path, field, value):
     response = arrays()
     response["outputs"][field] = value
+    from unittest.mock import Mock
+    writer = Mock()
     with pytest.raises((TypeError, ValueError)):
-        parse(response, tmp_path)
+        parse(response, tmp_path, writer)
+    writer.write_mask.assert_not_called()
 
 
 def provider(predictor, **options):

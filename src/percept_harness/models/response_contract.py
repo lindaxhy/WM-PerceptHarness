@@ -4,9 +4,6 @@ import json
 import math
 from typing import Any
 
-CHOICE_CONTRACT = 'scene-spatial-choice-refs-v1'
-BOUNDARY_CONTRACT = 'boundary-plan-v1'
-
 MAX_SCHEMA_BYTES = 65_536
 MAX_SCHEMA_DEPTH = 32
 MAX_SCHEMA_NODES = 4_096

@@ -247,7 +247,7 @@ class ReviewRequiredRunner(SyncRunner):
 
 
 def run_manifest(arguments) -> int:
-    from .cli import _load_backend, annotation_cv_preflight
+    from .cli import _load_backend
     if arguments.workers_per_gpu <= 0 or arguments.request_concurrency <= 0:
         raise ValueError("worker and request concurrency must be positive")
     if not 0 <= arguments.shard_index < arguments.shard_count:
@@ -256,7 +256,6 @@ def run_manifest(arguments) -> int:
     provider = arguments.cv or settings.cv_provider
     if provider != "sam31":
         raise ValueError("manifest annotation requires --cv sam31")
-    annotation_cv_preflight(provider, settings, check_assets=False)
     devices = [int(s) for s in (arguments.cv_devices or str(settings.cv_device)).split(",")]
     if any(g < 0 for g in devices) or len(set(devices)) != len(devices):
         raise ValueError("CV devices must be distinct nonnegative integers")
@@ -301,7 +300,7 @@ def run_manifest(arguments) -> int:
             status("running" if slots and all(s.ready for s in slots) else "initializing")
 
     def worker(gpu, cv_execute, tasks):
-        lane_settings = Settings.model_validate({**settings.model_dump(), "cv_device": gpu})
+        lane_settings = settings.model_copy(update={"cv_device": gpu})
         model, alias, closer = _load_backend(arguments, lane_settings)
         original_generate = model.generate
         def generate(request):

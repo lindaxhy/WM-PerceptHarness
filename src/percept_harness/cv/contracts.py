@@ -158,7 +158,7 @@ class CvEvidenceRequest(StrictModel):
         if self.spatial_prompts[0].entity_id != self.entities[0].entity_id:
             raise ValueError("spatial prompt must reference the target entity")
         known_frames = {frame.frame_index for frame in self.timeline.frames}
-        if any(prompt.frame_index not in known_frames for prompt in self.spatial_prompts):
+        if self.spatial_prompts[0].frame_index not in known_frames:
             raise ValueError("spatial prompt frame must belong to the request timeline")
         for frame in self.timeline.frames:
             if frame.frame_index >= self.frame_count:

@@ -112,7 +112,7 @@ def _regular_file_identity(path: Path) -> tuple[int, int]:
         status = path.lstat()
     except OSError:
         raise TimelineError("unable to probe video frame timeline") from None
-    if stat.S_ISLNK(status.st_mode) or not stat.S_ISREG(status.st_mode):
+    if not stat.S_ISREG(status.st_mode):
         raise TimelineError("unable to probe video frame timeline")
     return status.st_dev, status.st_ino
 
@@ -164,31 +164,19 @@ def initial_sample_indices(
     timeline: FrameTimeline, policy: SamplingPolicy
 ) -> tuple[int, ...]:
     """Select bounded, decoder-order source frames for the initial SAM pass."""
-    try:
-        start, end = _timeline_bounds(timeline)
-        rate = Fraction(str(policy.max_fps))
-        if _rate_at_or_below(timeline, start, end, rate):
-            return tuple(point.frame_index for point in timeline.frames)
-        return _select_pts_at_or_after(timeline, start, end, rate)
-    except (AttributeError, TypeError, ValueError, ZeroDivisionError):
-        raise TimelineError("unable to sample video frames") from None
-
-
-def _timeline_bounds(timeline: FrameTimeline) -> tuple[Fraction, Fraction]:
     frames = timeline.frames
-    if not frames:
-        raise ValueError
     start = Fraction(str(frames[0].timestamp_seconds))
     end = Fraction(str(frames[-1].timestamp_seconds))
-    if end < start:
-        raise ValueError
-    return start, end
+    rate = Fraction(str(policy.max_fps))
+    if _rate_at_or_below(timeline, start, end, rate):
+        return tuple(point.frame_index for point in frames)
+    return _select_pts_at_or_after(timeline, start, end, rate)
 
 
 def _rate_at_or_below(
     timeline: FrameTimeline, start: Fraction, end: Fraction, rate: Fraction
 ) -> bool:
-    if len(timeline.frames) == 1 or end == start:
+    if len(timeline.frames) == 1:
         return True
     required_duration = Fraction(len(timeline.frames) - 1, 1) / rate
     return end - start + _PTS_COMPARISON_TOLERANCE >= required_duration
@@ -200,8 +188,6 @@ def _select_pts_at_or_after(
     end: Fraction,
     rate: Fraction,
 ) -> tuple[int, ...]:
-    if rate <= 0:
-        raise ValueError
     points = timeline.frames
     timestamps = tuple(Fraction(str(point.timestamp_seconds)) for point in points)
     selected: list[int] = [points[0].frame_index]
@@ -259,7 +245,7 @@ def materialize_sampled_frames(
         expected_paths = tuple(destination / f"{number:06d}.jpg" for number in range(len(requested)))
         actual_paths = tuple(sorted(destination.glob("*.jpg")))
         if actual_paths != expected_paths or any(
-            not stat.S_ISREG(path.lstat().st_mode) or path.is_symlink()
+            not stat.S_ISREG(path.lstat().st_mode)
             for path in actual_paths
         ):
             raise ValueError
@@ -374,7 +360,6 @@ def _unlink_owned_stream(
         status = os.stat(name, dir_fd=destination_descriptor, follow_symlinks=False)
         if (
             stat.S_ISREG(status.st_mode)
-            and not stat.S_ISLNK(status.st_mode)
             and (status.st_dev, status.st_ino) == identity
         ):
             os.unlink(name, dir_fd=destination_descriptor)
@@ -446,11 +431,8 @@ def _write_pinned_jpeg(
 
 
 def _directory_identity(path: Path) -> tuple[int, int]:
-    try:
-        status = path.lstat()
-    except OSError:
-        raise ValueError from None
-    if stat.S_ISLNK(status.st_mode) or not stat.S_ISDIR(status.st_mode):
+    status = path.lstat()
+    if not stat.S_ISDIR(status.st_mode):
         raise ValueError
     return status.st_dev, status.st_ino
 
@@ -460,10 +442,7 @@ def _open_pinned_directory(path: Path) -> tuple[int, tuple[int, int]]:
     directory = getattr(os, "O_DIRECTORY", None)
     if nofollow is None or directory is None:
         raise ValueError
-    try:
-        descriptor = os.open(path, os.O_RDONLY | directory | nofollow)
-    except OSError:
-        raise ValueError from None
+    descriptor = os.open(path, os.O_RDONLY | directory | nofollow)
     try:
         opened = os.fstat(descriptor)
         current = path.lstat()

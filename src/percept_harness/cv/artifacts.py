@@ -261,7 +261,7 @@ class CvArtifactStore:
     def _validate_files(self, directory: Path, artifact: CvEvidenceArtifact, *, include_manifest: bool) -> None:
         self._directory(directory, private=True)
         files = {file.path: file for file in artifact.files}
-        if (len(files) != len(artifact.files) or len(files) > self._max_files
+        if (len(files) > self._max_files
                 or _MANIFEST_NAME in files or sum(file.size_bytes for file in files.values()) > self._max_bytes):
             raise ValueError("artifact file budget exceeded")
         expected = set(files) | ({_MANIFEST_NAME} if include_manifest else set())
@@ -291,9 +291,8 @@ class CvArtifactStore:
     @staticmethod
     @contextmanager
     def _open_file(root: Path, relative: str):
+        # Callers pass a schema-validated artifact path or the manifest constant.
         path = Path(relative)
-        if path.is_absolute() or not path.parts or any(part in {".", ".."} for part in path.parts):
-            raise ValueError("invalid artifact path")
         for parent in path.parents:
             CvArtifactStore._directory(root / parent)
         descriptor = os.open(root / path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)

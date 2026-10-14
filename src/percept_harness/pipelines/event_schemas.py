@@ -198,7 +198,6 @@ def validate_stage(schema, data, context, *, discarded_targets=None):
 
 def register_event_schemas(registry):
     from .output_validation import DeclaredSchemaOutputError
-    from pydantic import ValidationError
     for schema in (GroundedEvents, ConfidenceDraft, EvidenceReview, SamPromptReview):
         def validator(data, context, schema=schema):
             try:
@@ -206,7 +205,7 @@ def register_event_schemas(registry):
                 # Preserve recoverable raw target data through stage execution;
                 # pipeline validation records discarded targets in its audit.
                 return dict(data) if schema is ConfidenceDraft else validated
-            except (ValueError, TypeError, KeyError, ValidationError):
+            except (ValueError, TypeError, KeyError):
                 raise DeclaredSchemaOutputError(('GROUNDED_SCHEMA_INVALID',)) from None
         def response_contract(context, schema=schema):
             encoded = canonical(compile_local_schema(schema.model_json_schema()))
