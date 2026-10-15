@@ -39,6 +39,28 @@ class GroundedEvents(StrictModel):
         return self
 
 
+class ConcernResponse(StrictModel):
+    concern_id: Label
+    action: Literal['changed', 'retained', 'unresolved']
+    rationale: Annotated[StrictStr, Field(min_length=1, max_length=4000, pattern=r'\S')]
+    visual_times: Annotated[tuple[Timestamp, ...], Field(min_length=1, max_length=8)]
+
+
+class ReviewedRevision(GroundedEvents):
+    responses: Annotated[tuple[ConcernResponse, ...], Field(max_length=4096)]
+
+
+class ConcernVerdict(StrictModel):
+    concern_id: Label
+    resolved: StrictBool
+    reason: Annotated[StrictStr, Field(min_length=1, max_length=4000, pattern=r'\S')]
+
+
+class RevisionVerification(StrictModel):
+    verdicts: Annotated[tuple[ConcernVerdict, ...], Field(max_length=4096)]
+    new_issues: Annotated[tuple[Annotated[StrictStr, Field(min_length=1, max_length=4000, pattern=r'\S')], ...], Field(max_length=32)]
+
+
 class SpatialTarget(StrictModel):
     description: Label
     reference_time: Timestamp
@@ -136,7 +158,7 @@ class EvidenceReview(StrictModel):
 def validate_stage(schema, data, context, *, discarded_targets=None):
     # Media metadata is authoritative; tolerate decimal serialization at <=1 µs,
     # never rescale a model's event timeline or accept a materially wrong duration.
-    if schema in (GroundedEvents, ConfidenceDraft) and isinstance(data, dict):
+    if schema in (GroundedEvents, ConfidenceDraft, ReviewedRevision) and isinstance(data, dict):
         actual, reported = context['duration'], data.get('duration')
         if type(reported) in (int, float) and math.isfinite(reported) and abs(reported - actual) <= 1e-6:
             data = {**data, 'duration': actual}
@@ -193,12 +215,20 @@ def validate_stage(schema, data, context, *, discarded_targets=None):
     if isinstance(value, SamPromptReview) and value.correction:
         if not context['window_start'] <= value.correction.reference_time <= context['window_end']:
             raise ValueError('corrected reference outside requested window')
+    if isinstance(value, (ReviewedRevision, RevisionVerification)):
+        entries = value.responses if isinstance(value, ReviewedRevision) else value.verdicts
+        ids = [entry.concern_id for entry in entries]
+        if len(ids) != len(set(ids)) or set(ids) != set(context['concern_ids']):
+            raise ValueError('every concern must be addressed exactly once')
+        if isinstance(value, ReviewedRevision):
+            if any(t > context['duration'] for entry in entries for t in entry.visual_times):
+                raise ValueError('visual reference outside original video')
     return value.model_dump(mode='json')
 
 
 def register_event_schemas(registry):
     from .output_validation import DeclaredSchemaOutputError
-    for schema in (GroundedEvents, ConfidenceDraft, EvidenceReview, SamPromptReview):
+    for schema in (GroundedEvents, ConfidenceDraft, EvidenceReview, SamPromptReview, ReviewedRevision, RevisionVerification):
         def validator(data, context, schema=schema):
             try:
                 validated = validate_stage(schema, data, context or {})

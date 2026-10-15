@@ -24,6 +24,8 @@ class EmbodiedActionPipeline:
         def stage(name, schema, *, draft=None, review=None, target=None, ordinal=0, visuals=None):
             supplied = evidence if visuals is None else visuals
             ctx = {'duration': duration, 'event_count': len(draft['events']) if draft else 0}
+            if review is not None and 'concerns' in review:
+                ctx['concern_ids'] = [c['concern_id'] for c in review['concerns'] if 'concern_id' in c]
             if target is not None:
                 ctx.update(window_start=target['start'], window_end=target['end'])
             payload = {'video_path': str(media_path), 'span': {'start': 0.0, 'end': duration}, 'fps': 2.0,
@@ -128,7 +130,9 @@ class EmbodiedActionPipeline:
                                  'sam_calls': calls, 'max_prompt_attempts_per_target': 2}
         if confidence_gated and not concerns:
             audit['confidence_gate']['route'] = 'draft_only'
+            audit['revision_validation'] = {'status': 'not_required', 'attempts': 0}
             return assessed.public_annotation()
         if confidence_gated:
             audit['confidence_gate']['route'] = 'sam_then_revision' if windows else 'revision_only'
-        return stage('grounded_revision', GroundedEvents, draft=draft, review=review_data)
+        from .revision import resolve_review
+        return resolve_review(stage, draft, review_data, concerns, audit)

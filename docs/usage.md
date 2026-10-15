@@ -299,6 +299,35 @@ Use the short command selector `clipiqa` even though its output metric identifie
 
 Other upstream evaluators use `percept score` commands listed in the [catalog](metrics.md). Their result schemas and validation stages are documented individually.
 
+## Revision verification and unresolved annotations
+
+The v4 annotation workflow assigns stable concern IDs after review. Revision
+returns public events plus internal per-concern responses (`changed`, `retained`,
+or `unresolved`), rationale, and source-video timestamps. A separate VLM call
+checks the candidate against every concern and the original video. A changed
+wording alone does not resolve an unsupported event boundary.
+
+There are at most two revision/verification rounds. A rejected first revision is
+retried with verifier feedback, including any newly identified issues. Remaining
+issues yield `needs_review`, preserve the candidate JSON and audit history, and
+cause a nonzero CLI exit. Manifest status counts distinguish these candidates
+from completed annotations and execution failures. The event scorer rejects
+`needs_review` records; keep their `.audit.json` sidecars with the JSON files.
+
+Audit metadata contains `concern_ledger`, `revision_attempts`,
+`initial_unresolved_concerns`, and `revision_validation`. A passed verification
+clears the active unresolved list but preserves the original review and history.
+Confidence-gated drafts without uncertainty retain their existing draft-only
+route and record `revision_validation.status=not_required`.
+
+Existing v3 annotations are not automatically reused by annotation commands;
+they must pass the new workflow. Public event JSON remains `duration`/`events`.
+With no SAM calls, reviewed mode now uses four VLM calls on first-round success
+or six if a second round is necessary. Verification uses a separate call to the
+configured VLM and the existing video sampling, not a different model or a
+higher-density temporal probe. Passing is a model judgment, not human quality
+certification. SAM routing is unchanged.
+
 ## Multi-GPU manifest annotation
 
 Manifest mode requires SAM3.1 (`--cv sam31`).
