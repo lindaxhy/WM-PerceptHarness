@@ -241,6 +241,37 @@ class RevisionTests(unittest.TestCase):
             self.assertTrue(all((c[2],c[3]) == expected for c in calls))
             self.assertEqual(outcome.metadata['sam_checks'][0]['concern_window'], [6.,8.])
 
+    def test_invalid_review_retries_only_failed_stage_with_field_feedback(self):
+        class Model(ScriptedModel):
+            def generate(self, request):
+                data = super().generate(request)
+                if request.stage == 'evidence_review' and self.calls.count('evidence_review') == 1:
+                    data['motion_evidence'] = 'x' * 801
+                return data
+        model = Model()
+        outcome = self.run_model(model)
+        self.assertEqual(outcome.status, 'completed', outcome.error)
+        self.assertEqual(model.calls.count('grounded_draft'), 1)
+        self.assertEqual(model.calls.count('evidence_review'), 2)
+        records = outcome.metadata['model_output_failures']
+        self.assertEqual(len(records), 1)
+        self.assertTrue(records[0]['recovered'])
+        detail = records[0]['failure']['details'][0]
+        self.assertEqual(detail['location'], ['motion_evidence'])
+        self.assertNotIn('input', detail)
+        retry = [r for r in model.requests if r.stage == 'evidence_review'][1]
+        self.assertIn('motion_evidence', retry.prompt.split('INPUT_DATA_JSON')[0])
+        self.assertEqual(retry.response_contract, model.requests[1].response_contract)
+
+    def test_persistent_invalid_output_stops_after_three_attempts(self):
+        model = ScriptedModel(malformed=True)
+        outcome = self.run_model(model)
+        self.assertEqual(outcome.status, 'failed')
+        self.assertEqual(model.calls.count('grounded_revision'), 3)
+        self.assertEqual(model.calls.count('grounded_draft'), 1)
+        self.assertEqual(len(outcome.metadata['model_output_failures']), 3)
+        self.assertFalse(any(r['recovered'] for r in outcome.metadata['model_output_failures']))
+
     def test_new_verifier_question_gets_sam_before_second_revision(self):
         provider,calls = self.fake_orchestrator()
         model=ScriptedModel(target=True,new_issue=True)
