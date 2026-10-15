@@ -95,8 +95,12 @@ def read_manifest(path: Path) -> list[dict]:
     return rows
 
 
-def assignment(job_id: str, count: int) -> int:
-    return int.from_bytes(hashlib.sha256(job_id.encode()).digest()[:8], "big") % count
+def assignment(job_id: str, count: int, *, namespace: str = "") -> int:
+    # Preserve existing host shards, but use an independent hash for GPU lanes.
+    # Reusing hash(job_id) modulo both counts leaves lanes idle when the counts
+    # share a factor (e.g. two hosts with eight GPUs each).
+    identity = f"{namespace}\0{job_id}" if namespace else job_id
+    return int.from_bytes(hashlib.sha256(identity.encode()).digest()[:8], "big") % count
 
 
 def _cv_worker(connection, cv_settings, gpu):
@@ -389,7 +393,7 @@ def run_manifest(arguments) -> int:
             slot.wait_ready()
         tasks = [queue.Queue() for _ in slots]
         for row in rows:
-            tasks[assignment(row["job_id"], len(slots))].put(row)
+            tasks[assignment(row["job_id"], len(slots), namespace="gpu")].put(row)
         status("running")
         with ThreadPoolExecutor(max_workers=len(slots) * arguments.workers_per_gpu) as executor:
             futures = [executor.submit(worker, slot.gpu, slot, tasks[i])
