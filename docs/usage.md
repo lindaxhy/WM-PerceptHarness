@@ -145,7 +145,9 @@ The v4 workflow treats question kinds as descriptions, not SAM eligibility gates
    `confidence_draft` supplies both in confidence-gated mode).
 2. Every concrete question enters `sam_target_plan`, which sees only its source
    video window plus up to 0.5 seconds of context on each side. It selects one
-   relevant visible object/reference and a normalized XYXY box. A null target
+   relevant visible object/reference and a normalized XYXY box. Legacy free-text
+   unresolved issues lack timestamps and use the full source window rather than
+   being skipped. A null target
    must include a reason; no target is invented when segmentation cannot help.
 3. SAM probes that reference frame. `sam_prompt_review` checks the actual mask;
    only an accepted mask proceeds to tracking within the question window. One

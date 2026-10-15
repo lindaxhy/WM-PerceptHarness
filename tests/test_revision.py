@@ -21,6 +21,7 @@ CONCERN = {'kind': 'event_boundary', 'reason': 'No visible transition at 5 secon
 class ScriptedModel:
     def __init__(self, *, passes_on=1, malformed=False, confidence=False, empty=False, new_issue=False, target=False, kind="event_boundary"):
         self.calls = []
+        self.requests = []
         self.passes_on, self.malformed = passes_on, malformed
         self.confidence, self.empty, self.new_issue = confidence, empty, new_issue
         self.attempt = 0
@@ -28,6 +29,7 @@ class ScriptedModel:
 
     def generate(self, request):
         self.calls.append(request.stage)
+        self.requests.append(request)
         # Also exercise schema compilation and the transport allowlist.
         self_contract = request.response_contract.format()
         assert self_contract['name'] == request.schema_name
@@ -204,6 +206,18 @@ class RevisionTests(unittest.TestCase):
                 self.assertEqual(outcome.status,'completed',outcome.error)
                 self.assertEqual([c[1] for c in calls],['probe','track'])
                 self.assertEqual(outcome.metadata['recheck_budget']['completed_windows'],1)
+
+    def test_planner_and_sam_use_only_the_question_window(self):
+        provider,calls = self.fake_orchestrator()
+        model=ScriptedModel(target=True)
+        with patch.dict(CONCERN, start=4.0, end=6.0), \
+             patch('percept_harness.pipelines.embodied.EvidenceOrchestrator',provider):
+            outcome=self.run_model(model)
+        self.assertEqual(outcome.status,'completed',outcome.error)
+        request=next(r for r in model.requests if r.stage=='sam_target_plan')
+        self.assertEqual((request.span.start,request.span.end),(3.5,6.5))
+        self.assertEqual(request.visual_evidence,())
+        self.assertTrue(all((c[2],c[3])==(3.5,6.5) for c in calls))
 
     def test_new_verifier_question_gets_sam_before_second_revision(self):
         provider,calls = self.fake_orchestrator()

@@ -66,7 +66,12 @@ class EmbodiedActionPipeline:
             audit['draft'] = draft
             review_data = stage('evidence_review', EvidenceReview, draft=draft)
             review = EvidenceReview.model_validate(review_data)
-            concerns = review.concerns
+            concerns = list(review.concerns)
+            known = {c.reason for c in concerns}
+            # Legacy free-text issues have no time range: use the full source
+            # window rather than silently excluding them from target planning.
+            concerns.extend(Concern(kind='description', reason=reason, start=0.0, end=duration,
+                target=None, event_indices=()) for reason in review.unresolved if reason not in known)
             audit['review'] = review_data
             audit['unresolved_concerns'].extend(review.unresolved)
         audit['unresolved_concerns'].extend(c.reason for c in concerns)
@@ -89,7 +94,7 @@ class EmbodiedActionPipeline:
                                 'attempts': [], 'tracked': False}
                 audit['sam_checks'].append(check_record)
                 try:
-                    plan = stage('sam_target_plan', SamTargetPlan, draft=candidate, target=window, ordinal=index)
+                    plan = stage('sam_target_plan', SamTargetPlan, draft=candidate, target=window, ordinal=index, visuals=[])
                     check_record['target_plan'] = plan
                     if plan['target'] is None:
                         check_record['status'] = 'no_reliable_target'
