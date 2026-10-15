@@ -33,13 +33,18 @@ def targeted_windows(concerns, duration, *, max_windows=MAX_RECHECKS, max_second
     """Queue every concern for local target planning, subject to explicit budgets."""
     selected, unresolved, spent = [], [], 0.0
     for index, concern in enumerate(concerns):
-        start = max(0.0, concern.start - CONTEXT_SECONDS)
-        end = min(duration, concern.end + CONTEXT_SECONDS)
+        # The question interval and the visible identity reference are distinct.
+        reference = concern.target.reference_time if concern.target else concern.start
+        if not 0.0 <= reference <= duration:
+            raise ValueError('SAM reference outside original video')
+        start = max(0.0, min(concern.start, reference) - CONTEXT_SECONDS)
+        end = min(duration, max(concern.end, reference) + CONTEXT_SECONDS)
         if len(selected) >= max_windows or spent + end - start > max_seconds:
             unresolved.append(f'SAM budget exhausted for concern {index}: {concern.reason}')
             continue
         selected.append({'start': start, 'end': end, 'concern_index': index,
                          'question': concern.reason, 'kind': concern.kind,
+                         'concern_window': [concern.start, concern.end],
                          'target': concern.target.model_dump(mode='json') if concern.target else None})
         spent += end - start
     return selected, unresolved
@@ -52,6 +57,8 @@ class EvidenceOrchestrator:
         self.video_identity = local_asset_identity(media_path)
 
     def run(self, *, ordinal, window, target, mode):
+        if not window['start'] <= target.reference_time <= window['end']:
+            raise SafePipelineError('SAM reference outside processing window')
         settings = self.context.settings
         entity = EntityPrompt(entity_id="target", canonical_label=target.description)
         points = tuple(p for p in self.timeline.frames if window['start'] <= p.timestamp_seconds <= window['end'])
@@ -90,6 +97,7 @@ class EvidenceOrchestrator:
         audit = {**result, 'scope': scope, 'provider': artifact.provider, 'video_identity': self.video_identity,
                  'time_basis': 'container-relative playback seconds; original decoder frame indices',
                  'window': [window['start'], window['end']],
+                 'concern_window': window.get('concern_window'),
                  'mode': mode, 'question': window['question'],
                  'spatial_prompt': spatial.model_dump(mode='json'),
                  'reference_time': reference.timestamp_seconds, 'no_tracks': not bool(artifact.tracks),

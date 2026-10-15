@@ -81,8 +81,6 @@ class EventUncertainty(StrictModel):
     def valid(self):
         if self.end <= self.start or not self.reason.strip():
             raise ValueError('invalid review concern')
-        if self.target and not self.start <= self.target.reference_time <= self.end:
-            raise ValueError('reference frame must be within concern window')
         return self
 
 
@@ -121,7 +119,8 @@ class ConfidenceDraft(GroundedEvents):
     def questions(self):
         for event in self.events:
             question = event.uncertainty
-            if question and question.end > self.duration:
+            if question and (question.end > self.duration or
+                             (question.target and question.target.reference_time > self.duration)):
                 raise ValueError('uncertainty must stay within the original video window')
         return self
 
@@ -210,7 +209,9 @@ def validate_stage(schema, data, context, *, discarded_targets=None):
         raise ValueError('duration must match original video')
     if isinstance(value, (EvidenceReview, RevisionVerification)):
         for concern in (value.concerns if isinstance(value, EvidenceReview) else value.new_issues):
-            if concern.end > context['duration'] or any(i >= context['event_count'] for i in concern.event_indices):
+            if (concern.end > context['duration'] or
+                (concern.target and concern.target.reference_time > context['duration']) or
+                any(i >= context['event_count'] for i in concern.event_indices)):
                 raise ValueError('review references invalid event or time')
     if isinstance(value, SamTargetPlan) and value.target:
         if not context['window_start'] <= value.target.reference_time <= context['window_end']:

@@ -90,7 +90,8 @@ class EmbodiedActionPipeline:
             for local_index, window in enumerate(windows):
                 index = offset + local_index
                 check_record = {'concern_index': window['concern_index'], 'question': window['question'],
-                                'window': [window['start'], window['end']], 'source': source, 'kind': window['kind'],
+                                'window': [window['start'], window['end']],
+                                'concern_window': window['concern_window'], 'source': source, 'kind': window['kind'],
                                 'attempts': [], 'tracked': False}
                 audit['sam_checks'].append(check_record)
                 try:
