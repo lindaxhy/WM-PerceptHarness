@@ -7,8 +7,8 @@ from ..cv.timeline import probe_frame_timeline
 from ..models.base import VisualEvidence
 from .base import SafePipelineError
 
-MAX_RECHECKS = 3
-MAX_RECHECK_SECONDS = 30.0
+MAX_RECHECKS = 32
+MAX_RECHECK_SECONDS = 300.0
 CONTEXT_SECONDS = 0.5
 
 
@@ -29,19 +29,18 @@ class Evidence:
     images: tuple[VisualEvidence, ...]
 
 
-def targeted_windows(concerns, duration):
-    """Budget only actionable object questions, never editorial/camera issues."""
+def targeted_windows(concerns, duration, *, max_windows=MAX_RECHECKS, max_seconds=MAX_RECHECK_SECONDS):
+    """Queue every concern for local target planning, subject to explicit budgets."""
     selected, unresolved, spent = [], [], 0.0
     for index, concern in enumerate(concerns):
-        if concern.target is None:
-            continue
         start = max(0.0, concern.start - CONTEXT_SECONDS)
         end = min(duration, concern.end + CONTEXT_SECONDS)
-        if len(selected) >= MAX_RECHECKS or spent + end - start > MAX_RECHECK_SECONDS:
+        if len(selected) >= max_windows or spent + end - start > max_seconds:
             unresolved.append(f'SAM budget exhausted for concern {index}: {concern.reason}')
             continue
         selected.append({'start': start, 'end': end, 'concern_index': index,
-                         'question': concern.reason, 'target': concern.target.model_dump(mode='json')})
+                         'question': concern.reason, 'kind': concern.kind,
+                         'target': concern.target.model_dump(mode='json') if concern.target else None})
         spent += end - start
     return selected, unresolved
 

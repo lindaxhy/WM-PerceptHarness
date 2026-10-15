@@ -60,7 +60,7 @@ def write_annotation(path: Path, record: dict[str, Any]) -> None:
     data = record["data"]
     audit = {key: value for key, value in record.items() if key != "data"}
     try:
-        if record["status"] == "completed":
+        if record["status"] in {"completed", "needs_review"}:
             from .pipelines.event_schemas import GroundedEvents
             GroundedEvents.model_validate(data)
             write_json(sidecar, {**audit, "status": "writing"})
@@ -105,6 +105,11 @@ def completed_result(path: Path, video: Path) -> dict[str, Any] | None:
         record = annotation_record(path)
         if (not record or record.get("status") != "completed"
                 or record.get("video_path") != str(video.resolve())):
+            return None
+        from .pipelines.event_prompts import VERSION, CONFIDENCE_VERSION
+        metadata = record.get('metadata') or {}
+        if (metadata.get('annotation_version') not in {VERSION, CONFIDENCE_VERSION}
+                or metadata.get('revision_validation', {}).get('status') not in {'passed', 'not_required'}):
             return None
         GroundedEvents.model_validate(record.get("data"))
         return record

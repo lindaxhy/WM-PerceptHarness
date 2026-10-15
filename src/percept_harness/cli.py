@@ -166,8 +166,9 @@ def _eval(arguments: argparse.Namespace) -> int:
     completed = sum(outcome.status == "completed" for outcome in outcomes)
     skipped = sum(outcome.status == "skipped" for outcome in outcomes)
     failed = sum(outcome.status == "failed" for outcome in outcomes)
-    print(f"done: {completed} completed, {skipped} skipped, {failed} failed")
-    return 0 if failed == 0 else 1
+    needs_review = sum(outcome.status == "needs_review" for outcome in outcomes)
+    print(f"done: {completed} completed, {skipped} skipped, {needs_review} needs review, {failed} failed")
+    return 0 if failed == 0 and needs_review == 0 else 1
 
 
 def _load_backend(arguments: argparse.Namespace, settings: Settings):

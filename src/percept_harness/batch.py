@@ -221,9 +221,9 @@ def required_event_phases(metadata):
         required = {'confidence_draft'}
         if (metadata.get('recheck_budget', {}).get('selected_windows', 0)
                 or metadata.get('confidence_gate', {}).get('requires_revision', False)):
-            required.add('grounded_revision')
+            required.update({'grounded_revision', 'revision_verification'})
         return required
-    return {'grounded_draft', 'evidence_review', 'grounded_revision'}
+    return {'grounded_draft', 'evidence_review', 'grounded_revision', 'revision_verification'}
 
 
 class ReviewRequiredRunner(SyncRunner):
@@ -278,7 +278,7 @@ def run_manifest(arguments) -> int:
         with mutex:
             snapshot = {k: dict(v) for k, v in states.items()}
         counts = {s: sum(v["status"] == s for v in snapshot.values())
-                  for s in ("pending", "running", "completed", "failed")}
+                  for s in ("pending", "running", "completed", "needs_review", "failed")}
         write_json(status_path, {"phase": phase, "pid": os.getpid(), "host": os.uname().nodename,
             "shard_index": arguments.shard_index, "shard_count": arguments.shard_count,
             "started_unix": start, "updated_unix": time.time(), "total": len(rows),
@@ -328,7 +328,7 @@ def run_manifest(arguments) -> int:
                     outcomes = run_batch(runner, [video], job_root,
                                          force=arguments.force, log=lambda message: None)
                     outcome = outcomes[0]
-                    if outcome.status not in {"completed", "skipped"}:
+                    if outcome.status not in {"completed", "skipped", "needs_review"}:
                         raise RuntimeError(outcome.error or "annotation failed")
                     # Completed, structurally valid annotations are reused by default.
                     metadata = outcome.metadata or {}
@@ -346,10 +346,10 @@ def run_manifest(arguments) -> int:
                     write_json(job_root / '.percept' / 'cv-artifact.json', {
                         'artifacts': archives, 'host': os.uname().nodename, 'gpu': gpu})
                     with mutex:
-                        states[jid].update(status='completed', finished_unix=time.time(),
+                        states[jid].update(status='needs_review' if outcome.status == 'needs_review' else 'completed', finished_unix=time.time(),
                             result_file=str(job_root / outcome.result_file), cv_archives=archives, resumed=outcome.status == 'skipped')
                 except Exception as error:
-                    if outcome is not None and outcome.status in {"completed", "skipped"}:
+                    if outcome is not None and outcome.status in {"completed", "skipped", "needs_review"}:
                         _write_result(job_root / outcome.result_file, replace(
                             outcome, status="failed", data=None, error=f"Evidence export failed: {error}"))
                     with mutex:
@@ -397,7 +397,7 @@ def run_manifest(arguments) -> int:
             for future in futures:
                 future.result()
         status("complete")
-        return 1 if any(v["status"] == "failed" for v in states.values()) else 0
+        return 1 if any(v["status"] in {"failed", "needs_review"} for v in states.values()) else 0
     except Exception:
         status("failed")
         raise

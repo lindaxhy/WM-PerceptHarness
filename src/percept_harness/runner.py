@@ -27,7 +27,7 @@ class EvalOutcome:
     """The terminal record of one evaluated video."""
 
     video_path: Path
-    status: str  # "completed" | "failed" | "skipped"
+    status: str  # "completed" | "needs_review" | "failed" | "skipped"
     data: dict[str, Any] | None = None
     error: str | None = None
     elapsed_seconds: float | None = None
@@ -91,7 +91,7 @@ class SyncRunner:
             result = EmbodiedActionPipeline().run(context, prompt_context=prompt_context)
             return EvalOutcome(
                 video_path=resolved,
-                status="completed",
+                status=("needs_review" if context.metadata.get("revision_validation", {}).get("status") == "needs_review" else "completed"),
                 data=dict(result),
                 metadata=dict(context.metadata),
                 elapsed_seconds=time.monotonic() - started,

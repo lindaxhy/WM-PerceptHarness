@@ -134,41 +134,37 @@ percept annotate --videos video.mp4 --cv sam31 \
 The default remains `--event-workflow reviewed` for comparison. The selector also
 works with `--manifest` or `PERCEPT_EVENT_WORKFLOW=confidence-gated`; use a separate output directory for each workflow or pass `--force` to rerun.
 
-In the experiment, the first VLM call (`confidence_draft`) generates each event,
-a confidence in [0, 1], and a concrete uncertainty with an optional SAM candidate.
-Confidence <= 0.6 requires an explicit uncertainty, but confidence no longer
-suppresses a reported question. Every non-null uncertainty requires final VLM
-revision. Only an actionable object question with a valid target can enter the
-existing three-window / 30-second SAM budget, regardless of confidence. Confidence is
-self-reported and uncalibrated; confident errors can bypass checking.
+In the experiment, `confidence_draft` returns event confidence and optional
+uncertainties. Confidence <= 0.6 requires a question; every reported question is
+processed regardless of confidence. With no questions, the draft-only route
+still takes one VLM call. Confident errors can remain unreported.
 
-If no uncertainty is reported, the public annotation is the draft after removing
-confidence and uncertainty fields: one VLM call, no SAM. Questions without targets
-or outside the SAM budget instead reach a final revision (two VLM calls when no
-SAM mask checks occur). All questions remain in the audit; revision does not
-certify their resolution. Camera/boundary or off-screen questions are revised
-conservatively using existing frames, without automatically acquiring new evidence.
-Malformed optional SAM targets (including reference times outside their question
-window) are discarded and recorded in `discarded_sam_targets`. The valid question
-still reaches VLM revision without that target; malformed event data or question
-text/type/window remain errors. For occlusion/trajectory checks, the prompt nominates the moving object at a visible
-reference frame rather than only its occluder. SAM cannot reveal fully hidden paths.
+The v4 workflow treats question kinds as descriptions, not SAM eligibility gates:
 
-For a selected target: single-frame SAM probe → VLM mask check → accepted SAM
-tracking → final VLM revision. One accepted target normally costs three VLM calls
-in total. Each additional target/retry adds a mask-check call. Empty masks skip
-that check and tracking; SAM failures/rejections still reach final revision with
-unresolved concerns, without treating rejected masks as evidence. Public JSON
-remains `{duration, events}`; `draft`, `confidence_gate`, `sam_checks`,
-`recheck_budget` and `phases` are audit-only. Event granularity follows the same
-original boundary rules as the reviewed workflow.
+1. `grounded_draft` and `evidence_review` produce events and questions (or
+   `confidence_draft` supplies both in confidence-gated mode).
+2. Every concrete question enters `sam_target_plan`, which sees only its source
+   video window plus up to 0.5 seconds of context on each side. It selects one
+   relevant visible object/reference and a normalized XYXY box. Legacy free-text
+   unresolved issues lack timestamps and use the full source window rather than
+   being skipped. A null target
+   must include a reason; no target is invented when segmentation cannot help.
+3. SAM probes that reference frame. `sam_prompt_review` checks the actual mask;
+   only an accepted mask proceeds to tracking within the question window. One
+   corrected reference retry is allowed. Empty masks do not prove disappearance.
+4. `grounded_revision` responds to every concern ID. `revision_verification`
+   independently checks candidate events without reading the revision rationale.
+   Newly discovered structured questions also enter local SAM planning before
+   the second revision. After two revision rounds, unresolved results remain
+   `needs_review` rather than completed.
 
-The `grounded-events-v3` prompts restore the original segmentation rules while retaining the targeted SAM workflow:
-
-1. `grounded_draft`: VLM observes original frames and drafts events.
-2. `evidence_review`: a separate call of the same VLM checks the draft against original frames. It distinguishes editorial/boundary/camera concerns from concrete object identity, location, occlusion and trajectory questions.
-3. For at most three actionable object requests (sum of contextual windows ≤30 seconds), SAM segments a proposed reference frame using text and a normalized XYXY candidate box. `sam_prompt_review` checks the real mask overlay against the target. Only an accepted prompt proceeds to bidirectional video tracking. One corrected prompt retry is permitted; rejected masks never support the final annotation.
-4. `grounded_revision`: VLM revises events using original frames, review concerns and accepted tracking evidence. If there are no object questions, SAM is never loaded or called.
+The shared per-video planning budget is 32 windows and 300 contextual seconds
+across initial review and verification. Excess questions and unavailable targets
+remain recorded for conservative revision/review; the budget never resets on a
+retry. A final-round new question remains unresolved rather than starting an
+unbounded loop. Each planned question adds a VLM call, and each nonempty SAM probe
+adds a mask-review call. SAM still cannot decide semantic boundaries or reveal
+fully hidden paths by itself. Public JSON remains `{duration, events}`.
 
 The review records a short `motion_evidence` explanation naming a support/background reference or stating that the evidence is insufficient. `metadata.phases` lists completed VLM stages; `stage_timings`, `sam_checks`, `evidence`, `review`, `recheck_budget` and `unresolved_concerns` are audit information. Each SAM request records its question, object, reference frame, spatial prompt and time window. Detailed masks/tracks remain in content-addressed CV artifacts, not the public annotation. Internal SAM sampling remains up to 30 fps for short/local clips; no per-frame positions are added to event JSON. Cache identities bind selected original frames/times, source duration/count, probe/track mode and spatial prompts, so one window cannot reuse another window's evidence.
 
@@ -182,8 +178,9 @@ which resolved source path owns a result. Use `result_file` in `results.jsonl`
 to locate it. Existing unreadable files are preserved and a free suffix is used.
 
 A result is skipped by default when its
-source path matches, its status is completed, and its annotation passes schema
-validation. Failed, incomplete or malformed results are retried. Legacy result
+source path matches, its status is completed, its annotation passes schema
+validation, and its v4 audit records successful verification (or the explicit
+confidence-gated draft-only route). Failed, incomplete or malformed results are retried. Legacy result
 envelopes can still be read. There are no content checksums, code/environment
 fingerprints, automatic history archives or per-run manifests.
 
@@ -298,6 +295,36 @@ CLIP-IQA+ additionally records frame sampling, resizing, device, and MemoBench r
 Use the short command selector `clipiqa` even though its output metric identifier is `clipiqa+`.
 
 Other upstream evaluators use `percept score` commands listed in the [catalog](metrics.md). Their result schemas and validation stages are documented individually.
+
+## Revision verification and unresolved annotations
+
+The v4 annotation workflow assigns stable concern IDs after review. Revision
+returns public events plus internal per-concern responses (`changed`, `retained`,
+or `unresolved`), rationale, and source-video timestamps. A separate VLM call
+checks the candidate against every concern and the original video. A changed
+wording alone does not resolve an unsupported event boundary.
+
+There are at most two revision/verification rounds. A rejected first revision is
+retried with verifier feedback, including any newly identified issues. Remaining
+issues yield `needs_review`, preserve the candidate JSON and audit history, and
+cause a nonzero CLI exit. Manifest status counts distinguish these candidates
+from completed annotations and execution failures. The event scorer rejects
+`needs_review` records; keep their `.audit.json` sidecars with the JSON files.
+
+Audit metadata contains `concern_ledger`, `revision_attempts`,
+`initial_unresolved_concerns`, and `revision_validation`. A passed verification
+clears the active unresolved list but preserves the original review and history.
+Confidence-gated drafts without uncertainty retain their existing draft-only
+route and record `revision_validation.status=not_required`.
+
+Existing v3 annotations are not automatically reused by annotation commands;
+they must pass the new workflow. Public event JSON remains `duration`/`events`.
+Excluding target planning and mask checks, reviewed mode uses four VLM calls on
+first-round success or six if a second round is necessary. Verification uses a separate call to the
+configured VLM and the existing video sampling, not a different model or a
+higher-density temporal probe. Passing is a model judgment, not human quality
+certification. Every question is now considered for local SAM evidence regardless
+of its category.
 
 ## Multi-GPU manifest annotation
 
