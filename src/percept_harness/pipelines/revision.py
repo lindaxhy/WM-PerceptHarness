@@ -25,7 +25,7 @@ def resolve_review(stage, draft, review, concerns, audit):
                          review=revision_context, ordinal=attempt)
         candidate = {key: revision[key] for key in ('duration', 'events')}
         verification = stage('revision_verification', RevisionVerification, draft=candidate,
-            review={**revision_context, 'responses': revision['responses']}, ordinal=attempt)
+            review={'original_draft': original, 'concerns': ledger}, ordinal=attempt)
         self_unresolved = {r['concern_id'] for r in revision['responses'] if r['action'] == 'unresolved'}
         failed = [v for v in verification['verdicts'] if not v['resolved'] or v['concern_id'] in self_unresolved]
         audit['revision_attempts'].append({'revision': revision, 'verification': verification})

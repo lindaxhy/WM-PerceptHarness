@@ -49,6 +49,8 @@ class ScriptedModel:
                 {'concern_id': c['concern_id'], 'action': 'changed',
                  'rationale': 'Merged arbitrary segments.', 'visual_times': [5.0]} for c in ledger]}
         if request.stage == 'revision_verification':
+            assert 'responses' not in payload['review']
+            assert 'previous_verification' not in payload['review']
             return {'verdicts': [{'concern_id': c['concern_id'], 'resolved': self.attempt >= self.passes_on,
                                  'reason': 'Boundary checked against frames.'} for c in ledger],
                     'new_issues': ['Unsupported description.'] if self.new_issue and self.attempt == 1 else []}
