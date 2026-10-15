@@ -139,6 +139,36 @@ class RevisionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_stage(RevisionVerification, {'verdicts': [], 'new_issues': []}, context)
 
+    def test_openai_transport_and_cache_support_verification_stage(self):
+        import httpx
+        from percept_harness.media import FrameRef
+        from percept_harness.models.openai_compat import OpenAICompatVideoModel
+        scripted = ScriptedModel()
+        stages = {'GroundedEvents': 'grounded_draft', 'EvidenceReview': 'evidence_review',
+                  'ReviewedRevision': 'grounded_revision', 'RevisionVerification': 'revision_verification'}
+        def handle(request):
+            body = json.loads(request.content)
+            name = body['response_format']['json_schema']['name']
+            self.assertGreater(body['max_tokens'], 0)
+            fake = SimpleNamespace(stage=stages[name], schema_name=name,
+                prompt=body['messages'][0]['content'][0]['text'],
+                response_contract=SimpleNamespace(format=lambda: {'name': name}))
+            data = scripted.generate(fake)
+            return httpx.Response(200, json={'choices': [{'finish_reason': 'stop',
+                'message': {'role': 'assistant', 'content': json.dumps(data)}}]})
+        def extract(video, span, fps, output):
+            path = output/'frame.jpg'; path.write_bytes(b'fake image for mocked HTTP transport')
+            return [FrameRef(path, 0.0)]
+        model = OpenAICompatVideoModel(base_url='https://example.invalid/v1', api_key='test',
+            model_name='test', response_format='json_schema', transport=httpx.MockTransport(handle),
+            frame_extractor=extract)
+        self.addCleanup(model.close)
+        self.settings = self.settings.model_copy(update={'semantic_result_cache': True})
+        runner = SyncRunner(model, self.settings, model_alias='test')
+        outcome = run_batch(runner, [self.video], self.root/'transport', log=lambda _: None)[0]
+        self.assertEqual(outcome.status, 'completed', outcome.error)
+        self.assertIn('revision_verification', scripted.calls)
+
     def test_manifest_reports_needs_review_and_nonzero_exit(self):
         manifest=self.root/'manifest.jsonl'
         manifest.write_text(json.dumps({'job_id':'one','video_path':str(self.video)})+'\n')
