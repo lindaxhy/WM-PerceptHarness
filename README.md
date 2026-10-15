@@ -73,10 +73,13 @@ trigger. Events retain the original segmentation rules, without fixed-length
 windows or forced merging of continuous actions.
 
 - No questions: return the draft after one VLM call.
-- Questions without an actionable SAM target: revise using the original frames.
-- Actionable object questions: SAM single-frame segmentation, VLM mask check,
-  accepted video tracking, then final VLM revision. One accepted target normally
-  takes three VLM calls in total; additional targets or mask retries add calls.
+- Every question enters local SAM target planning, regardless of its category.
+  SAM probes and tracks a relevant visible target within that question's window;
+  unavailable targets are explicitly recorded rather than guessed.
+- Revision must respond to every concern, followed by a separate verification
+  call. New verifier questions receive the same local SAM planning before one
+  bounded retry. Remaining problems are saved as `needs_review` and return a
+  nonzero exit code. See [workflow and budgets](docs/usage.md#revision-verification-and-unresolved-annotations).
 
 Invalid optional SAM targets, such as a reference frame outside the question
 window, are dropped and recorded in the audit. The valid question still reaches

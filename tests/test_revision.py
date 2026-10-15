@@ -19,11 +19,12 @@ CONCERN = {'kind': 'event_boundary', 'reason': 'No visible transition at 5 secon
 
 
 class ScriptedModel:
-    def __init__(self, *, passes_on=1, malformed=False, confidence=False, empty=False, new_issue=False):
+    def __init__(self, *, passes_on=1, malformed=False, confidence=False, empty=False, new_issue=False, target=False, kind="event_boundary"):
         self.calls = []
         self.passes_on, self.malformed = passes_on, malformed
         self.confidence, self.empty, self.new_issue = confidence, empty, new_issue
         self.attempt = 0
+        self.target, self.kind = target, kind
 
     def generate(self, request):
         self.calls.append(request.stage)
@@ -37,9 +38,13 @@ class ScriptedModel:
             uncertainty = {k: v for k, v in CONCERN.items() if k != 'event_indices'}
             return {'duration': 10.0, 'events': [{**DRAFT['events'][0], 'confidence': 0.9,
                      'uncertainty': None if self.empty else uncertainty}]}
+        if request.stage == 'sam_target_plan':
+            return {'target': {'description': 'spoon', 'reference_time': 5.0, 'bbox_xyxy': [0.2,0.2,0.6,0.6]} if self.target else None, 'reason': 'Visible relevant object.' if self.target else 'No reliable relevant visible reference in this mocked clip.'}
         if request.stage == 'evidence_review':
             return {'motion_evidence': 'Spoons stationary relative to table.',
-                    'concerns': [] if self.empty else [CONCERN], 'unresolved': []}
+                    'concerns': [] if self.empty else [{**CONCERN, 'kind': self.kind}], 'unresolved': []}
+        if request.stage == 'sam_prompt_review':
+            return {'accepted': True, 'reason': 'Correct target.', 'correction': None}
         ledger = payload['review']['concerns']
         if request.stage == 'grounded_revision':
             self.attempt += 1
@@ -53,7 +58,7 @@ class ScriptedModel:
             assert 'previous_verification' not in payload['review']
             return {'verdicts': [{'concern_id': c['concern_id'], 'resolved': self.attempt >= self.passes_on,
                                  'reason': 'Boundary checked against frames.'} for c in ledger],
-                    'new_issues': ['Unsupported description.'] if self.new_issue and self.attempt == 1 else []}
+                    'new_issues': [{**CONCERN, 'kind': 'description', 'reason': 'Unsupported description.', 'event_indices': [0]}] if self.new_issue and self.attempt == 1 else []}
         raise AssertionError(request.stage)
 
 
@@ -110,8 +115,8 @@ class RevisionTests(unittest.TestCase):
     def test_new_verifier_issue_is_added_to_next_ledger(self):
         outcome = self.run_model(ScriptedModel(new_issue=True))
         self.assertEqual(outcome.status, 'completed')
-        self.assertEqual(len(outcome.metadata['concern_ledger']), 2)
-        self.assertEqual(len(outcome.metadata['revision_attempts'][1]['revision']['responses']), 2)
+        self.assertIn('Unsupported description.', [c['reason'] for c in outcome.metadata['concern_ledger']])
+        self.assertEqual(len(outcome.metadata['revision_attempts'][1]['revision']['responses']), len(outcome.metadata['concern_ledger']))
 
     def test_missing_response_fails_closed(self):
         self.assertEqual(self.run_model(ScriptedModel(malformed=True)).status, 'failed')
@@ -147,7 +152,7 @@ class RevisionTests(unittest.TestCase):
         from percept_harness.models.openai_compat import OpenAICompatVideoModel
         scripted = ScriptedModel()
         stages = {'GroundedEvents': 'grounded_draft', 'EvidenceReview': 'evidence_review',
-                  'ReviewedRevision': 'grounded_revision', 'RevisionVerification': 'revision_verification'}
+                  'ReviewedRevision': 'grounded_revision', 'RevisionVerification': 'revision_verification', 'SamTargetPlan': 'sam_target_plan'}
         def handle(request):
             body = json.loads(request.content)
             name = body['response_format']['json_schema']['name']
@@ -170,6 +175,61 @@ class RevisionTests(unittest.TestCase):
         outcome = run_batch(runner, [self.video], self.root/'transport', log=lambda _: None)[0]
         self.assertEqual(outcome.status, 'completed', outcome.error)
         self.assertIn('revision_verification', scripted.calls)
+        self.assertIn('sam_target_plan', scripted.calls)
+        self.assertFalse(any('error' in c for c in outcome.metadata['sam_checks']))
+
+    def fake_orchestrator(self, empty=False):
+        from percept_harness.models.base import VisualEvidence
+        calls = []
+        class Orchestrator:
+            def __init__(self, *args): pass
+            def run(self, *, ordinal, window, target, mode):
+                calls.append((ordinal, mode, window['start'], window['end']))
+                scope = f'{mode}_{ordinal}'
+                return SimpleNamespace(audit={'scope': scope, 'reference_time': 5.0},
+                    prompt_record={'scope': scope}, images=() if empty else (VisualEvidence(
+                        png_bytes=b'\x89PNG\r\n\x1a\nmock', timestamp=5.0, entity_id='target',
+                        track_id=scope, source=scope),))
+        return Orchestrator, calls
+
+    def test_all_concern_kinds_enter_local_planning_and_sam(self):
+        original_root = self.root
+        for kind in ('event_boundary', 'description', 'missing_event', 'camera_motion',
+                     'object_identity', 'object_location', 'occlusion', 'trajectory'):
+            with self.subTest(kind=kind):
+                self.root = original_root/kind; self.root.mkdir()
+                provider,calls = self.fake_orchestrator()
+                with patch('percept_harness.pipelines.embodied.EvidenceOrchestrator', provider):
+                    outcome = self.run_model(ScriptedModel(target=True, kind=kind))
+                self.assertEqual(outcome.status,'completed',outcome.error)
+                self.assertEqual([c[1] for c in calls],['probe','track'])
+                self.assertEqual(outcome.metadata['recheck_budget']['completed_windows'],1)
+
+    def test_new_verifier_question_gets_sam_before_second_revision(self):
+        provider,calls = self.fake_orchestrator()
+        model=ScriptedModel(target=True,new_issue=True)
+        with patch('percept_harness.pipelines.embodied.EvidenceOrchestrator', provider):
+            outcome=self.run_model(model)
+        self.assertEqual(outcome.status,'completed',outcome.error)
+        self.assertEqual([c[0] for c in calls],[1,3,4,6])
+        self.assertEqual(outcome.metadata['sam_checks'][1]['source'],'revision_verification')
+        self.assertEqual(model.calls.count('sam_target_plan'),2)
+
+    def test_empty_sam_mask_is_rejected_not_treated_as_disappearance(self):
+        provider,calls=self.fake_orchestrator(empty=True)
+        with patch('percept_harness.pipelines.embodied.EvidenceOrchestrator',provider):
+            outcome=self.run_model(ScriptedModel(target=True))
+        self.assertEqual([c[1] for c in calls],['probe'])
+        self.assertFalse(outcome.metadata['sam_checks'][0]['tracked'])
+        self.assertFalse(outcome.metadata['sam_checks'][0]['attempts'][0]['accepted'])
+
+    def test_sam_budget_is_shared_across_review_and_verification(self):
+        provider,calls=self.fake_orchestrator()
+        with patch('percept_harness.pipelines.embodied.EvidenceOrchestrator',provider), \
+             patch('percept_harness.pipelines.embodied.MAX_RECHECKS',1):
+            outcome=self.run_model(ScriptedModel(target=True,new_issue=True))
+        self.assertEqual(outcome.metadata['recheck_budget']['selected_windows'],1)
+        self.assertEqual(len(calls),2)
 
     def test_manifest_reports_needs_review_and_nonzero_exit(self):
         manifest=self.root/'manifest.jsonl'

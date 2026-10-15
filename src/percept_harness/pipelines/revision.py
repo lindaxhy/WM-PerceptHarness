@@ -1,10 +1,10 @@
 """Bounded revision and independent verification of review concerns."""
-from .event_schemas import ReviewedRevision, RevisionVerification
+from .event_schemas import ReviewedRevision, RevisionVerification, Concern
 
 MAX_REVISION_ATTEMPTS = 2
 
 
-def resolve_review(stage, draft, review, concerns, audit):
+def resolve_review(stage, draft, review, concerns, audit, *, collect_evidence):
     ledger = []
     for concern in concerns:
         ledger.append({'concern_id': f'c{len(ledger):04d}', **concern.model_dump(mode='json')})
@@ -29,7 +29,7 @@ def resolve_review(stage, draft, review, concerns, audit):
         self_unresolved = {r['concern_id'] for r in revision['responses'] if r['action'] == 'unresolved'}
         failed = [v for v in verification['verdicts'] if not v['resolved'] or v['concern_id'] in self_unresolved]
         audit['revision_attempts'].append({'revision': revision, 'verification': verification})
-        audit['unresolved_concerns'] = [f"{v['concern_id']}: {v['reason']}" for v in failed] + verification['new_issues']
+        audit['unresolved_concerns'] = [f"{v['concern_id']}: {v['reason']}" for v in failed] + [issue['reason'] for issue in verification['new_issues']]
         if not failed and not verification['new_issues']:
             audit['revision_validation'] = {'status': 'passed', 'attempts': attempt + 1,
                                             'verifier': 'separate_vlm_call'}
@@ -37,10 +37,14 @@ def resolve_review(stage, draft, review, concerns, audit):
         feedback = verification
         draft = candidate
         if attempt + 1 < MAX_REVISION_ATTEMPTS:
-            for reason in verification['new_issues']:
+            new_concerns = []
+            for issue in verification['new_issues']:
+                reason = issue['reason']
                 if reason not in reasons:
-                    ledger.append({'concern_id': f'c{len(ledger):04d}', 'reason': reason})
+                    ledger.append({'concern_id': f'c{len(ledger):04d}', **issue})
                     reasons.add(reason)
+                    new_concerns.append(Concern.model_validate(issue))
+            collect_evidence(new_concerns, candidate, 'revision_verification')
     audit['revision_validation'] = {'status': 'needs_review', 'attempts': MAX_REVISION_ATTEMPTS,
                                     'verifier': 'separate_vlm_call'}
     return candidate
