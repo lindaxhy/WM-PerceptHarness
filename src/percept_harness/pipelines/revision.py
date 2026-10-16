@@ -7,6 +7,8 @@ MAX_REVISION_ATTEMPTS = 2
 def accepted_assessment(response, verdict):
     """A source limitation needs independent agreement, never a tool-error waiver."""
     left, right = response.get('assessment'), verdict.get('assessment')
+    left = None if left and left['category'] == 'no_source_limitation' else left
+    right = None if right and right['category'] == 'no_source_limitation' else right
     if left is None and right is None:
         return True
     if not left or not right or left['category'] != right['category']:
@@ -37,7 +39,8 @@ def resolve_review(stage, draft, review, concerns, audit, *, collect_evidence):
                          review=revision_context, ordinal=attempt)
         candidate = {key: revision[key] for key in ('duration', 'events')}
         verification = stage('revision_verification', RevisionVerification, draft=candidate,
-            review={'concerns': ledger}, ordinal=attempt)
+            review={'concerns': ledger, 'assessment_required_ids': [r['concern_id']
+                for r in revision['responses'] if r.get('assessment') is not None]}, ordinal=attempt)
         self_unresolved = {r['concern_id'] for r in revision['responses'] if r['action'] == 'unresolved'}
         responses = {r['concern_id']: r for r in revision['responses']}
         failed = []
@@ -47,7 +50,7 @@ def resolve_review(stage, draft, review, concerns, audit, *, collect_evidence):
             if not verdict['resolved'] or verdict['concern_id'] in self_unresolved or not agreed:
                 failed.append({**verdict, 'reason': verdict['reason'] if agreed else
                     'Source assessment not independently agreed or a pipeline error remains: ' + verdict['reason']})
-            elif verdict.get('assessment'):
+            elif verdict.get('assessment') and verdict['assessment']['category'] != 'no_source_limitation':
                 assessments.append({'concern_id': verdict['concern_id'], **verdict['assessment']})
         audit['annotation_assessments'] = assessments
         audit['remaining_review'] = failed
@@ -60,7 +63,7 @@ def resolve_review(stage, draft, review, concerns, audit, *, collect_evidence):
             audit['revision_validation'] = {'status': 'passed', 'attempts': attempt + 1,
                                             'verifier': 'separate_vlm_call'}
             return candidate
-        feedback = verification
+        feedback = {**verification, 'remaining_review': failed}
         draft = candidate
         if attempt + 1 < MAX_REVISION_ATTEMPTS:
             new_concerns = []

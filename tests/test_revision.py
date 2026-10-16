@@ -159,6 +159,18 @@ class RevisionTests(unittest.TestCase):
                     'resolved': True, 'reason': 'Checked.', 'assessment': {**assessment, **update}}],
                     'new_issues': []}, context)
 
+    def test_missing_required_verifier_assessment_is_not_silent_disagreement(self):
+        context = {'duration': 10.0, 'concern_ids': ['c0000'], 'candidate_events': DRAFT['events'],
+                   'assessment_required_ids': ['c0000']}
+        with self.assertRaisesRegex(ValueError, 'assessment required'):
+            validate_stage(RevisionVerification, {'verdicts': [{'concern_id': 'c0000',
+                'resolved': True, 'reason': 'The uncertainty is responsibly preserved.', 'assessment': None}],
+                'new_issues': []}, context)
+
+    def test_verifier_can_explicitly_disagree_that_source_limitation_exists(self):
+        outcome = self.run_model(self.assessed_model(verifier_category='no_source_limitation'))
+        self.assertEqual(outcome.status, 'needs_review')
+
     def test_self_reported_fix_does_not_override_failed_verifier(self):
         model = ScriptedModel(passes_on=3)
         outcome = self.run_model(model)

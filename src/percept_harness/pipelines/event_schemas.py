@@ -40,7 +40,7 @@ class GroundedEvents(StrictModel):
 
 
 class ObservationAssessment(StrictModel):
-    category: Literal['observable_defect', 'visual_uncertainty', 'pipeline_error']
+    category: Literal['observable_defect', 'visual_uncertainty', 'pipeline_error', 'no_source_limitation']
     start: Timestamp
     end: PositiveTimestamp
     reason: Annotated[StrictStr, Field(min_length=1, max_length=4000, pattern=r'\S')]
@@ -242,6 +242,9 @@ def validate_stage(schema, data, context, *, discarded_targets=None):
         events = value.model_dump(mode='json')['events'] if isinstance(value, ReviewedRevision) else context.get('candidate_events', [])
         for entry in entries:
             assessment = entry.assessment
+            if (isinstance(value, RevisionVerification) and
+                    entry.concern_id in context.get('assessment_required_ids', []) and assessment is None):
+                raise ValueError(f'assessment required for {entry.concern_id}; independently classify the current candidate; use no_source_limitation if no source limitation remains')
             if assessment is not None:
                 if assessment.end > context['duration'] or assessment.event_index >= len(events):
                     raise ValueError('assessment references invalid event or time')

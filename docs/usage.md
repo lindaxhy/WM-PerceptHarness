@@ -184,6 +184,15 @@ revision rationale nor the old draft. It must check current claims, not criticiz
 already removed text. Missing SAM masks or reviewer disagreement alone cannot
 justify source ambiguity. This remains VLM verification, not human certification.
 
+The verifier must explicitly classify IDs listed in `assessment_required_ids`;
+this list reveals neither the revision's category nor its rationale. Omitting
+the classification triggers bounded schema retries rather than silently treating
+it as agreement. The verifier can independently return `no_source_limitation`
+with evidence to disagree that a source limitation remains. This internal value
+is equivalent to null for agreement and is not reported as a quality label.
+Historical SAM failures independently bypassed by sufficient original frames
+remain in `sam_checks`, not as outstanding `pipeline_error` assessments.
+
 Public JSON still contains only `duration` and `events`; uncertainty and visible
 defects must be expressed in the event descriptions. Completed records keep the
 top-level `completed` status and `revision_validation.status=passed`. Audit
