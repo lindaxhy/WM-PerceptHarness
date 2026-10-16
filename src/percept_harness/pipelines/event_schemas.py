@@ -39,11 +39,28 @@ class GroundedEvents(StrictModel):
         return self
 
 
+class ObservationAssessment(StrictModel):
+    category: Literal['observable_defect', 'visual_uncertainty', 'pipeline_error']
+    start: Timestamp
+    end: PositiveTimestamp
+    reason: Annotated[StrictStr, Field(min_length=1, max_length=4000, pattern=r'\S')]
+    visual_times: Annotated[tuple[Timestamp, ...], Field(min_length=1, max_length=8)]
+    event_index: Annotated[int, Field(ge=0, strict=True)]
+    candidate_quote: Annotated[StrictStr, Field(min_length=1, max_length=4000, pattern=r'\S')]
+
+    @model_validator(mode='after')
+    def interval(self):
+        if self.end <= self.start or any(not self.start <= t <= self.end for t in self.visual_times):
+            raise ValueError('assessment requires a positive window containing its visual references')
+        return self
+
+
 class ConcernResponse(StrictModel):
     concern_id: Label
     action: Literal['changed', 'retained', 'unresolved']
     rationale: Annotated[StrictStr, Field(min_length=1, max_length=4000, pattern=r'\S')]
     visual_times: Annotated[tuple[Timestamp, ...], Field(min_length=1, max_length=8)]
+    assessment: ObservationAssessment | None = None
 
 
 class ReviewedRevision(GroundedEvents):
@@ -54,6 +71,7 @@ class ConcernVerdict(StrictModel):
     concern_id: Label
     resolved: StrictBool
     reason: Annotated[StrictStr, Field(min_length=1, max_length=4000, pattern=r'\S')]
+    assessment: ObservationAssessment | None = None
 
 
 class SpatialTarget(StrictModel):
@@ -221,6 +239,17 @@ def validate_stage(schema, data, context, *, discarded_targets=None):
             raise ValueError('corrected reference outside requested window')
     if isinstance(value, (ReviewedRevision, RevisionVerification)):
         entries = value.responses if isinstance(value, ReviewedRevision) else value.verdicts
+        events = value.model_dump(mode='json')['events'] if isinstance(value, ReviewedRevision) else context.get('candidate_events', [])
+        for entry in entries:
+            assessment = entry.assessment
+            if assessment is not None:
+                if assessment.end > context['duration'] or assessment.event_index >= len(events):
+                    raise ValueError('assessment references invalid event or time')
+                event = events[assessment.event_index]
+                if assessment.candidate_quote not in event['description']:
+                    raise ValueError('assessment quote must occur verbatim in the CURRENT candidate event')
+                if assessment.start >= event['end'] or assessment.end <= event['start']:
+                    raise ValueError('assessment must overlap its candidate event')
         ids = [entry.concern_id for entry in entries]
         if len(ids) != len(set(ids)) or set(ids) != set(context['concern_ids']):
             raise ValueError('every concern must be addressed exactly once')

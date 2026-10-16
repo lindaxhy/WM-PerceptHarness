@@ -25,6 +25,8 @@ class EmbodiedActionPipeline:
         def stage(name, schema, *, draft=None, review=None, target=None, ordinal=0, visuals=None):
             supplied = evidence if visuals is None else visuals
             ctx = {'duration': duration, 'event_count': len(draft['events']) if draft else 0}
+            if name == 'revision_verification':
+                ctx['candidate_events'] = draft['events']
             if review is not None and 'concerns' in review:
                 ctx['concern_ids'] = [c['concern_id'] for c in review['concerns'] if 'concern_id' in c]
             if target is not None:

@@ -97,6 +97,68 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(outcome.metadata['unresolved_concerns'], [])
         self.assertEqual(self.run_model(ScriptedModel()).status, 'skipped')
 
+    def assessed_model(self, category='visual_uncertainty', verifier_category=None, stale_quote=False):
+        class AssessedModel(ScriptedModel):
+            def generate(self, request):
+                data = super().generate(request)
+                description = 'A blue region becomes distorted; whether the same object remains is unclear.'
+                assessment = {'category': category, 'start': 4.0, 'end': 8.0,
+                    'reason': 'Original frames show merging blue regions with no stable object contour.',
+                    'visual_times': [4.5, 6.0, 7.5], 'event_index': 0, 'candidate_quote': description}
+                if request.stage == 'grounded_revision':
+                    data['events'][0]['description'] = description
+                    for response in data['responses']:
+                        response['assessment'] = assessment
+                if request.stage == 'revision_verification':
+                    payload = json.loads(request.prompt.split('INPUT_DATA_JSON\n')[1])
+                    assert 'original_draft' not in payload['review']
+                    for verdict in data['verdicts']:
+                        verdict['assessment'] = {**assessment,
+                            'category': verifier_category or category,
+                            'candidate_quote': 'Old removed claim.' if stale_quote else description}
+                return data
+        return AssessedModel()
+
+    def test_independently_verified_uncertainty_is_completed_and_persisted(self):
+        outcome = self.run_model(self.assessed_model())
+        self.assertEqual(outcome.status, 'completed', outcome.error)
+        self.assertEqual(outcome.metadata['annotation_outcome'], 'completed_with_uncertainty')
+        self.assertEqual(outcome.metadata['unresolved_concerns'], [])
+        self.assertEqual(outcome.metadata['annotation_assessments'][0]['category'], 'visual_uncertainty')
+        self.assertIn('unclear', outcome.data['events'][0]['description'])
+        record = results.completed_result(self.root/'out'/outcome.result_file, self.video)
+        self.assertEqual(record['metadata']['annotation_outcome'], 'completed_with_uncertainty')
+
+    def test_visible_defect_is_a_valid_observation(self):
+        outcome = self.run_model(self.assessed_model('observable_defect'))
+        self.assertEqual(outcome.status, 'completed', outcome.error)
+        self.assertEqual(outcome.metadata['annotation_outcome'], 'completed_with_observable_defects')
+
+    def test_pipeline_error_cannot_be_waived_even_if_verifier_says_resolved(self):
+        outcome = self.run_model(self.assessed_model('pipeline_error'))
+        self.assertEqual(outcome.status, 'needs_review')
+        self.assertEqual(outcome.metadata['annotation_assessments'], [])
+
+    def test_disagreement_on_source_limitation_does_not_pass(self):
+        outcome = self.run_model(self.assessed_model(verifier_category='observable_defect'))
+        self.assertEqual(outcome.status, 'needs_review')
+
+    def test_stale_candidate_quote_fails_closed(self):
+        outcome = self.run_model(self.assessed_model(stale_quote=True))
+        self.assertEqual(outcome.status, 'failed')
+
+    def test_assessment_time_and_candidate_references_are_validated(self):
+        assessment = {'category': 'visual_uncertainty', 'start': 1.0, 'end': 4.0,
+            'reason': 'Object hidden.', 'visual_times': [2.0], 'event_index': 0,
+            'candidate_quote': DRAFT['events'][0]['description']}
+        context = {'duration': 10.0, 'concern_ids': ['c0000'], 'candidate_events': DRAFT['events']}
+        for update in ({'end': 11.0}, {'visual_times': [5.0]}, {'event_index': 5},
+                       {'candidate_quote': 'deleted claim'}, {'start': 6.0, 'end': 8.0, 'visual_times': [7.0]}):
+            with self.subTest(update=update), self.assertRaises(ValueError):
+                validate_stage(RevisionVerification, {'verdicts': [{'concern_id': 'c0000',
+                    'resolved': True, 'reason': 'Checked.', 'assessment': {**assessment, **update}}],
+                    'new_issues': []}, context)
+
     def test_self_reported_fix_does_not_override_failed_verifier(self):
         model = ScriptedModel(passes_on=3)
         outcome = self.run_model(model)
