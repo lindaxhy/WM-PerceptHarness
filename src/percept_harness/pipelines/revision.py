@@ -5,17 +5,9 @@ MAX_REVISION_ATTEMPTS = 2
 
 
 def accepted_assessment(response, verdict):
-    """A source limitation needs independent agreement, never a tool-error waiver."""
+    """Taxonomy differences are audit data; material pipeline errors still block."""
     left, right = response.get('assessment'), verdict.get('assessment')
-    left = None if left and left['category'] == 'no_source_limitation' else left
-    right = None if right and right['category'] == 'no_source_limitation' else right
-    if left is None and right is None:
-        return True
-    if not left or not right or left['category'] != right['category']:
-        return False
-    return (right['category'] != 'pipeline_error'
-            and left['event_index'] == right['event_index']
-            and max(left['start'], right['start']) < min(left['end'], right['end']))
+    return not any(a and a['category'] == 'pipeline_error' for a in (left, right))
 
 
 def resolve_review(stage, draft, review, concerns, audit, *, collect_evidence):
@@ -45,19 +37,31 @@ def resolve_review(stage, draft, review, concerns, audit, *, collect_evidence):
         responses = {r['concern_id']: r for r in revision['responses']}
         failed = []
         assessments = []
+        disagreements = []
         for verdict in verification['verdicts']:
-            agreed = accepted_assessment(responses[verdict['concern_id']], verdict)
+            response = responses[verdict['concern_id']]
+            agreed = accepted_assessment(response, verdict)
+            left, right = response.get('assessment'), verdict.get('assessment')
+            if ((left or {}).get('category'), (left or {}).get('event_index')) != ((right or {}).get('category'), (right or {}).get('event_index')):
+                disagreements.append({'concern_id': verdict['concern_id'],
+                    'revision_assessment': left, 'verifier_assessment': right})
             if not verdict['resolved'] or verdict['concern_id'] in self_unresolved or not agreed:
                 failed.append({**verdict, 'reason': verdict['reason'] if agreed else
-                    'Source assessment not independently agreed or a pipeline error remains: ' + verdict['reason']})
-            elif verdict.get('assessment') and verdict['assessment']['category'] != 'no_source_limitation':
-                assessments.append({'concern_id': verdict['concern_id'], **verdict['assessment']})
+                    'A material pipeline error remains: ' + verdict['reason']})
+            else:
+                observed = [a for a in (left, right) if a and a['category'] in {'visual_uncertainty', 'observable_defect'}]
+                if observed:
+                    assessments.append({'concern_id': verdict['concern_id'], **observed[-1],
+                        'categories': sorted({a['category'] for a in observed}),
+                        'revision_assessment': left, 'verifier_assessment': right,
+                        'description_independently_verified': True})
         audit['annotation_assessments'] = assessments
+        audit['assessment_disagreements'] = disagreements
         audit['remaining_review'] = failed
         audit['revision_attempts'].append({'revision': revision, 'verification': verification})
         audit['unresolved_concerns'] = [f"{v['concern_id']}: {v['reason']}" for v in failed] + [issue['reason'] for issue in verification['new_issues']]
         if not failed and not verification['new_issues']:
-            categories = {a['category'] for a in assessments}
+            categories = {category for a in assessments for category in a['categories']}
             audit['annotation_outcome'] = ('completed_with_uncertainty' if 'visual_uncertainty' in categories else
                 'completed_with_observable_defects' if categories else 'completed')
             audit['revision_validation'] = {'status': 'passed', 'attempts': attempt + 1,

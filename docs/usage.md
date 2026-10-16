@@ -172,14 +172,19 @@ ordinary corrections), with one of these categories:
 
 | Category | Meaning | Can certify completion? |
 |---|---|---|
-| `observable_defect` | A concrete defect visible in original frames and described in the candidate | Yes, with independent agreement |
-| `visual_uncertainty` | The original frames leave a specific fact indeterminate, explicitly qualified in the candidate | Yes, with independent agreement |
+| `observable_defect` | A concrete defect visible in original frames and described in the candidate | Yes, after independent verification of the description |
+| `visual_uncertainty` | The original frames leave a specific fact indeterminate, explicitly qualified in the candidate | Yes, after independent verification of the description |
 | `pipeline_error` | A material tool, evidence or annotation problem remains | No |
 
 Each assessment includes a source-time window, supporting frame times, a reason,
 an event index and a verbatim quote from the current candidate. Bounds, overlap
-and quotes are validated. Revision and verification must independently agree on
-category and event, with overlapping windows. The verifier receives neither the
+and quotes are validated. The verifier must independently accept the current
+description, and the revision must not leave the concern unresolved. Differences
+in category or which supporting event is quoted are recorded in
+`assessment_disagreements`; they do not by themselves invalidate an otherwise
+verified description. For example, a visible deformation can also cause identity
+uncertainty. Both assessments and their category union are retained. Material
+pipeline errors from either stage still block completion. The verifier receives neither the
 revision rationale nor the old draft. It must check current claims, not criticize
 already removed text. Missing SAM masks or reviewer disagreement alone cannot
 justify source ambiguity. This remains VLM verification, not human certification.
@@ -189,7 +194,9 @@ this list reveals neither the revision's category nor its rationale. Omitting
 the classification triggers bounded schema retries rather than silently treating
 it as agreement. The verifier can independently return `no_source_limitation`
 with evidence to disagree that a source limitation remains. This internal value
-is equivalent to null for agreement and is not reported as a quality label.
+is not reported as a quality label. A substantive disagreement with the
+description must set `resolved=false`, including unsupported claims that a
+clearly visible fact cannot be determined.
 Historical SAM failures independently bypassed by sufficient original frames
 remain in `sam_checks`, not as outstanding `pipeline_error` assessments.
 

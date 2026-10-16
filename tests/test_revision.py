@@ -139,9 +139,12 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(outcome.status, 'needs_review')
         self.assertEqual(outcome.metadata['annotation_assessments'], [])
 
-    def test_disagreement_on_source_limitation_does_not_pass(self):
+    def test_taxonomy_difference_does_not_reject_verified_description(self):
         outcome = self.run_model(self.assessed_model(verifier_category='observable_defect'))
-        self.assertEqual(outcome.status, 'needs_review')
+        self.assertEqual(outcome.status, 'completed')
+        self.assertEqual(outcome.metadata['annotation_outcome'], 'completed_with_uncertainty')
+        self.assertTrue(outcome.metadata['assessment_disagreements'])
+        self.assertEqual(outcome.metadata['annotation_assessments'][0]['categories'], ['observable_defect', 'visual_uncertainty'])
 
     def test_stale_candidate_quote_fails_closed(self):
         outcome = self.run_model(self.assessed_model(stale_quote=True))
@@ -190,7 +193,16 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(outcome.status, 'failed')
 
     def test_verifier_can_explicitly_disagree_that_source_limitation_exists(self):
-        outcome = self.run_model(self.assessed_model(verifier_category='no_source_limitation'))
+        model = self.assessed_model(verifier_category='no_source_limitation')
+        generate = model.generate
+        def reject(request):
+            data = generate(request)
+            if request.stage == 'revision_verification':
+                for verdict in data['verdicts']:
+                    verdict.update(resolved=False, reason='Original frames clearly establish identity; the candidate uncertainty is unsupported.')
+            return data
+        model.generate = reject
+        outcome = self.run_model(model)
         self.assertEqual(outcome.status, 'needs_review')
 
     def test_self_reported_fix_does_not_override_failed_verifier(self):
