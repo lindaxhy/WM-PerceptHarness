@@ -2,7 +2,7 @@
 from typing import Annotated, Literal
 import math
 from ..models.response_contract import ModelResponseContract, compile_local_schema, canonical
-from pydantic import Field, StrictStr, StrictBool, field_validator, model_validator
+from pydantic import Field, StrictStr, StrictBool, ValidationError, field_validator, model_validator
 from ..cv.contracts import StrictModel, Timestamp, PositiveTimestamp, Fraction
 
 Text = Annotated[StrictStr, Field(min_length=1, max_length=4000)]
@@ -81,8 +81,6 @@ class EventUncertainty(StrictModel):
     def valid(self):
         if self.end <= self.start or not self.reason.strip():
             raise ValueError('invalid review concern')
-        if self.target and not self.start <= self.target.reference_time <= self.end:
-            raise ValueError('reference frame must be within concern window')
         return self
 
 
@@ -121,7 +119,8 @@ class ConfidenceDraft(GroundedEvents):
     def questions(self):
         for event in self.events:
             question = event.uncertainty
-            if question and question.end > self.duration:
+            if question and (question.end > self.duration or
+                             (question.target and question.target.reference_time > self.duration)):
                 raise ValueError('uncertainty must stay within the original video window')
         return self
 
@@ -210,7 +209,9 @@ def validate_stage(schema, data, context, *, discarded_targets=None):
         raise ValueError('duration must match original video')
     if isinstance(value, (EvidenceReview, RevisionVerification)):
         for concern in (value.concerns if isinstance(value, EvidenceReview) else value.new_issues):
-            if concern.end > context['duration'] or any(i >= context['event_count'] for i in concern.event_indices):
+            if (concern.end > context['duration'] or
+                (concern.target and concern.target.reference_time > context['duration']) or
+                any(i >= context['event_count'] for i in concern.event_indices)):
                 raise ValueError('review references invalid event or time')
     if isinstance(value, SamTargetPlan) and value.target:
         if not context['window_start'] <= value.target.reference_time <= context['window_end']:
@@ -238,8 +239,14 @@ def register_event_schemas(registry):
                 # Preserve recoverable raw target data through stage execution;
                 # pipeline validation records discarded targets in its audit.
                 return dict(data) if schema is ConfidenceDraft else validated
-            except (ValueError, TypeError, KeyError):
-                raise DeclaredSchemaOutputError(('GROUNDED_SCHEMA_INVALID',)) from None
+            except (ValueError, TypeError, KeyError) as error:
+                if isinstance(error, ValidationError):
+                    details = [{'location': list(e['loc']), 'type': e['type'],
+                                'message': e['msg'][:500]}
+                               for e in error.errors(include_input=False, include_context=False, include_url=False)[:16]]
+                else:
+                    details = [{'location': [], 'type': type(error).__name__, 'message': str(error)[:500]}]
+                raise DeclaredSchemaOutputError(('GROUNDED_SCHEMA_INVALID',), details=details) from None
         def response_contract(context, schema=schema):
             encoded = canonical(compile_local_schema(schema.model_json_schema()))
             return ModelResponseContract(schema.__name__, encoded)

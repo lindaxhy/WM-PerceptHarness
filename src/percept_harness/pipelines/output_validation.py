@@ -6,8 +6,9 @@ SCHEMA_VALIDATION_FIELD = '_schema_validation'
 
 
 class DeclaredSchemaOutputError(ValueError):
-    def __init__(self, issue_codes):
+    def __init__(self, issue_codes, *, details=()):
         self.issue_codes = tuple(issue_codes)
+        self.details = list(details)[:16]
         super().__init__('declared model output schema is invalid')
 
 
@@ -42,7 +43,7 @@ class OutputSchemaRegistry:
         except DeclaredSchemaOutputError as error:
             codes = [code for code in error.issue_codes if code in entry.allowed_issue_codes]
             return {SCHEMA_VALIDATION_FIELD: {'schema_name': schema_name, 'status': 'invalid',
-                    'issue_codes': codes or [entry.generic_issue_code]}}
+                    'issue_codes': codes or [entry.generic_issue_code], 'details': error.details}}
 
     def failure_codes(self, schema_name, result):
         if schema_name not in self._entries:

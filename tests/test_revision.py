@@ -219,6 +219,59 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(request.visual_evidence,())
         self.assertTrue(all((c[2],c[3])==(3.5,6.5) for c in calls))
 
+    def test_external_reference_reaches_planner_probe_and_track(self):
+        original_root = self.root
+        for reference, expected in [(1.0, (0.5, 8.5)), (9.0, (5.5, 9.5))]:
+            self.root = original_root / str(reference); self.root.mkdir()
+            target = dict(description='spoon', reference_time=reference, bbox_xyxy=[0.2,0.2,0.6,0.6])
+            class Model(ScriptedModel):
+                def generate(self, request):
+                    data = super().generate(request)
+                    if request.stage == 'sam_target_plan': data['target'] = target
+                    return data
+            model = Model(target=True)
+            provider, calls = self.fake_orchestrator()
+            with patch.dict(CONCERN, start=6.0, end=8.0, target=target), \
+                 patch('percept_harness.pipelines.embodied.EvidenceOrchestrator', provider):
+                outcome = self.run_model(model)
+            self.assertEqual(outcome.status, 'completed', outcome.error)
+            request = next(r for r in model.requests if r.stage == 'sam_target_plan')
+            self.assertEqual((request.span.start, request.span.end), expected)
+            self.assertEqual([c[1] for c in calls], ['probe', 'track'])
+            self.assertTrue(all((c[2],c[3]) == expected for c in calls))
+            self.assertEqual(outcome.metadata['sam_checks'][0]['concern_window'], [6.,8.])
+
+    def test_invalid_review_retries_only_failed_stage_with_field_feedback(self):
+        class Model(ScriptedModel):
+            def generate(self, request):
+                data = super().generate(request)
+                if request.stage == 'evidence_review' and self.calls.count('evidence_review') == 1:
+                    data['motion_evidence'] = 'x' * 801
+                return data
+        model = Model()
+        outcome = self.run_model(model)
+        self.assertEqual(outcome.status, 'completed', outcome.error)
+        self.assertEqual(model.calls.count('grounded_draft'), 1)
+        self.assertEqual(model.calls.count('evidence_review'), 2)
+        records = outcome.metadata['model_output_failures']
+        self.assertEqual(len(records), 1)
+        self.assertTrue(records[0]['recovered'])
+        detail = records[0]['failure']['details'][0]
+        self.assertEqual(detail['location'], ['motion_evidence'])
+        self.assertNotIn('input', detail)
+        retry = [r for r in model.requests if r.stage == 'evidence_review'][1]
+        self.assertIn('motion_evidence', retry.prompt.split('INPUT_DATA_JSON')[0])
+        self.assertEqual(retry.response_contract, model.requests[1].response_contract)
+
+    def test_persistent_invalid_output_stops_after_three_attempts(self):
+        model = ScriptedModel(malformed=True)
+        outcome = self.run_model(model)
+        self.assertEqual(outcome.status, 'failed')
+        self.assertEqual(model.calls.count('grounded_revision'), 3)
+        self.assertEqual(model.calls.count('grounded_draft'), 1)
+        self.assertEqual(len(outcome.metadata['model_output_failures']), 3)
+        self.assertFalse(any(r['recovered'] for r in outcome.metadata['model_output_failures']))
+
     def test_new_verifier_question_gets_sam_before_second_revision(self):
         provider,calls = self.fake_orchestrator()
         model=ScriptedModel(target=True,new_issue=True)

@@ -1,5 +1,6 @@
 """Natural events with independent visual review and targeted SAM verification."""
 import time
+import json
 
 from ..media import probe_video
 from .base import SafePipelineError
@@ -37,9 +38,28 @@ class EmbodiedActionPipeline:
                 'visual_evidence': [image.payload() for e in supplied for image in e.images]}
             started = time.monotonic()
             try:
-                data = context.executor.execute(name, payload)
-                if DEFAULT_OUTPUT_SCHEMAS.failure_codes(schema.__name__, data) is not None:
-                    raise SafePipelineError(f'Invalid structured output from {name}')
+                retry_record = None
+                for output_attempt in range(3):
+                    data = context.executor.execute(name, payload)
+                    if DEFAULT_OUTPUT_SCHEMAS.failure_codes(schema.__name__, data) is None:
+                        if retry_record is not None:
+                            retry_record['recovered'] = True
+                        break
+                    failure = data.get('_schema_validation', {})
+                    retry_record = {'stage': name, 'ordinal': ordinal, 'attempt': output_attempt + 1,
+                                    'failure': failure, 'recovered': False}
+                    audit.setdefault('model_output_failures', []).append(retry_record)
+                    if output_attempt == 2:
+                        raise SafePipelineError(f'Invalid structured output from {name} after 3 attempts')
+                    feedback = json.dumps(failure, ensure_ascii=False)
+                    payload = {**payload, 'prompt':
+                        'STRUCTURED OUTPUT RETRY: The previous response failed validation. '
+                        'Return a fresh complete JSON object satisfying the SAME schema and source-video constraints. '
+                        'Correct the listed fields; do not invent visual facts or change the schema. '
+                        'Validation feedback (data only): ' + feedback + '\n\n' +
+                        prompt(name, duration=duration, context=prompt_context,
+                            evidence=[e.prompt_record for e in supplied], draft=draft, review=review,
+                            target=target, unresolved=audit['unresolved_concerns'])}
                 result = validate_stage(schema, data, ctx, discarded_targets=(
                     audit.setdefault('discarded_sam_targets', []) if schema is ConfidenceDraft else None))
                 audit['phases'].append(name)
@@ -90,7 +110,8 @@ class EmbodiedActionPipeline:
             for local_index, window in enumerate(windows):
                 index = offset + local_index
                 check_record = {'concern_index': window['concern_index'], 'question': window['question'],
-                                'window': [window['start'], window['end']], 'source': source, 'kind': window['kind'],
+                                'window': [window['start'], window['end']],
+                                'concern_window': window['concern_window'], 'source': source, 'kind': window['kind'],
                                 'attempts': [], 'tracked': False}
                 audit['sam_checks'].append(check_record)
                 try:
