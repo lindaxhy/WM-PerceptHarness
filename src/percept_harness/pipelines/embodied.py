@@ -11,7 +11,7 @@ from .output_validation import DEFAULT_OUTPUT_SCHEMAS
 
 
 class EmbodiedActionPipeline:
-    def run(self, context, *, prompt_context=None):
+    def run(self, context, *, prompt_context=None, prior_review=None):
         media_path = context.media_path
         duration = probe_video(media_path).duration
         confidence_gated = context.settings.event_workflow == 'confidence-gated'
@@ -97,6 +97,49 @@ class EmbodiedActionPipeline:
                 target=None, event_indices=()) for reason in review.unresolved if reason not in known)
             audit['review'] = review_data
             audit['unresolved_concerns'].extend(review.unresolved)
+        if prior_review is not None:
+            previous = prior_review.get('metadata') or {}
+            historical = list(previous.get('concern_ledger', []))
+            attempts = previous.get('revision_attempts') or []
+            if attempts:
+                historical.extend(attempts[-1].get('verification', {}).get('new_issues', []))
+            by_id = {q['concern_id']: q for q in historical if 'concern_id' in q}
+            merged_reasons = set()
+            for reason in previous.get('unresolved_concerns', []):
+                cid, separator, detail = reason.partition(':')
+                if separator and cid in by_id:
+                    old = by_id[cid]
+                    updated = {**old, 'reason': old['reason'] + '\nPrior unresolved assessment: ' + detail.strip()}
+                    historical[historical.index(old)] = updated
+                    by_id[cid] = updated
+                    merged_reasons.add(reason)
+            known = {c.reason for c in concerns}
+            retained = []
+            for question in historical:
+                reason = question['reason']
+                if reason in known:
+                    continue
+                # Old event indices address an old draft; retain the visual
+                # question and source window, never those positional indices.
+                concern = Concern.model_validate({k: question.get(k, default) for k, default in (
+                    ('kind', 'description'), ('reason', reason), ('start', 0.0),
+                    ('end', duration), ('target', None))} | {'event_indices': []})
+                if concern.end > duration or (concern.target and concern.target.reference_time > duration):
+                    raise SafePipelineError('prior review question outside source video')
+                concerns.append(concern)
+                retained.append(concern.model_dump(mode='json'))
+                known.add(reason)
+            for reason in previous.get('unresolved_concerns', []):
+                if reason not in known and reason not in merged_reasons:
+                    concern = Concern(kind='description', reason=reason, start=0.0, end=duration,
+                                      target=None, event_indices=())
+                    concerns.append(concern)
+                    retained.append(concern.model_dump(mode='json'))
+                    known.add(reason)
+            if not historical and not previous.get('unresolved_concerns'):
+                raise SafePipelineError('prior review audit has no review questions')
+            audit['retained_prior_concerns'] = retained
+            review_data = {**review_data, 'prior_concerns': retained}
         audit['unresolved_concerns'].extend(c.reason for c in concerns)
         orchestrator = None
         calls, completed, selected = 0, 0, 0

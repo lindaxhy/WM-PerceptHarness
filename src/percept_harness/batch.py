@@ -330,7 +330,7 @@ def run_manifest(arguments) -> int:
                     video = Path(row["video_path"])
                     job_root = root / jid
                     outcomes = run_batch(runner, [video], job_root,
-                                         force=arguments.force, log=lambda message: None)
+                                         force=arguments.force, review_from=row.get('review_from'), log=lambda message: None)
                     outcome = outcomes[0]
                     if outcome.status not in {"completed", "skipped", "needs_review"}:
                         raise RuntimeError(outcome.error or "annotation failed")

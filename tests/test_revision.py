@@ -167,6 +167,28 @@ class RevisionTests(unittest.TestCase):
                 'resolved': True, 'reason': 'The uncertainty is responsibly preserved.', 'assessment': None}],
                 'new_issues': []}, context)
 
+    def test_prior_questions_survive_an_empty_fresh_review(self):
+        prior = self.root/'prior.audit.json'
+        prior.write_text(json.dumps({'video_path': str(self.video.resolve()), 'status': 'needs_review',
+            'metadata': {'concern_ledger': [{'concern_id': 'c0000', **CONCERN, 'event_indices': [999]}],
+                         'unresolved_concerns': ['c0000: No visible change at this boundary.']}}))
+        model = ScriptedModel(empty=True)
+        runner = SyncRunner(model, self.settings, model_alias='test')
+        outcome = run_batch(runner, [self.video], self.root/'seeded', review_from=prior, log=lambda _:None)[0]
+        self.assertEqual(outcome.status, 'completed', outcome.error)
+        retained = outcome.metadata['retained_prior_concerns']
+        self.assertEqual(len(retained), 1)
+        self.assertEqual(retained[0]['event_indices'], [])
+        self.assertIn('No visible change', retained[0]['reason'])
+        self.assertIn('sam_target_plan', model.calls)
+        self.assertTrue(outcome.metadata['revision_attempts'][0]['revision']['responses'])
+
+    def test_prior_review_from_another_video_fails_closed(self):
+        prior = self.root/'wrong.audit.json'
+        prior.write_text(json.dumps({'video_path': '/different.mp4', 'status': 'needs_review'}))
+        outcome = SyncRunner(ScriptedModel(), self.settings, model_alias='test').evaluate(self.video, review_from=prior)
+        self.assertEqual(outcome.status, 'failed')
+
     def test_verifier_can_explicitly_disagree_that_source_limitation_exists(self):
         outcome = self.run_model(self.assessed_model(verifier_category='no_source_limitation'))
         self.assertEqual(outcome.status, 'needs_review')

@@ -205,6 +205,16 @@ Event scoring accepts completed annotations as before; it does not automatically
 discount uncertainty or add an artifact penalty. Report coverage and assessment
 categories separately when interpreting scores.
 
+For targeted reruns, a manifest row can include `review_from`, an absolute path
+to that video's prior `needs_review` audit. The runner validates source identity
+and carries the previous concern ledger, final new issues and unresolved reasons
+into the fresh review/SAM/revision workflow, even if the fresh reviewer raises no
+questions. Old event indices are discarded because they address a different draft;
+source timestamps and visible targets are retained. `retained_prior_concerns`
+and `prior_review_source` document this provenance. An explicit `review_from`
+forces re-evaluation rather than reusing an unrelated completed result. Use a
+separate output directory to preserve the old result for comparison.
+
 The shared per-video planning budget is 32 windows and 300 contextual seconds
 across initial review and verification. Excess questions and unavailable targets
 remain recorded for conservative revision/review; the budget never resets on a
