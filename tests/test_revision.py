@@ -155,12 +155,17 @@ class RevisionTests(unittest.TestCase):
             'reason': 'Object hidden.', 'visual_times': [2.0], 'event_index': 0,
             'candidate_quote': DRAFT['events'][0]['description']}
         context = {'duration': 10.0, 'concern_ids': ['c0000'], 'candidate_events': DRAFT['events']}
-        for update in ({'end': 11.0}, {'visual_times': [5.0]}, {'event_index': 5},
+        for update in ({'end': 11.0}, {'visual_times': [11.0]}, {'event_index': 5},
                        {'candidate_quote': 'deleted claim'}, {'start': 6.0, 'end': 8.0, 'visual_times': [7.0]}):
             with self.subTest(update=update), self.assertRaises(ValueError):
                 validate_stage(RevisionVerification, {'verdicts': [{'concern_id': 'c0000',
                     'resolved': True, 'reason': 'Checked.', 'assessment': {**assessment, **update}}],
                     'new_issues': []}, context)
+        # Before/after frames can establish identity or contrast while the
+        # uncertainty itself remains confined to a different interval.
+        validate_stage(RevisionVerification, {'verdicts': [{'concern_id': 'c0000',
+            'resolved': True, 'reason': 'Compared to clear before/after frames.',
+            'assessment': {**assessment, 'visual_times': [0.0, 5.0]}}], 'new_issues': []}, context)
 
     def test_missing_required_verifier_assessment_is_not_silent_disagreement(self):
         context = {'duration': 10.0, 'concern_ids': ['c0000'], 'candidate_events': DRAFT['events'],

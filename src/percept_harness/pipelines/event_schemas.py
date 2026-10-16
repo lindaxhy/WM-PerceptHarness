@@ -50,8 +50,8 @@ class ObservationAssessment(StrictModel):
 
     @model_validator(mode='after')
     def interval(self):
-        if self.end <= self.start or any(not self.start <= t <= self.end for t in self.visual_times):
-            raise ValueError('assessment requires a positive window containing its visual references')
+        if self.end <= self.start:
+            raise ValueError('assessment requires a positive window')
         return self
 
 
@@ -246,11 +246,12 @@ def validate_stage(schema, data, context, *, discarded_targets=None):
                     entry.concern_id in context.get('assessment_required_ids', []) and assessment is None):
                 raise ValueError(f'assessment required for {entry.concern_id}; independently classify the current candidate; use no_source_limitation if no source limitation remains')
             if assessment is not None:
-                if assessment.end > context['duration'] or assessment.event_index >= len(events):
-                    raise ValueError('assessment references invalid event or time')
+                if (assessment.end > context['duration'] or assessment.event_index >= len(events)
+                        or any(t > context['duration'] for t in assessment.visual_times)):
+                    raise ValueError(f'assessment for {entry.concern_id} references invalid event or source-video time')
                 event = events[assessment.event_index]
                 if assessment.candidate_quote not in event['description']:
-                    raise ValueError('assessment quote must occur verbatim in the CURRENT candidate event')
+                    raise ValueError(f'assessment for {entry.concern_id}: candidate_quote must be an exact contiguous phrase from your CURRENT returned event {assessment.event_index}, not an old draft or rationale')
                 if assessment.start >= event['end'] or assessment.end <= event['start']:
                     raise ValueError('assessment must overlap its candidate event')
         ids = [entry.concern_id for entry in entries]
