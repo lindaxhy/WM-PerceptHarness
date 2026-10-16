@@ -348,6 +348,12 @@ use the same manifest and output root with distinct `--shard-index` values and
 one common `--shard-count`. SHA-256 of `job_id` assigns each job to exactly one
 shard. All hosts must see the input and output paths.
 
+GPU lanes use a separate hash from host sharding so every listed GPU can receive
+jobs, even when the host and GPU counts share a factor. Hosts can list different
+numbers of GPUs (for example, `--cv-devices 0,1,2,3,4,5,6,7` on one host and
+`--cv-devices 0,1,2,3,4,5,6` on another). This does not change existing host shard
+assignments or per-job output paths; host shards are not weighted by GPU count.
+
 Shard status files record worker PIDs, active jobs, accepted results, failures,
 and observed request concurrency. Missing SAM evidence or a missing full review
 is not accepted as a successful manifest job. Completed annotations are reused by default; request and CV-artifact
