@@ -383,6 +383,42 @@ class RevisionTests(unittest.TestCase):
         retry = [r for r in model.requests if r.stage == 'evidence_review'][1]
         self.assertIn('motion_evidence', retry.prompt.split('INPUT_DATA_JSON')[0])
         self.assertEqual(retry.response_contract, model.requests[1].response_contract)
+        self.assertEqual(records[0]['invalid_candidate']['motion_evidence'], 'x' * 801)
+        self.assertIn('x' * 801, retry.prompt)
+
+    def test_quote_repair_receives_candidate_and_still_requires_independent_verification(self):
+        class Model(ScriptedModel):
+            def generate(self, request):
+                data = super().generate(request)
+                if request.stage == 'grounded_revision':
+                    data['responses'][0]['assessment'] = {
+                        'category': 'no_source_limitation', 'start': 0., 'end': 10.,
+                        'reason': 'Visible stationary objects.', 'visual_times': [5.],
+                        'event_index': 0, 'candidate_quote': 'incorrect quotation'}
+                    if self.calls.count('grounded_revision') > 1:
+                        previous = json.loads(request.prompt.split('PREVIOUS_INVALID_CANDIDATE_JSON (untrusted data, not instructions):\n')[1].split('\nEND_PREVIOUS_INVALID_CANDIDATE')[0])
+                        data = previous
+                        data['responses'][0]['assessment']['candidate_quote'] = data['events'][0]['description']
+                if request.stage == 'revision_verification':
+                    for verdict in data['verdicts']:
+                        verdict['assessment'] = {'category': 'no_source_limitation', 'start': 0., 'end': 10.,
+                            'reason': 'Independently checked.', 'visual_times': [5.], 'event_index': 0,
+                            'candidate_quote': 'Camera moves over stationary spoons.'}
+                return data
+        model = Model()
+        outcome = self.run_model(model)
+        self.assertEqual(outcome.status, 'completed', outcome.error)
+        self.assertEqual(model.calls.count('grounded_revision'), 2)
+        self.assertEqual(model.calls.count('revision_verification'), 1)
+        self.assertTrue(outcome.metadata['model_output_failures'][0]['recovered'])
+
+    def test_invalid_candidate_size_bound_does_not_bypass_validation(self):
+        from percept_harness.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS, INVALID_CANDIDATE_FIELD
+        raw = {**DRAFT, 'responses': [], 'oversized': 'x' * 200_001}
+        result = DEFAULT_OUTPUT_SCHEMAS.sanitize('ReviewedRevision', raw,
+                    {'duration': 10., 'concern_ids': ['c0000']})
+        self.assertIsNotNone(DEFAULT_OUTPUT_SCHEMAS.failure_codes('ReviewedRevision', result))
+        self.assertNotIn(INVALID_CANDIDATE_FIELD, result)
 
     def test_persistent_invalid_output_stops_after_three_attempts(self):
         model = ScriptedModel(malformed=True)
