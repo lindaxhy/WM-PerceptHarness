@@ -261,6 +261,14 @@ class RevisionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_stage(RevisionVerification, {'verdicts': [], 'new_issues': []}, context)
 
+    def test_concern_coverage_feedback_identifies_repairs(self):
+        response = {'concern_id': 'extra', 'action': 'retained', 'rationale': 'Visible.', 'visual_times': [5.0]}
+        with self.assertRaises(ValueError) as caught:
+            validate_stage(ReviewedRevision, {**DRAFT, 'responses': [response, response]},
+                           {'duration': 10.0, 'concern_ids': ['c0000']})
+        for detail in ("missing=['c0000']", "duplicate=['extra']", "unexpected=['extra']"):
+            self.assertIn(detail, str(caught.exception))
+
     def test_openai_transport_and_cache_support_verification_stage(self):
         import httpx
         from percept_harness.media import FrameRef

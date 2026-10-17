@@ -253,10 +253,14 @@ def validate_stage(schema, data, context, *, discarded_targets=None):
                 if assessment.candidate_quote not in event['description']:
                     raise ValueError(f'assessment for {entry.concern_id}: candidate_quote must be an exact contiguous phrase from your CURRENT returned event {assessment.event_index}, not an old draft or rationale')
                 if assessment.start >= event['end'] or assessment.end <= event['start']:
-                    raise ValueError('assessment must overlap its candidate event')
+                    raise ValueError(f'assessment for {entry.concern_id} [{assessment.start}, {assessment.end}] must overlap current event {assessment.event_index} [{event["start"]}, {event["end"]}]')
         ids = [entry.concern_id for entry in entries]
         if len(ids) != len(set(ids)) or set(ids) != set(context['concern_ids']):
-            raise ValueError('every concern must be addressed exactly once')
+            expected, actual = set(context['concern_ids']), set(ids)
+            duplicates = sorted(i for i in actual if ids.count(i) > 1)
+            raise ValueError('every concern must be addressed exactly once; '
+                             f'missing={sorted(expected - actual)[:12]}; '
+                             f'duplicate={duplicates[:12]}; unexpected={sorted(actual - expected)[:12]}')
         if isinstance(value, ReviewedRevision):
             if any(t > context['duration'] for entry in entries for t in entry.visual_times):
                 raise ValueError('visual reference outside original video')
