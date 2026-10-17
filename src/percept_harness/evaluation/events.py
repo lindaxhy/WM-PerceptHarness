@@ -26,11 +26,14 @@ def validate_decision(value):
 
 
 class OpenAIJudge:
-    def __init__(self, base_url: str, model: str, api_key: str, *, transport=None):
+    def __init__(self, base_url: str, model: str, api_key: str, *, transport=None, read_timeout_seconds: float = 180.0):
         if not base_url or not model or not api_key:
             raise ValueError("judge base URL, model and API key are required")
         self.base_url, self.model, self.api_key = base_url.rstrip("/"), model, api_key
+        if isinstance(read_timeout_seconds, bool) or not isinstance(read_timeout_seconds, (int, float)) or not math.isfinite(read_timeout_seconds) or read_timeout_seconds <= 0:
+            raise ValueError("judge read timeout must be finite and positive")
         self.transport = transport
+        self.timeout = httpx.Timeout(connect=30.0, read=float(read_timeout_seconds), write=60.0, pool=30.0)
 
     def __call__(self, reference: str, prediction: str) -> dict:
         payload = {"model": self.model, "temperature": 0, "response_format": {"type": "json_object"}, "messages": [
@@ -38,7 +41,7 @@ class OpenAIJudge:
             {"role": "user", "content": json.dumps({"reference": reference, "prediction": prediction}, ensure_ascii=False)},
         ]}
         try:
-            with httpx.Client(timeout=60, transport=self.transport) as client:
+            with httpx.Client(timeout=self.timeout, transport=self.transport) as client:
                 response = client.post(f"{self.base_url}/chat/completions", json=payload, headers={"Authorization": f"Bearer {self.api_key}"})
                 response.raise_for_status()
                 content = response.json()["choices"][0]["message"]["content"]

@@ -39,11 +39,28 @@ class GroundedEvents(StrictModel):
         return self
 
 
+class ObservationAssessment(StrictModel):
+    category: Literal['observable_defect', 'visual_uncertainty', 'pipeline_error', 'no_source_limitation']
+    start: Timestamp
+    end: PositiveTimestamp
+    reason: Annotated[StrictStr, Field(min_length=1, max_length=4000, pattern=r'\S')]
+    visual_times: Annotated[tuple[Timestamp, ...], Field(min_length=1, max_length=8)]
+    event_index: Annotated[int, Field(ge=0, strict=True)]
+    candidate_quote: Annotated[StrictStr, Field(min_length=1, max_length=4000, pattern=r'\S')]
+
+    @model_validator(mode='after')
+    def interval(self):
+        if self.end <= self.start:
+            raise ValueError('assessment requires a positive window')
+        return self
+
+
 class ConcernResponse(StrictModel):
     concern_id: Label
     action: Literal['changed', 'retained', 'unresolved']
     rationale: Annotated[StrictStr, Field(min_length=1, max_length=4000, pattern=r'\S')]
     visual_times: Annotated[tuple[Timestamp, ...], Field(min_length=1, max_length=8)]
+    assessment: ObservationAssessment | None = None
 
 
 class ReviewedRevision(GroundedEvents):
@@ -54,6 +71,7 @@ class ConcernVerdict(StrictModel):
     concern_id: Label
     resolved: StrictBool
     reason: Annotated[StrictStr, Field(min_length=1, max_length=4000, pattern=r'\S')]
+    assessment: ObservationAssessment | None = None
 
 
 class SpatialTarget(StrictModel):
@@ -221,9 +239,28 @@ def validate_stage(schema, data, context, *, discarded_targets=None):
             raise ValueError('corrected reference outside requested window')
     if isinstance(value, (ReviewedRevision, RevisionVerification)):
         entries = value.responses if isinstance(value, ReviewedRevision) else value.verdicts
+        events = value.model_dump(mode='json')['events'] if isinstance(value, ReviewedRevision) else context.get('candidate_events', [])
+        for entry in entries:
+            assessment = entry.assessment
+            if (isinstance(value, RevisionVerification) and
+                    entry.concern_id in context.get('assessment_required_ids', []) and assessment is None):
+                raise ValueError(f'assessment required for {entry.concern_id}; independently classify the current candidate; use no_source_limitation if no source limitation remains')
+            if assessment is not None:
+                if (assessment.end > context['duration'] or assessment.event_index >= len(events)
+                        or any(t > context['duration'] for t in assessment.visual_times)):
+                    raise ValueError(f'assessment for {entry.concern_id} references invalid event or source-video time')
+                event = events[assessment.event_index]
+                if assessment.candidate_quote not in event['description']:
+                    raise ValueError(f'assessment for {entry.concern_id}: candidate_quote must be an exact contiguous phrase from your CURRENT returned event {assessment.event_index}, not an old draft or rationale')
+                if assessment.start >= event['end'] or assessment.end <= event['start']:
+                    raise ValueError(f'assessment for {entry.concern_id} [{assessment.start}, {assessment.end}] must overlap current event {assessment.event_index} [{event["start"]}, {event["end"]}]')
         ids = [entry.concern_id for entry in entries]
         if len(ids) != len(set(ids)) or set(ids) != set(context['concern_ids']):
-            raise ValueError('every concern must be addressed exactly once')
+            expected, actual = set(context['concern_ids']), set(ids)
+            duplicates = sorted(i for i in actual if ids.count(i) > 1)
+            raise ValueError('every concern must be addressed exactly once; '
+                             f'missing={sorted(expected - actual)[:12]}; '
+                             f'duplicate={duplicates[:12]}; unexpected={sorted(actual - expected)[:12]}')
         if isinstance(value, ReviewedRevision):
             if any(t > context['duration'] for entry in entries for t in entry.visual_times):
                 raise ValueError('visual reference outside original video')

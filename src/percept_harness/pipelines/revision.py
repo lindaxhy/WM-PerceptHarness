@@ -4,6 +4,12 @@ from .event_schemas import ReviewedRevision, RevisionVerification, Concern
 MAX_REVISION_ATTEMPTS = 2
 
 
+def accepted_assessment(response, verdict):
+    """Taxonomy differences are audit data; material pipeline errors still block."""
+    left, right = response.get('assessment'), verdict.get('assessment')
+    return not any(a and a['category'] == 'pipeline_error' for a in (left, right))
+
+
 def resolve_review(stage, draft, review, concerns, audit, *, collect_evidence):
     ledger = []
     for concern in concerns:
@@ -25,16 +31,43 @@ def resolve_review(stage, draft, review, concerns, audit, *, collect_evidence):
                          review=revision_context, ordinal=attempt)
         candidate = {key: revision[key] for key in ('duration', 'events')}
         verification = stage('revision_verification', RevisionVerification, draft=candidate,
-            review={'original_draft': original, 'concerns': ledger}, ordinal=attempt)
+            review={'concerns': ledger, 'assessment_required_ids': [r['concern_id']
+                for r in revision['responses'] if r.get('assessment') is not None]}, ordinal=attempt)
         self_unresolved = {r['concern_id'] for r in revision['responses'] if r['action'] == 'unresolved'}
-        failed = [v for v in verification['verdicts'] if not v['resolved'] or v['concern_id'] in self_unresolved]
+        responses = {r['concern_id']: r for r in revision['responses']}
+        failed = []
+        assessments = []
+        disagreements = []
+        for verdict in verification['verdicts']:
+            response = responses[verdict['concern_id']]
+            agreed = accepted_assessment(response, verdict)
+            left, right = response.get('assessment'), verdict.get('assessment')
+            if ((left or {}).get('category'), (left or {}).get('event_index')) != ((right or {}).get('category'), (right or {}).get('event_index')):
+                disagreements.append({'concern_id': verdict['concern_id'],
+                    'revision_assessment': left, 'verifier_assessment': right})
+            if not verdict['resolved'] or verdict['concern_id'] in self_unresolved or not agreed:
+                failed.append({**verdict, 'reason': verdict['reason'] if agreed else
+                    'A material pipeline error remains: ' + verdict['reason']})
+            else:
+                observed = [a for a in (left, right) if a and a['category'] in {'visual_uncertainty', 'observable_defect'}]
+                if observed:
+                    assessments.append({'concern_id': verdict['concern_id'], **observed[-1],
+                        'categories': sorted({a['category'] for a in observed}),
+                        'revision_assessment': left, 'verifier_assessment': right,
+                        'description_independently_verified': True})
+        audit['annotation_assessments'] = assessments
+        audit['assessment_disagreements'] = disagreements
+        audit['remaining_review'] = failed
         audit['revision_attempts'].append({'revision': revision, 'verification': verification})
         audit['unresolved_concerns'] = [f"{v['concern_id']}: {v['reason']}" for v in failed] + [issue['reason'] for issue in verification['new_issues']]
         if not failed and not verification['new_issues']:
+            categories = {category for a in assessments for category in a['categories']}
+            audit['annotation_outcome'] = ('completed_with_uncertainty' if 'visual_uncertainty' in categories else
+                'completed_with_observable_defects' if categories else 'completed')
             audit['revision_validation'] = {'status': 'passed', 'attempts': attempt + 1,
                                             'verifier': 'separate_vlm_call'}
             return candidate
-        feedback = verification
+        feedback = {**verification, 'remaining_review': failed}
         draft = candidate
         if attempt + 1 < MAX_REVISION_ATTEMPTS:
             new_concerns = []
@@ -47,4 +80,5 @@ def resolve_review(stage, draft, review, concerns, audit, *, collect_evidence):
             collect_evidence(new_concerns, candidate, 'revision_verification')
     audit['revision_validation'] = {'status': 'needs_review', 'attempts': MAX_REVISION_ATTEMPTS,
                                     'verifier': 'separate_vlm_call'}
+    audit['annotation_outcome'] = 'needs_review'
     return candidate

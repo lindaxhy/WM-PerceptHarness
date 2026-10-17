@@ -139,12 +139,13 @@ uncertainties. Confidence <= 0.6 requires a question; every reported question is
 processed regardless of confidence. With no questions, the draft-only route
 still takes one VLM call. Confident errors can remain unreported.
 
-The v4 workflow treats question kinds as descriptions, not SAM eligibility gates:
+The v6 workflow treats question kinds as descriptions, not SAM eligibility gates:
 
 1. `grounded_draft` and `evidence_review` produce events and questions (or
    `confidence_draft` supplies both in confidence-gated mode).
 2. Every concrete question enters `sam_target_plan`, which sees only its source
-   video window plus up to 0.5 seconds of context on each side. It selects one
+   video window, expanded to include an outside-window identity reference when
+   supplied, plus up to 0.5 seconds of context on each side. It selects one
    relevant visible object/reference and a normalized XYXY box. Legacy free-text
    unresolved issues lack timestamps and use the full source window rather than
    being skipped. A null target
@@ -156,7 +157,70 @@ The v4 workflow treats question kinds as descriptions, not SAM eligibility gates
    independently checks candidate events without reading the revision rationale.
    Newly discovered structured questions also enter local SAM planning before
    the second revision. After two revision rounds, unresolved results remain
-   `needs_review` rather than completed.
+   `needs_review` rather than completed. A responsibly qualified source-video
+   uncertainty can pass independent verification as described below.
+
+#### Observable defects and valid uncertainty
+
+Generated artifacts, failed actions and indeterminate object identity are part of
+the observed video. Do not repair them into an intended action or discard those
+samples from evaluation. A correctly described defect or a statement of what is
+visible and what cannot be determined can be a completed annotation.
+
+Revision responses and independent verdicts each have an `assessment` (null for
+ordinary corrections), with one of these categories:
+
+| Category | Meaning | Can certify completion? |
+|---|---|---|
+| `observable_defect` | A concrete defect visible in original frames and described in the candidate | Yes, after independent verification of the description |
+| `visual_uncertainty` | The original frames leave a specific fact indeterminate, explicitly qualified in the candidate | Yes, after independent verification of the description |
+| `pipeline_error` | A material tool, evidence or annotation problem remains | No |
+
+Each assessment includes a source-time window, supporting frame times, a reason,
+an event index and a verbatim quote from the current candidate. Bounds, overlap
+and quotes are validated. The verifier must independently accept the current
+description, and the revision must not leave the concern unresolved. Differences
+in category or which supporting event is quoted are recorded in
+`assessment_disagreements`; they do not by themselves invalidate an otherwise
+verified description. For example, a visible deformation can also cause identity
+uncertainty. Both assessments and their category union are retained. Material
+pipeline errors from either stage still block completion. The verifier receives neither the
+revision rationale nor the old draft. It must check current claims, not criticize
+already removed text. Missing SAM masks or reviewer disagreement alone cannot
+justify source ambiguity. This remains VLM verification, not human certification.
+
+The verifier must explicitly classify IDs listed in `assessment_required_ids`;
+this list reveals neither the revision's category nor its rationale. Omitting
+the classification triggers bounded schema retries rather than silently treating
+it as agreement. The verifier can independently return `no_source_limitation`
+with evidence to disagree that a source limitation remains. This internal value
+is not reported as a quality label. A substantive disagreement with the
+description must set `resolved=false`, including unsupported claims that a
+clearly visible fact cannot be determined.
+Historical SAM failures independently bypassed by sufficient original frames
+remain in `sam_checks`, not as outstanding `pipeline_error` assessments.
+
+Public JSON still contains only `duration` and `events`; uncertainty and visible
+defects must be expressed in the event descriptions. Completed records keep the
+top-level `completed` status and `revision_validation.status=passed`. Audit
+`annotation_outcome` distinguishes `completed`, `completed_with_uncertainty` and
+`completed_with_observable_defects`; if both categories occur, the outcome is
+`completed_with_uncertainty` and `annotation_assessments` retains both. Rejected
+verdicts are retained in `remaining_review`, and final new issues remain in
+`revision_attempts` and `unresolved_concerns`. These labels are not quality scores.
+Event scoring accepts completed annotations as before; it does not automatically
+discount uncertainty or add an artifact penalty. Report coverage and assessment
+categories separately when interpreting scores.
+
+For targeted reruns, a manifest row can include `review_from`, an absolute path
+to that video's prior `needs_review` audit. The runner validates source identity
+and carries the previous concern ledger, final new issues and unresolved reasons
+into the fresh review/SAM/revision workflow, even if the fresh reviewer raises no
+questions. Old event indices are discarded because they address a different draft;
+source timestamps and visible targets are retained. `retained_prior_concerns`
+and `prior_review_source` document this provenance. An explicit `review_from`
+forces re-evaluation rather than reusing an unrelated completed result. Use a
+separate output directory to preserve the old result for comparison.
 
 The shared per-video planning budget is 32 windows and 300 contextual seconds
 across initial review and verification. Excess questions and unavailable targets
@@ -179,7 +243,7 @@ to locate it. Existing unreadable files are preserved and a free suffix is used.
 
 A result is skipped by default when its
 source path matches, its status is completed, its annotation passes schema
-validation, and its v4 audit records successful verification (or the explicit
+validation, and its current-version audit records successful verification (or the explicit
 confidence-gated draft-only route). Failed, incomplete or malformed results are retried. Legacy result
 envelopes can still be read. There are no content checksums, code/environment
 fingerprints, automatic history archives or per-run manifests.
@@ -298,7 +362,7 @@ Other upstream evaluators use `percept score` commands listed in the [catalog](m
 
 ## Revision verification and unresolved annotations
 
-The v4 annotation workflow assigns stable concern IDs after review. Revision
+The v6 annotation workflow assigns stable concern IDs after review. Revision
 returns public events plus internal per-concern responses (`changed`, `retained`,
 or `unresolved`), rationale, and source-video timestamps. A separate VLM call
 checks the candidate against every concern and the original video. A changed
