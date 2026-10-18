@@ -420,6 +420,21 @@ class RevisionTests(unittest.TestCase):
         self.assertIsNotNone(DEFAULT_OUTPUT_SCHEMAS.failure_codes('ReviewedRevision', result))
         self.assertNotIn(INVALID_CANDIDATE_FIELD, result)
 
+    def test_repair_feedback_collects_multiple_cross_field_errors(self):
+        from percept_harness.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+        assessment = {'category': 'no_source_limitation', 'start': 6., 'end': 8.,
+                      'reason': 'Checked.', 'visual_times': [7.], 'event_index': 0,
+                      'candidate_quote': 'not in the event'}
+        responses = [{'concern_id': cid, 'action': 'retained', 'rationale': 'Checked.',
+                      'visual_times': [7.], 'assessment': assessment} for cid in ['c0000', 'c0001']]
+        output = DEFAULT_OUTPUT_SCHEMAS.sanitize('ReviewedRevision', {**DRAFT, 'responses': responses},
+                    {'duration': 10., 'concern_ids': ['c0000', 'c0001', 'c0002']})
+        messages = [v['message'] for v in output['_schema_validation']['details']]
+        self.assertEqual(len(messages), 5)
+        self.assertTrue(any('c0000' in x and 'candidate_quote' in x for x in messages))
+        self.assertTrue(any('c0001' in x and 'must overlap' in x for x in messages))
+        self.assertTrue(any("missing=['c0002']" in x for x in messages))
+
     def test_persistent_invalid_output_stops_after_three_attempts(self):
         model = ScriptedModel(malformed=True)
         outcome = self.run_model(model)
