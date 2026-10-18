@@ -25,6 +25,8 @@ class EmbodiedActionPipeline:
         def stage(name, schema, *, draft=None, review=None, target=None, ordinal=0, visuals=None):
             supplied = evidence if visuals is None else visuals
             ctx = {'duration': duration, 'event_count': len(draft['events']) if draft else 0}
+            if review and review.get('freeze_candidate'):
+                ctx['frozen_events'] = draft['events']
             if name == 'revision_verification':
                 ctx['candidate_events'] = draft['events']
                 ctx['assessment_required_ids'] = review.get('assessment_required_ids', [])
@@ -233,4 +235,5 @@ class EmbodiedActionPipeline:
         if confidence_gated:
             audit['confidence_gate']['route'] = 'sam_then_revision' if calls else 'revision_only'
         from .revision import resolve_review
-        return resolve_review(stage, draft, review_data, concerns, audit, collect_evidence=collect_evidence)
+        return resolve_review(stage, draft, review_data, concerns, audit, collect_evidence=collect_evidence,
+                              split_revision=context.settings.event_split_revision)

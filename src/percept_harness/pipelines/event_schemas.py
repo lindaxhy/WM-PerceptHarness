@@ -247,6 +247,9 @@ def validate_stage(schema, data, context, *, discarded_targets=None):
         entries = value.responses if isinstance(value, ReviewedRevision) else value.verdicts
         events = value.model_dump(mode='json')['events'] if isinstance(value, ReviewedRevision) else context.get('candidate_events', [])
         issues = []
+        if isinstance(value, ReviewedRevision) and 'frozen_events' in context:
+            if events != context['frozen_events']:
+                issues.append('Events are frozen for concern assessment; copy draft.events exactly without edits or reordering. Mark unresolved if the frozen candidate still needs correction.')
         for entry in entries:
             assessment = entry.assessment
             if (isinstance(value, RevisionVerification) and
