@@ -464,6 +464,23 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual([n for n, _ in calls], ['grounded_event_revision'] + ['grounded_revision'] * 3 + ['revision_verification'] * 3)
         self.assertEqual(len(audit['split_revision_attempts'][0]['verification_batches']), 3)
 
+    def test_split_pass_validates_new_issue_event_indices(self):
+        from percept_harness.pipelines.revision import split_revision_pass
+        for indices in ([0, 1], [2]):
+            with self.subTest(indices=indices):
+                def stage(name, schema, *, draft, review, ordinal):
+                    if name == 'grounded_event_revision':
+                        return DRAFT
+                    if name == 'grounded_revision':
+                        return {**DRAFT, 'responses': []}
+                    return {'verdicts': [], 'new_issues': [{**CONCERN, 'event_indices': indices}]}
+                if indices == [0, 1]:
+                    _, verification = split_revision_pass(stage, DRAFT, {}, [], 0, {})
+                    self.assertEqual(verification['new_issues'][0]['event_indices'], indices)
+                else:
+                    with self.assertRaisesRegex(ValueError, 'invalid event or time'):
+                        split_revision_pass(stage, DRAFT, {}, [], 0, {})
+
     def test_persistent_invalid_output_stops_after_three_attempts(self):
         model = ScriptedModel(malformed=True)
         outcome = self.run_model(model)

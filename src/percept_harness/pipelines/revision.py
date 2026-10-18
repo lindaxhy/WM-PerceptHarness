@@ -37,7 +37,8 @@ def split_revision_pass(stage, draft, revision_context, ledger, attempt, audit):
             if key not in seen_issues:
                 seen_issues.add(key)
                 new_issues.append(issue)
-    context = {'duration': candidate['duration'], 'concern_ids': [c['concern_id'] for c in ledger],
+    context = {'duration': candidate['duration'], 'event_count': len(candidate['events']),
+               'concern_ids': [c['concern_id'] for c in ledger],
                'candidate_events': candidate['events'], 'frozen_events': candidate['events'],
                'assessment_required_ids': [v['concern_id'] for v in responses if v.get('assessment') is not None]}
     revision = validate_stage(ReviewedRevision, {**candidate, 'responses': responses}, context)
