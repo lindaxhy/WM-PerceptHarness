@@ -81,7 +81,7 @@ def run_official(*, vbench_root: Path, videos_path: Path, prompt: str,
     model = verify_clip_cache(clip_home)
     info = build_full_info(video, prompt)
     metadata = {
-        "wrapper": "score_vbench_clip_score.py", "source": source,
+        "wrapper": "percept score vbench-clip", "source": source,
         "video": str(video),
         "prompt": prompt, "clip_model": str(model),
         "status": "preflight_passed",

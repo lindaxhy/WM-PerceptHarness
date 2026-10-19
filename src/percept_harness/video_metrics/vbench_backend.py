@@ -200,7 +200,9 @@ def run_official(*, vbench_root: Path, videos_path: Path, dimensions: list[str],
     # prompt as a string, never the official --prompt_file dictionary path.
     if actual_prompt is not None:
         command += ["--prompt", actual_prompt]
-    metadata = {"wrapper": "score_vbench_official.py", "source": source, "video": str(video),
+    # The CLI runs one dimension per command; other callers name this module.
+    wrapper = f"percept {dimensions[0].replace('_', '-')}" if len(dimensions) == 1 else __name__
+    metadata = {"wrapper": wrapper, "source": source, "video": str(video),
                 "dimensions": dimensions, "mode": "custom_input",
                 "prompt": actual_prompt, "cache_dir": str(cache), "weights": weights,
                 "torch_home": env["TORCH_HOME"], "cuda_visible_devices": env.get("CUDA_VISIBLE_DEVICES"),

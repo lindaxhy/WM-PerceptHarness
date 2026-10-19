@@ -106,7 +106,7 @@ def test_backend_check_only_metadata(vbench, env):
                "--dimension", "imaging_quality", "--mode", "custom_input", "--output_path", str(vbench.out),
                "--load_ckpt_from_local", "True", "--imaging_quality_preprocessing_mode", "longer"]
     assert result == {
-        "wrapper": "score_vbench_official.py", "source": {"expected_revision": REV, "revision": REV},
+        "wrapper": "percept imaging-quality", "source": {"expected_revision": REV, "revision": REV},
         "video": str(vbench.video), "dimensions": ["imaging_quality"], "mode": "custom_input",
         "prompt": None, "cache_dir": str(vbench.cache),
         "weights": {"pyiqa_model/musiq_spaq_ckpt-358bb6af.pth": str(vbench.cache / "pyiqa_model/musiq_spaq_ckpt-358bb6af.pth")},
@@ -131,6 +131,14 @@ def test_backend_check_only_metadata(vbench, env):
 def test_backend_preflight_errors(vbench, env, overrides, error, message):
     with pytest.raises(error, match=message):
         vb.run_official(**run_args(vbench, **overrides), check_only=True)
+
+
+def test_backend_wrapper_names_entry_point(vbench):
+    single = vb.run_official(**run_args(vbench, dimensions=["temporal_flickering"], static_subset_ack=True), check_only=True)
+    assert single["wrapper"] == "percept temporal-flickering"
+    several = vb.run_official(**run_args(vbench, dimensions=["temporal_flickering", "imaging_quality"],
+                                         static_subset_ack=True), check_only=True)
+    assert several["wrapper"] == "percept_harness.video_metrics.vbench_backend"
 
 
 def test_backend_preflight_path_errors(vbench, env):
@@ -239,7 +247,7 @@ def test_backend_full_run_env_and_golden(vbench, env, monkeypatch, capsys):
     assert kwargs["cwd"] == vbench.root
     assert kwargs["stderr"] == subprocess.STDOUT
     assert child_env(kwargs) == expected_backend_env(vbench, CUDA_VISIBLE_DEVICES="1")
-    request = {"wrapper": "score_vbench_official.py", "source": {"expected_revision": REV, "revision": REV},
+    request = {"wrapper": "percept imaging-quality", "source": {"expected_revision": REV, "revision": REV},
                "video": str(vbench.video), "dimensions": ["imaging_quality"], "mode": "custom_input",
                "prompt": None, "cache_dir": str(vbench.cache),
                "weights": {"pyiqa_model/musiq_spaq_ckpt-358bb6af.pth": str(vbench.cache / "pyiqa_model/musiq_spaq_ckpt-358bb6af.pth")},
@@ -357,7 +365,7 @@ def clip_args(v, **overrides):
 
 
 def clip_preflight(v):
-    return {"wrapper": "score_vbench_clip_score.py", "source": {"expected_revision": REV, "revision": REV},
+    return {"wrapper": "percept score vbench-clip", "source": {"expected_revision": REV, "revision": REV},
             "video": str(v.video), "prompt": PROMPT, "clip_model": str(v.model), "status": "preflight_passed"}
 
 
