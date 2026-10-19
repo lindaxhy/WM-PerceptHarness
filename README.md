@@ -225,7 +225,7 @@ These commands select a metric directly:
 | `percept background-consistency` | Background consistency |
 | `percept overall-consistency` | Video-text consistency with ViCLIP |
 
-They share the official VBench implementation internally. Prepare the [pinned source checkout, runtime and per-metric weight manifest](docs/metrics.md#individual-metric-commands) first. For example:
+They share the official VBench implementation internally. Prepare the [pinned VBench git checkout (its HEAD is verified), runtime and per-metric weight manifest](docs/metrics.md#individual-metric-commands) first. For example:
 
 ```bash
 percept imaging-quality \
