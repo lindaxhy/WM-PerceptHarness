@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import subprocess
 import sys
 
 VBENCH_REVISION = "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490"
@@ -38,3 +39,19 @@ def subprocess_env(*, venv_path: bool = False, prepend: dict | None = None, unse
     if gpu is not None:
         env["CUDA_VISIBLE_DEVICES"] = gpu
     return env
+
+
+def run_logged(command, *, log: Path, label: str, mode: str = "x", **kwargs) -> None:
+    with log.open(mode, encoding="utf-8") as stream:
+        completed = subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT, **kwargs)
+    if completed.returncode:
+        raise RuntimeError(f"{label} exited with {completed.returncode}; see {log}")
+
+
+def run_vbench(command, *, log: Path, output: Path, label: str, missing: Exception, **kwargs) -> Path:
+    """Run an official VBench evaluation and return its single result JSON."""
+    run_logged(command, log=log, label=label, **kwargs)
+    results = list(output.glob("*_eval_results.json"))
+    if len(results) != 1:
+        raise missing
+    return results[0]

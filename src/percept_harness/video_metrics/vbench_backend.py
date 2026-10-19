@@ -12,10 +12,9 @@ import importlib.metadata
 import json
 import math
 from pathlib import Path
-import subprocess
 import sys
 
-from percept_harness.video_metrics._runtime import VBENCH_REVISION, subprocess_env, verify_source
+from percept_harness.video_metrics._runtime import VBENCH_REVISION, run_vbench, subprocess_env, verify_source
 
 SOURCE_FILES = ("evaluate.py", "vbench/__init__.py")
 DIRECT_DIMENSIONS = frozenset({
@@ -222,14 +221,9 @@ def run_official(*, vbench_root: Path, videos_path: Path, dimensions: list[str],
     print(f"Official VBench output and log: {output}", file=sys.stderr)
     with (output / "wrapper_request.json").open("x", encoding="utf-8") as stream:
         json.dump(metadata, stream, ensure_ascii=False, indent=2, allow_nan=False)
-    with log_path.open("x", encoding="utf-8") as stream:
-        completed = subprocess.run(command, cwd=root, env=env, stdout=stream, stderr=subprocess.STDOUT)
-    if completed.returncode:
-        raise RuntimeError(f"Official VBench exited with {completed.returncode}; see {log_path}")
-    results = list(output.glob("*_eval_results.json"))
-    if len(results) != 1:
-        raise ValueError(f"Expected exactly one official evaluation JSON; see {output}")
-    scores = validate_result(results[0], video, dimensions)
+    result_path = run_vbench(command, log=log_path, output=output, label="Official VBench", cwd=root, env=env,
+                             missing=ValueError(f"Expected exactly one official evaluation JSON; see {output}"))
+    scores = validate_result(result_path, video, dimensions)
     versions = {}
     for name in ("torch", "torchvision", "pyiqa", "openai-clip", "decord", "numpy"):
         try:
@@ -237,7 +231,7 @@ def run_official(*, vbench_root: Path, videos_path: Path, dimensions: list[str],
         except importlib.metadata.PackageNotFoundError:
             versions[name] = None
     metadata.update(status="complete", scores=scores, versions=versions,
-                    official_result=str(results[0]), log=str(log_path))
+                    official_result=str(result_path), log=str(log_path))
     with (output / "wrapper_metadata.json").open("x", encoding="utf-8") as stream:
         json.dump(metadata, stream, ensure_ascii=False, indent=2, allow_nan=False)
         stream.write("\n")

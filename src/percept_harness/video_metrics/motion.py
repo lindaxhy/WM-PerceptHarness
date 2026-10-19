@@ -13,12 +13,11 @@ import json
 import math
 import os
 from pathlib import Path
-import subprocess
 import sys
 import sysconfig
 import tempfile
 
-from percept_harness.video_metrics._runtime import subprocess_env
+from percept_harness.video_metrics._runtime import run_vbench, subprocess_env
 
 VBENCH_VERSION = "0.1.5"
 
@@ -68,14 +67,9 @@ def score_video(video: Path, cache: Path, output: Path, gpu: str | None = None) 
                "--dimension", "motion_smoothness", "--mode", "custom_input",
                "--output_path", str(run_dir)]
     print(f"Official VBench output and log: {run_dir}", file=sys.stderr)
-    with log.open("w", encoding="utf-8") as stream:
-        completed = subprocess.run(command, env=env, stdout=stream, stderr=subprocess.STDOUT)
-    if completed.returncode:
-        raise RuntimeError(f"VBench exited with {completed.returncode}; see {log}")
-    results = list(run_dir.glob("*_eval_results.json"))
-    if len(results) != 1:
-        raise RuntimeError(f"Expected one official result JSON; see {run_dir}")
-    score = read_score(results[0], video)
+    result_path = run_vbench(command, log=log, output=run_dir, label="VBench", mode="w", env=env,
+                             missing=RuntimeError(f"Expected one official result JSON; see {run_dir}"))
+    score = read_score(result_path, video)
     payload = {
         "metric": "vbench_motion_smoothness", "score": score,
         "higher_is_better": True, "video": str(video),
@@ -83,7 +77,7 @@ def score_video(video: Path, cache: Path, output: Path, gpu: str | None = None) 
         "checkpoint": {"path": str(checkpoint)},
         "protocol": "Unmodified VBench 0.1.5 motion_smoothness (AMT-S), custom_input",
         "cuda_visible_devices": env.get("CUDA_VISIBLE_DEVICES"),
-        "official_result": str(results[0]), "log": str(log), "command": command,
+        "official_result": str(result_path), "log": str(log), "command": command,
     }
     # Exclusive creation also protects against another process creating the file.
     with output.open("x", encoding="utf-8") as stream:

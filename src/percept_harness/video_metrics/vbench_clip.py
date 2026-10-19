@@ -20,10 +20,9 @@ import argparse
 import json
 import math
 from pathlib import Path
-import subprocess
 import sys
 
-from percept_harness.video_metrics._runtime import VBENCH_REVISION, subprocess_env, verify_source
+from percept_harness.video_metrics._runtime import VBENCH_REVISION, run_logged, subprocess_env, verify_source
 
 CLIP_FILENAME = "ViT-B-32.pt"
 SOURCE_FILES = ("competitions/clip_score.py", "vbench/__init__.py")
@@ -109,11 +108,7 @@ def run_official(*, vbench_root: Path, videos_path: Path, prompt: str,
     env = subprocess_env(prepend={"PYTHONPATH": str(root)},
                          values={"HOME": str(clip_home.expanduser().resolve()), "PYTHONNOUSERSITE": "1"})
     command = [sys.executable, "-c", runner, str(info_path), str(result_path)]
-    with log_path.open("x", encoding="utf-8") as stream:
-        completed = subprocess.run(command, cwd=root, env=env,
-                                   stdout=stream, stderr=subprocess.STDOUT)
-    if completed.returncode:
-        raise RuntimeError(f"Official CLIP Score exited with {completed.returncode}; see {log_path}")
+    run_logged(command, log=log_path, label="Official CLIP Score", cwd=root, env=env)
     score = validate_result(result_path, video)
     metadata.update(status="complete", score=score,
                     official_result=str(result_path), log=str(log_path),
