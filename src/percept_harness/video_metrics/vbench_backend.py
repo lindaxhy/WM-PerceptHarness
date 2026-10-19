@@ -15,7 +15,8 @@ from pathlib import Path
 import sys
 
 from percept_harness.video_metrics._runtime import (
-    VBENCH_REVISION, finite_number, run_vbench, single_row, subprocess_env, verify_source, write_json_exclusive,
+    VBENCH_REVISION, finite_number, run_cli, run_vbench, single_row, subprocess_env, verify_source,
+    write_json_exclusive,
 )
 
 SOURCE_FILES = ("evaluate.py", "vbench/__init__.py")
@@ -255,9 +256,4 @@ def metric_main(dimension: str, argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-trusted-pickle", action="store_true", help="Only for trusted checkpoints requiring legacy torch.load")
     parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args(argv)
-    try:
-        print(json.dumps(run_official(**vars(args)), ensure_ascii=False, indent=2, allow_nan=False))
-        return 0
-    except Exception as error:
-        print(f"{name} failed: {error}", file=sys.stderr)
-        return 1
+    return run_cli(name, lambda: run_official(**vars(args)))

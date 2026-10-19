@@ -17,7 +17,7 @@ import sys
 import sysconfig
 import tempfile
 
-from percept_harness.video_metrics._runtime import is_number, run_vbench, subprocess_env, write_json_exclusive
+from percept_harness.video_metrics._runtime import is_number, run_cli, run_vbench, subprocess_env, write_json_exclusive
 
 VBENCH_VERSION = "0.1.5"
 
@@ -91,13 +91,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, required=True, help="New single-video JSON file; never overwritten")
     parser.add_argument("--gpu", help="CUDA_VISIBLE_DEVICES value; default inherits the environment")
     args = parser.parse_args(argv)
-    try:
-        result = score_video(args.video, args.cache_dir, args.output, args.gpu)
-        print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
-        return 0
-    except Exception as error:
-        print(f"Motion Smoothness failed: {error}", file=sys.stderr)
-        return 1
+    return run_cli("Motion Smoothness", lambda: score_video(args.video, args.cache_dir, args.output, args.gpu))
 
 
 if __name__ == "__main__":

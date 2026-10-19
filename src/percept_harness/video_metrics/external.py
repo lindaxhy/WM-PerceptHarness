@@ -14,14 +14,12 @@ checks without starting the evaluator.
 from __future__ import annotations
 
 import argparse
-import json
 from dataclasses import dataclass
 from pathlib import Path
 import subprocess
-import sys
 from typing import Sequence
 
-from percept_harness.video_metrics._runtime import VBENCH_REVISION, subprocess_env
+from percept_harness.video_metrics._runtime import VBENCH_REVISION, run_cli, subprocess_env
 
 
 @dataclass(frozen=True)
@@ -196,17 +194,10 @@ def main(argv: list[str] | None = None) -> int:
     command = list(args.command)
     if command and command[0] == "--":
         command = command[1:]
-    try:
-        result = run_official(metric=args.metric, source_dir=args.source_dir,
-                              checkpoint=args.checkpoint, manifest=args.manifest,
-                              generated=args.generated, reference=args.reference,
-                              command=command, output=args.output,
-                              check_only=args.check_only)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0
-    except Exception as error:
-        print(f"Official external metric runner failed: {error}", file=sys.stderr)
-        return 1
+    return run_cli("Official external metric runner", lambda: run_official(
+        metric=args.metric, source_dir=args.source_dir, checkpoint=args.checkpoint, manifest=args.manifest,
+        generated=args.generated, reference=args.reference, command=command, output=args.output,
+        check_only=args.check_only), allow_nan=True)
 
 
 if __name__ == "__main__":

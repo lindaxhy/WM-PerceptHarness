@@ -12,12 +12,11 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager, redirect_stdout
 import importlib.metadata
-import json
 import math
 from pathlib import Path
 import sys
 
-from percept_harness.video_metrics._runtime import write_json_exclusive
+from percept_harness.video_metrics._runtime import run_cli, write_json_exclusive
 
 MEMOBENCH_REVISION = "f4edb0c4f9f1820bac837ee30d4957811cf275ff"
 PYIQA_VERSION = "0.1.16"
@@ -184,22 +183,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-side", type=_positive_int, default=640)
     parser.add_argument("--output", type=Path, help="Optional new JSON file; refuses overwrite")
     args = parser.parse_args(argv)
-    try:
+
+    def run():
         output = args.output.expanduser().resolve() if args.output else None
         if output is not None and output.exists():
             raise FileExistsError(f"Output already exists; choose a new filename: {output}")
         # Keep stdout machine-readable; model loading messages go to stderr.
         with redirect_stdout(sys.stderr):
             result = score_video(args.video, args.device, args.sample_step, args.max_side, args.cache_dir)
-        if output is None:
-            payload = json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False)
-        else:
-            payload = write_json_exclusive(output, result, parents=True)
-        print(payload)
-        return 0
-    except Exception as error:
-        print(f"CLIP-IQA+ failed: {error}", file=sys.stderr)
-        return 1
+        if output is not None:
+            write_json_exclusive(output, result, parents=True)
+        return result
+    return run_cli("CLIP-IQA+", run)
 
 
 if __name__ == "__main__":

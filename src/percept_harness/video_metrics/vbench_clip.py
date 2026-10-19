@@ -23,7 +23,8 @@ from pathlib import Path
 import sys
 
 from percept_harness.video_metrics._runtime import (
-    VBENCH_REVISION, finite_number, run_logged, single_row, subprocess_env, verify_source, write_json_exclusive,
+    VBENCH_REVISION, finite_number, run_cli, run_logged, single_row, subprocess_env, verify_source,
+    write_json_exclusive,
 )
 
 CLIP_FILENAME = "ViT-B-32.pt"
@@ -125,12 +126,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args(argv)
-    try:
-        print(json.dumps(run_official(**vars(args)), ensure_ascii=False, indent=2))
-        return 0
-    except Exception as error:
-        print(f"VBench CLIP Score wrapper failed: {error}", file=sys.stderr)
-        return 1
+    return run_cli("VBench CLIP Score wrapper", lambda: run_official(**vars(args)), allow_nan=True)
 
 
 if __name__ == "__main__":

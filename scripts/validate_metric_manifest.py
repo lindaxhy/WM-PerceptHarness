@@ -18,6 +18,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from percept_harness.video_metrics._runtime import run_cli
+
 
 SEMANTIC_DIMENSIONS = frozenset(
     {
@@ -161,14 +163,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dimension", action="append", default=[])
     parser.add_argument("--check-files", action="store_true")
     args = parser.parse_args(argv)
-    try:
+
+    def run():
         payload = load_manifest(args.manifest.expanduser().resolve(strict=True))
-        result = validate_manifest(payload, root=args.root, dimensions=set(args.dimension), check_files=args.check_files)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0
-    except Exception as error:
-        print(f"Manifest validation failed: {error}", file=__import__("sys").stderr)
-        return 1
+        return validate_manifest(payload, root=args.root, dimensions=set(args.dimension), check_files=args.check_files)
+    return run_cli("Manifest validation", run, allow_nan=True)
 
 
 if __name__ == "__main__":

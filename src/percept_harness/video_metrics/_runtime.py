@@ -88,3 +88,12 @@ def write_json_exclusive(path: Path, value, *, newline: bool = True, parents: bo
     else:
         path.write_text(content, encoding="utf-8")
     return text
+
+
+def run_cli(label: str, function, *, allow_nan: bool = False) -> int:
+    try:
+        print(json.dumps(function(), ensure_ascii=False, indent=2, allow_nan=allow_nan))
+        return 0
+    except Exception as error:
+        print(f"{label} failed: {error}", file=sys.stderr)
+        return 1

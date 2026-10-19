@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from percept_harness.video_metrics._runtime import write_json_exclusive
+from percept_harness.video_metrics._runtime import run_cli, write_json_exclusive
 
 
 DEFAULT_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".bmp", ".webp"})
@@ -73,7 +73,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--extension", action="append")
     parser.add_argument("--require-complete", action="store_true")
     args = parser.parse_args(argv)
-    try:
+
+    def run():
         generated = args.generated_frames.expanduser().resolve(strict=True)
         reference = args.reference_frames.expanduser().resolve(strict=True)
         if not generated.is_dir() or not reference.is_dir():
@@ -84,11 +85,9 @@ def main(argv: list[str] | None = None) -> int:
         output = args.output.expanduser().resolve()
         if output.exists():
             raise FileExistsError(f"Output already exists: {output}")
-        print(write_json_exclusive(output, payload, parents=True))
-        return 0
-    except Exception as error:
-        print(f"Reference manifest failed: {error}", file=__import__("sys").stderr)
-        return 1
+        write_json_exclusive(output, payload, parents=True)
+        return payload
+    return run_cli("Reference manifest", run)
 
 
 if __name__ == "__main__":
