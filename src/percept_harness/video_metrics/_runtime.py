@@ -5,6 +5,7 @@ as a script by an older upstream Python without the package installed.
 """
 from __future__ import annotations
 
+import json
 import math
 import os
 from pathlib import Path
@@ -72,3 +73,18 @@ def single_row(rows, message: str) -> dict:
     if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
         raise ValueError(message)
     return rows[0]
+
+
+def write_json_exclusive(path: Path, value, *, newline: bool = True, parents: bool = False,
+                         strict: bool = True) -> str:
+    """Create a new JSON file; ``strict=False`` keeps the legacy overwriting, NaN-tolerant writer."""
+    text = json.dumps(value, ensure_ascii=False, indent=2, allow_nan=not strict)
+    if parents:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    content = text + "\n" if newline else text
+    if strict:
+        with path.open("x", encoding="utf-8") as stream:
+            stream.write(content)
+    else:
+        path.write_text(content, encoding="utf-8")
+    return text

@@ -26,6 +26,8 @@ import json
 from pathlib import Path
 from typing import Any, Iterable
 
+from percept_harness.video_metrics._runtime import write_json_exclusive
+
 
 class InputSchemaError(ValueError):
     """Raised when a caller manifest cannot be represented by the official format."""
@@ -253,8 +255,7 @@ def _load(path: Path) -> Any:
 def _write_exclusive(path: Path, payload: Any) -> None:
     if path.exists():
         raise InputSchemaError(f"refusing to overwrite existing output: {path}")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_json_exclusive(path, payload, parents=True, strict=False)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -15,7 +15,7 @@ from pathlib import Path
 import sys
 
 from percept_harness.video_metrics._runtime import (
-    VBENCH_REVISION, finite_number, run_vbench, single_row, subprocess_env, verify_source,
+    VBENCH_REVISION, finite_number, run_vbench, single_row, subprocess_env, verify_source, write_json_exclusive,
 )
 
 SOURCE_FILES = ("evaluate.py", "vbench/__init__.py")
@@ -214,8 +214,7 @@ def run_official(*, vbench_root: Path, videos_path: Path, dimensions: list[str],
     output.mkdir(parents=True, exist_ok=False)
     log_path = output / "vbench.log"
     print(f"Official VBench output and log: {output}", file=sys.stderr)
-    with (output / "wrapper_request.json").open("x", encoding="utf-8") as stream:
-        json.dump(metadata, stream, ensure_ascii=False, indent=2, allow_nan=False)
+    write_json_exclusive(output / "wrapper_request.json", metadata, newline=False)
     result_path = run_vbench(command, log=log_path, output=output, label="Official VBench", cwd=root, env=env,
                              missing=ValueError(f"Expected exactly one official evaluation JSON; see {output}"))
     scores = validate_result(result_path, video, dimensions)
@@ -227,9 +226,7 @@ def run_official(*, vbench_root: Path, videos_path: Path, dimensions: list[str],
             versions[name] = None
     metadata.update(status="complete", scores=scores, versions=versions,
                     official_result=str(result_path), log=str(log_path))
-    with (output / "wrapper_metadata.json").open("x", encoding="utf-8") as stream:
-        json.dump(metadata, stream, ensure_ascii=False, indent=2, allow_nan=False)
-        stream.write("\n")
+    write_json_exclusive(output / "wrapper_metadata.json", metadata)
     return metadata
 
 

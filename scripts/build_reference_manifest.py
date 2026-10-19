@@ -10,8 +10,9 @@ temporal alignment, equal geometry, or that the reference is real future GT.
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
+
+from percept_harness.video_metrics._runtime import write_json_exclusive
 
 
 DEFAULT_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".bmp", ".webp"})
@@ -83,10 +84,7 @@ def main(argv: list[str] | None = None) -> int:
         output = args.output.expanduser().resolve()
         if output.exists():
             raise FileExistsError(f"Output already exists: {output}")
-        output.parent.mkdir(parents=True, exist_ok=True)
-        with output.open("x", encoding="utf-8") as stream:
-            stream.write(json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        print(write_json_exclusive(output, payload, parents=True))
         return 0
     except Exception as error:
         print(f"Reference manifest failed: {error}", file=__import__("sys").stderr)

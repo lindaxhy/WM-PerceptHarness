@@ -16,6 +16,8 @@ import math
 from pathlib import Path
 from typing import Any, Iterable
 
+from percept_harness.video_metrics._runtime import write_json_exclusive
+
 
 def _read_rows(path: Path) -> list[dict[str, Any]]:
     if path.suffix.lower() == ".csv":
@@ -141,11 +143,7 @@ def main(argv: list[str] | None = None) -> int:
         output = args.output.expanduser().resolve()
         if output.exists():
             raise FileExistsError(f"Output already exists: {output}")
-        output.parent.mkdir(parents=True, exist_ok=True)
-        serialized = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False)
-        with output.open("x", encoding="utf-8") as stream:
-            stream.write(serialized + "\n")
-        print(serialized)
+        print(write_json_exclusive(output, payload, parents=True))
         return 0
     except Exception as error:
         print(f"VideoPhy-2 Joint aggregation failed: {error}", file=__import__("sys").stderr)

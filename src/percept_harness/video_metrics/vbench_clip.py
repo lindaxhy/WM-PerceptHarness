@@ -23,7 +23,7 @@ from pathlib import Path
 import sys
 
 from percept_harness.video_metrics._runtime import (
-    VBENCH_REVISION, finite_number, run_logged, single_row, subprocess_env, verify_source,
+    VBENCH_REVISION, finite_number, run_logged, single_row, subprocess_env, verify_source, write_json_exclusive,
 )
 
 CLIP_FILENAME = "ViT-B-32.pt"
@@ -93,7 +93,7 @@ def run_official(*, vbench_root: Path, videos_path: Path, prompt: str,
     info_path = output / "official_full_info.json"
     result_path = output / "clip_score_result.json"
     log_path = output / "vbench_clip_score.log"
-    info_path.write_text(json.dumps(info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_json_exclusive(info_path, info, strict=False)
     # Call the unmodified official competition function.  The tiny runner is
     # orchestration only; all frame sampling, CLIP encoding and averaging stay
     # in competitions/clip_score.py.
@@ -111,8 +111,7 @@ def run_official(*, vbench_root: Path, videos_path: Path, prompt: str,
     metadata.update(status="complete", score=score,
                     official_result=str(result_path), log=str(log_path),
                     command=command)
-    (output / "wrapper_metadata.json").write_text(
-        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_json_exclusive(output / "wrapper_metadata.json", metadata, strict=False)
     return metadata
 
 

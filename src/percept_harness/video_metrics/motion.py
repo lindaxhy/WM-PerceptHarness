@@ -17,7 +17,7 @@ import sys
 import sysconfig
 import tempfile
 
-from percept_harness.video_metrics._runtime import is_number, run_vbench, subprocess_env
+from percept_harness.video_metrics._runtime import is_number, run_vbench, subprocess_env, write_json_exclusive
 
 VBENCH_VERSION = "0.1.5"
 
@@ -80,9 +80,7 @@ def score_video(video: Path, cache: Path, output: Path, gpu: str | None = None) 
         "official_result": str(result_path), "log": str(log), "command": command,
     }
     # Exclusive creation also protects against another process creating the file.
-    with output.open("x", encoding="utf-8") as stream:
-        json.dump(payload, stream, ensure_ascii=False, indent=2, allow_nan=False)
-        stream.write("\n")
+    write_json_exclusive(output, payload)
     return payload
 
 
