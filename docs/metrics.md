@@ -9,12 +9,12 @@ Use the sections below for [CLIP-IQA+](#clip-iqa), [Motion Smoothness](#motion-s
 | Evaluator | Command | Environment | Evidence and scope |
 |---|---|---|---|
 | Grounded event scoring | `percept score events` | Core package and an OpenAI-compatible semantic judge endpoint | Offline tests cover scoring with an injected judge; hosted judge and live SAM GPU inference remain unvalidated |
-| CLIP-IQA+ | `percept score clipiqa` | PyIQA 0.1.16; CPU or CUDA | Implemented sampled-frame scorer; a fresh full dependency installation is not validated by the historical record |
-| VBench Motion Smoothness / AMT-S | `percept score motion` | VBench 0.1.5, CUDA, AMT-S weights | Existing record marks single-video smoke completed; this is not a full-dataset validation |
+| CLIP-IQA+ | `percept score clipiqa` | PyIQA 0.1.16; CPU or CUDA | Implemented sampled-frame scorer; a fresh full dependency installation has not been validated |
+| VBench Motion Smoothness / AMT-S | `percept score motion` | VBench 0.1.5, CUDA, AMT-S weights | A single-video smoke run has completed; not validated on a full dataset |
 
 See [installation](usage.md) and the metric protocols below, [input/output conventions](usage.md), and [checkpoint preparation](#checkpoint-preparation). The packaged commands use the active environment; they do not merge the different dependency stacks. Use the `percept score` commands above for these public workflows. The evaluator integrations below use the same CLI; input preparation remains in `scripts/`. The `wrapper` field of result metadata names the command that produced it (`percept <metric>` or `percept score vbench-clip`).
 
-CLIP-IQA+ is a **backup**, excluded from the current frozen main selection. Motion Smoothness is selected. Grounded event scoring is the repository's annotation-based workflow and is not silently inserted into the separate frozen 21-item list.
+CLIP-IQA+ is a backup metric outside the main [benchmark selection](#benchmark-reporting); Motion Smoothness is part of it. Grounded event scoring is the repository's annotation-based workflow and is reported separately from the 21-metric selection.
 
 ## Additional integration tools
 
@@ -213,8 +213,8 @@ not faked by this package:
 - DOVER needs its own Torch 1.13-compatible environment and `DOVER.pth`.
 - Instruction Following needs WorldModelBench's VILA judge, data layout,
   and original question fields. Physical Adherence is not part of the
-  frozen final benchmark list; it is retained only as an optional
-  WorldModelBench diagnostic/compatibility reference.
+  benchmark selection; it is available only as an optional WorldModelBench
+  diagnostic.
 - Action Binding / Motion Binding / Object Interactions need the official
   T2V-CompBench repositories, numeric IDs, metadata, and large judge/vision
   environments.
@@ -458,7 +458,7 @@ Select the array for your adapter below, save it as your input JSON, and replace
 
 ## Benchmark reporting
 
-The frozen selection from 2026-09-20 contains 21 main/specialist metrics and five reference/distribution appendix metrics. Selection is not evidence that every evaluator is provisioned or validated; use the current entry-point tables above for implementation scope.
+The benchmark selection contains 21 main/specialist metrics and five reference/distribution appendix metrics. Selection is not evidence that every evaluator is provisioned or validated; use the current entry-point tables above for implementation scope.
 
 | Group | Selected metrics |
 |---|---|
@@ -472,4 +472,4 @@ The frozen selection from 2026-09-20 contains 21 main/specialist metrics and fiv
 
 Mechanics, Thermotics and Material are separate specialist reports, excluded from a unified main score. PSNR/SSIM/LPIPS need aligned real future frames; FVD/FID need a matching real collection or statistics. Without those references, report `N/A`.
 
-Aesthetic Quality and long-video consistency variants are diagnostics; CLIP-IQA+ is a backup. Physical Adherence is outside the frozen selection. VideoPhy-2 Joint is an analysis of paired PC/SA scores (`PC >= 4` and `SA >= 4`), not an additional model or metric. Grounded event scoring is the separate annotation-based workflow. Report scores, coverage and exclusions separately rather than averaging incompatible metrics.
+Aesthetic Quality and long-video consistency variants are diagnostics; CLIP-IQA+ is a backup. Physical Adherence is outside the selection. VideoPhy-2 Joint is an analysis of paired PC/SA scores (`PC >= 4` and `SA >= 4`), not an additional model or metric. Grounded event scoring is the separate annotation-based workflow. Report scores, coverage and exclusions separately rather than averaging incompatible metrics.
