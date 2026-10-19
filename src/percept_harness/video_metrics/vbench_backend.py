@@ -8,14 +8,13 @@ without importing GPU packages, downloading anything, or creating an output.
 from __future__ import annotations
 
 import argparse
-import importlib.metadata
 import json
 import math
 from pathlib import Path
 import sys
 
 from percept_harness.video_metrics._runtime import (
-    VBENCH_REVISION, finite_number, run_cli, run_vbench, single_row, subprocess_env, verify_source,
+    VBENCH_REVISION, finite_number, package_versions, run_cli, run_vbench, single_row, subprocess_env, verify_source,
     write_json_exclusive,
 )
 
@@ -219,12 +218,7 @@ def run_official(*, vbench_root: Path, videos_path: Path, dimensions: list[str],
     result_path = run_vbench(command, log=log_path, output=output, label="Official VBench", cwd=root, env=env,
                              missing=ValueError(f"Expected exactly one official evaluation JSON; see {output}"))
     scores = validate_result(result_path, video, dimensions)
-    versions = {}
-    for name in ("torch", "torchvision", "pyiqa", "openai-clip", "decord", "numpy"):
-        try:
-            versions[name] = importlib.metadata.version(name)
-        except importlib.metadata.PackageNotFoundError:
-            versions[name] = None
+    versions = package_versions(("torch", "torchvision", "pyiqa", "openai-clip", "decord", "numpy"))
     metadata.update(status="complete", scores=scores, versions=versions,
                     official_result=str(result_path), log=str(log_path))
     write_json_exclusive(output / "wrapper_metadata.json", metadata)

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import importlib.metadata
 import json
 import math
 from pathlib import Path
@@ -19,9 +18,9 @@ import subprocess
 import sys
 
 try:
-    from ._runtime import subprocess_env, verify_source
+    from ._runtime import package_versions, subprocess_env, verify_source
 except ImportError:  # Run directly as a file by an older upstream Python.
-    from _runtime import subprocess_env, verify_source
+    from _runtime import package_versions, subprocess_env, verify_source
 
 DOVER_COMMIT = "f1ddc96215bc7fbcf8f315c65d47905f339c3419"
 DOVER_ORIGIN = "https://github.com/VQAssessment/DOVER"
@@ -41,12 +40,7 @@ def checkpoint_record(path: Path) -> dict:
 
 
 def inspect_runtime(device: str, allow_unverified_runtime: bool, gpu: str | None = None) -> dict:
-    versions = {}
-    for name in RUNTIME_PACKAGES:
-        try:
-            versions[name] = importlib.metadata.version(name)
-        except importlib.metadata.PackageNotFoundError:
-            versions[name] = None
+    versions = package_versions(RUNTIME_PACKAGES)
     problems = [f"Missing package: {name}" for name, value in versions.items() if value is None]
     original_torch = bool(re.match(r"^1\.13\.", versions["torch"] or ""))
     if not original_torch and not allow_unverified_runtime:

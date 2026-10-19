@@ -5,6 +5,7 @@ as a script by an older upstream Python without the package installed.
 """
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import math
 import os
@@ -21,6 +22,16 @@ def verify_source(root: Path, files, record: dict) -> dict:
         if not path.is_file():
             raise FileNotFoundError(f"Missing required source file: {path}")
     return dict(record)
+
+
+def package_versions(names) -> dict:
+    versions = {}
+    for name in names:
+        try:
+            versions[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            versions[name] = None
+    return versions
 
 
 def subprocess_env(*, venv_path: bool = False, prepend: dict | None = None, unset=(),
