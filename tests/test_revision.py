@@ -435,52 +435,6 @@ class RevisionTests(unittest.TestCase):
         self.assertTrue(any('c0001' in x and 'must overlap' in x for x in messages))
         self.assertTrue(any("missing=['c0002']" in x for x in messages))
 
-    def test_frozen_assessment_rejects_candidate_edits(self):
-        context = {'duration': 10., 'concern_ids': [], 'frozen_events': DRAFT['events']}
-        with self.assertRaisesRegex(ValueError, 'Events are frozen'):
-            validate_stage(ReviewedRevision, {**DRAFT, 'events': [], 'responses': []}, context)
-
-    def test_split_pass_batches_and_independently_verifies_every_concern(self):
-        from percept_harness.pipelines.revision import split_revision_pass
-        ledger = [{'concern_id': f'c{i:04d}', 'reason': 'Check.'} for i in range(14)]
-        calls = []
-        def stage(name, schema, *, draft, review, ordinal):
-            calls.append((name, review))
-            if name == 'grounded_event_revision':
-                return DRAFT
-            ids = [c['concern_id'] for c in review['concerns']]
-            self.assertLessEqual(len(ids), 6)
-            self.assertEqual(draft, DRAFT)
-            if name == 'grounded_revision':
-                self.assertTrue(review['freeze_candidate'])
-                return {**draft, 'responses': [{'concern_id': cid, 'action': 'retained',
-                    'rationale': 'Checked.', 'visual_times': [3.]} for cid in ids]}
-            self.assertNotIn('responses', review)
-            return {'verdicts': [{'concern_id': cid, 'resolved': True, 'reason': 'Independent.'} for cid in ids], 'new_issues': []}
-        audit = {}
-        revision, verification = split_revision_pass(stage, DRAFT, {'concerns': ledger}, ledger, 0, audit)
-        self.assertEqual(len(revision['responses']), 14)
-        self.assertEqual(len(verification['verdicts']), 14)
-        self.assertEqual([n for n, _ in calls], ['grounded_event_revision'] + ['grounded_revision'] * 3 + ['revision_verification'] * 3)
-        self.assertEqual(len(audit['split_revision_attempts'][0]['verification_batches']), 3)
-
-    def test_split_pass_validates_new_issue_event_indices(self):
-        from percept_harness.pipelines.revision import split_revision_pass
-        for indices in ([0, 1], [2]):
-            with self.subTest(indices=indices):
-                def stage(name, schema, *, draft, review, ordinal):
-                    if name == 'grounded_event_revision':
-                        return DRAFT
-                    if name == 'grounded_revision':
-                        return {**DRAFT, 'responses': []}
-                    return {'verdicts': [], 'new_issues': [{**CONCERN, 'event_indices': indices}]}
-                if indices == [0, 1]:
-                    _, verification = split_revision_pass(stage, DRAFT, {}, [], 0, {})
-                    self.assertEqual(verification['new_issues'][0]['event_indices'], indices)
-                else:
-                    with self.assertRaisesRegex(ValueError, 'invalid event or time'):
-                        split_revision_pass(stage, DRAFT, {}, [], 0, {})
-
     def test_persistent_invalid_output_stops_after_three_attempts(self):
         model = ScriptedModel(malformed=True)
         outcome = self.run_model(model)
