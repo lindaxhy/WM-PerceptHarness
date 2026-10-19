@@ -77,7 +77,7 @@ def run_official(*, vbench_root: Path, videos_path: Path, prompt: str,
         raise FileExistsError(f"Output directory already exists: {output}")
     if output == root or root in output.parents:
         raise ValueError("Keep output outside the pinned source tree")
-    source = verify_source(root, SOURCE_FILES, {"expected_revision": VBENCH_REVISION})
+    source = verify_source(root, SOURCE_FILES, {"expected_revision": VBENCH_REVISION}, VBENCH_REVISION)
     model = verify_clip_cache(clip_home)
     info = build_full_info(video, prompt)
     metadata = {

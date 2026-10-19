@@ -190,10 +190,16 @@ class FixedDatetime:
         return datetime(2026, 1, 2, 3, 4, 5, tzinfo=tz)
 
 
+def dover_run(*args, **kwargs):
+    return FakeRun(*args, head=dover.DOVER_COMMIT, **kwargs)
+
+
 @pytest.fixture
 def dover_setup(tmp, monkeypatch):
+    monkeypatch.setattr(subprocess, "run", dover_run())
     root = tmp / "DOVER"
     (root / "dover").mkdir(parents=True)
+    (root / ".git").mkdir()
     for name in ("evaluate_one_video.py", "dover.yml", "dover/__init__.py"):
         (root / name).write_text("")
     (root / "pretrained_weights").mkdir()
@@ -217,7 +223,8 @@ def dover_expected(root, torch_home, video, out, **extra):
               "log": str(out / "dover.log"),
               "protocol": "Unchanged evaluate_one_video.py -f with pinned dover.yml",
               "runtime_validation": "No GPU/CPU model inference has been validated by this preparation package",
-              "source": {"origin": dover.DOVER_ORIGIN, "expected_commit": dover.DOVER_COMMIT},
+              "source": {"origin": dover.DOVER_ORIGIN, "expected_commit": dover.DOVER_COMMIT,
+                         "revision": dover.DOVER_COMMIT},
               "dover_root": str(root), "video": {"path": str(video), "bytes": 2},
               "checkpoints": {"dover": {"path": str(root / "pretrained_weights" / "DOVER.pth"), "bytes": 5},
                               "convnext_initialization": {"path": str(torch_home / "hub" / "checkpoints" / dover.CONVNEXT_FILENAME), "bytes": 3}},
@@ -250,7 +257,7 @@ def test_dover_check_only_golden(tmp, dover_setup, env, capsys):
 
 def test_dover_full_run_env(tmp, dover_setup, env, monkeypatch):
     root, torch_home, video, _ = dover_setup
-    fake = FakeRun(lambda command, kwargs: kwargs["stdout"].write(f"{dover.SCORE_LABEL} 0.625\n".encode()))
+    fake = dover_run(lambda command, kwargs: kwargs["stdout"].write(f"{dover.SCORE_LABEL} 0.625\n".encode()))
     monkeypatch.setattr(subprocess, "run", fake)
     out = tmp / "out"
     result = dover.run_official(dover_root=root, video=video, torch_home=torch_home, output_dir=out, gpu="3")
@@ -269,7 +276,7 @@ def test_dover_cuda_probe_env(tmp, dover_setup, env, monkeypatch):
     root, torch_home, video, _ = dover_setup
     def probe(command, kwargs):
         assert command[-1] == "0"
-    fake = FakeRun(probe, returncode=1)
+    fake = dover_run(probe, returncode=1)
     monkeypatch.setattr(subprocess, "run", fake)
     result = dover.run_official(dover_root=root, video=video, torch_home=torch_home, output_dir=tmp / "o",
                                 device="cuda", gpu="5", check_only=True)
@@ -280,6 +287,8 @@ def test_dover_cuda_probe_env(tmp, dover_setup, env, monkeypatch):
 
 @pytest.mark.parametrize("mutate, message", [
     (lambda root, video, versions: (root / "dover.yml").unlink(), "Missing required source file: .*dover.yml"),
+    (lambda root, video, versions: (root / ".git").rmdir(), "Source is not a git checkout"),
+    (lambda root, video, versions: subprocess.run.__setattr__("head", "f" * 40), "revision mismatch: expected f1ddc96"),
     (lambda root, video, versions: (root / "pretrained_weights" / "DOVER.pth").write_bytes(b""), "Required local checkpoint missing/empty"),
     (lambda root, video, versions: video.write_bytes(b""), "--video must be a nonempty single video file"),
     (lambda root, video, versions: versions.update(torch="2.7.0"), "Expected Torch 1.13.x"),
@@ -315,10 +324,10 @@ def test_dover_invalid_device(tmp, dover_setup):
 
 def test_dover_unparsed_and_failed_runs(tmp, dover_setup, monkeypatch):
     root, torch_home, video, _ = dover_setup
-    monkeypatch.setattr(subprocess, "run", FakeRun(lambda c, k: k["stdout"].write(b"no score\n")))
+    monkeypatch.setattr(subprocess, "run", dover_run(lambda c, k: k["stdout"].write(b"no score\n")))
     result = dover.run_official(dover_root=root, video=video, torch_home=torch_home, output_dir=tmp / "a")
     assert result["status"] == "official_finished_score_unparsed" and result["score"] is None
-    monkeypatch.setattr(subprocess, "run", FakeRun(returncode=9))
+    monkeypatch.setattr(subprocess, "run", dover_run(returncode=9))
     result = dover.run_official(dover_root=root, video=video, torch_home=torch_home, output_dir=tmp / "b")
     assert result["status"] == "failed" and result["returncode"] == 9
     assert result["error"] == f"Official DOVER exited with 9; inspect {tmp / 'b' / 'dover.log'}"

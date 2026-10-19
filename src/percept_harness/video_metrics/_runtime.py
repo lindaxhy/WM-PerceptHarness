@@ -16,12 +16,25 @@ import sys
 VBENCH_REVISION = "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490"
 
 
-def verify_source(root: Path, files, record: dict) -> dict:
+def verify_revision(source: Path, expected: str | None, *, runner=None) -> dict[str, str | None]:
+    if not (source / ".git").exists():
+        raise ValueError(f"Source is not a git checkout: {source}")
+    if expected is None:
+        return {"revision": None}
+    result = (runner or subprocess.run)(["git", "-C", str(source), "rev-parse", "HEAD"],
+                                        check=True, capture_output=True, text=True)
+    actual = result.stdout.strip()
+    if actual != expected:
+        raise ValueError(f"{source} revision mismatch: expected {expected}, got {actual}")
+    return {"revision": actual}
+
+
+def verify_source(root: Path, files, record: dict, revision: str) -> dict:
     for relative in files:
         path = root / relative
         if not path.is_file():
             raise FileNotFoundError(f"Missing required source file: {path}")
-    return dict(record)
+    return {**record, **verify_revision(root, revision)}
 
 
 def package_versions(names) -> dict:

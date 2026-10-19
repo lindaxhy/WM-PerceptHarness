@@ -180,7 +180,7 @@ def run_official(*, vbench_root: Path, videos_path: Path, dimensions: list[str],
         raise ValueError("Keep the Torch hub cache outside the pinned source tree")
     if weights_manifest is not None:
         weights_manifest = weights_manifest.expanduser().resolve(strict=True)
-    source = verify_source(root, SOURCE_FILES, {"expected_revision": VBENCH_REVISION})
+    source = verify_source(root, SOURCE_FILES, {"expected_revision": VBENCH_REVISION}, VBENCH_REVISION)
     weights = verify_cache(cache, dimensions, weights_manifest, torch_home=torch_home)
     if allow_trusted_pickle and not weights:
         raise ValueError("--allow-trusted-pickle requires local model files")

@@ -122,7 +122,8 @@ def run_official(*, dover_root: Path, video: Path, torch_home: Path, output_dir:
             raise ValueError("--video must be a nonempty single video file")
         if not re.fullmatch(r"cpu|cuda(?::\d+)?", device):
             raise ValueError("--device must be cpu, cuda, or cuda:N")
-        result["source"] = verify_source(root, SOURCE_FILES, {"origin": DOVER_ORIGIN, "expected_commit": DOVER_COMMIT})
+        result["source"] = verify_source(root, SOURCE_FILES, {"origin": DOVER_ORIGIN, "expected_commit": DOVER_COMMIT},
+                                         DOVER_COMMIT)
         result["dover_root"] = str(root)
         result["video"] = {"path": str(video), "bytes": video.stat().st_size}
         # dover.yml intentionally remains unchanged.  Use a local symlink at

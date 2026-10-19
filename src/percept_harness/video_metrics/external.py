@@ -19,7 +19,7 @@ from pathlib import Path
 import subprocess
 from typing import Sequence
 
-from percept_harness.video_metrics._runtime import VBENCH_REVISION, run_cli, subprocess_env
+from percept_harness.video_metrics._runtime import VBENCH_REVISION, run_cli, subprocess_env, verify_revision
 
 
 @dataclass(frozen=True)
@@ -109,18 +109,6 @@ def _resolved(value: Path | None, *, label: str, directory: bool | None = None) 
     if directory is False and not path.is_file():
         raise ValueError(f"{label} must be a file: {path}")
     return path
-
-
-def verify_revision(source: Path, expected: str | None, *, runner=subprocess.run) -> dict[str, str | None]:
-    if not (source / ".git").exists():
-        raise ValueError(f"Source is not a git checkout: {source}")
-    if expected is None:
-        return {"revision": None}
-    result = runner(["git", "-C", str(source), "rev-parse", "HEAD"], check=True, capture_output=True, text=True)
-    actual = result.stdout.strip()
-    if actual != expected:
-        raise ValueError(f"{source} revision mismatch: expected {expected}, got {actual}")
-    return {"revision": actual}
 
 
 def preflight(*, metric: str, source_dir: Path | None, checkpoint: Path | None,

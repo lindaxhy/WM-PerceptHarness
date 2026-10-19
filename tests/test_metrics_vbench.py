@@ -28,14 +28,26 @@ def dumps(value, newline=True, **kwargs):
 
 
 class FakeRun:
-    def __init__(self, on_call=None, returncode=0):
-        self.calls, self.on_call, self.returncode = [], on_call, returncode
+    """Fake subprocess.run; git rev-parse calls report ``head`` and are kept apart."""
+
+    def __init__(self, on_call=None, returncode=0, head=REV):
+        self.calls, self.git_calls, self.on_call, self.returncode, self.head = [], [], on_call, returncode, head
 
     def __call__(self, command, **kwargs):
+        if command[:1] == ["git"]:
+            self.git_calls.append((command, kwargs))
+            return subprocess.CompletedProcess(command, 0, stdout=self.head + "\n", stderr="")
         self.calls.append((command, kwargs))
         if self.on_call:
             self.on_call(command, kwargs)
         return subprocess.CompletedProcess(command, self.returncode, stdout="", stderr="")
+
+
+@pytest.fixture(autouse=True)
+def git_head(monkeypatch):
+    fake = FakeRun()
+    monkeypatch.setattr(subprocess, "run", fake)
+    return fake
 
 
 @pytest.fixture
@@ -49,6 +61,7 @@ def vbench(tmp_path):
     tmp = tmp_path.resolve()
     root = tmp / "VBench"
     (root / "vbench").mkdir(parents=True)
+    (root / ".git").mkdir()
     (root / "evaluate.py").write_text("")
     (root / "vbench" / "__init__.py").write_text("")
     (root / "competitions").mkdir()
@@ -93,7 +106,7 @@ def test_backend_check_only_metadata(vbench, env):
                "--dimension", "imaging_quality", "--mode", "custom_input", "--output_path", str(vbench.out),
                "--load_ckpt_from_local", "True", "--imaging_quality_preprocessing_mode", "longer"]
     assert result == {
-        "wrapper": "score_vbench_official.py", "source": {"expected_revision": REV},
+        "wrapper": "score_vbench_official.py", "source": {"expected_revision": REV, "revision": REV},
         "video": str(vbench.video), "dimensions": ["imaging_quality"], "mode": "custom_input",
         "prompt": None, "cache_dir": str(vbench.cache),
         "weights": {"pyiqa_model/musiq_spaq_ckpt-358bb6af.pth": str(vbench.cache / "pyiqa_model/musiq_spaq_ckpt-358bb6af.pth")},
@@ -135,6 +148,27 @@ def test_backend_preflight_path_errors(vbench, env):
     (vbench.root / "evaluate.py").unlink()
     with pytest.raises(FileNotFoundError, match="Missing required source file: .*evaluate.py"):
         vb.run_official(**run_args(vbench, output_dir=vbench.tmp / "o4"), check_only=True)
+
+
+def test_backend_verifies_pinned_revision(vbench, git_head):
+    vb.run_official(**run_args(vbench), check_only=True)
+    assert git_head.git_calls == [(["git", "-C", str(vbench.root), "rev-parse", "HEAD"],
+                                   {"check": True, "capture_output": True, "text": True})]
+    git_head.head = "0" * 40
+    with pytest.raises(ValueError, match=f"revision mismatch: expected {REV}, got 0{{40}}"):
+        vb.run_official(**run_args(vbench), check_only=True)
+    (vbench.root / ".git").rmdir()
+    with pytest.raises(ValueError, match="Source is not a git checkout"):
+        vb.run_official(**run_args(vbench), check_only=True)
+
+
+def test_clip_verifies_pinned_revision(vbench, git_head):
+    git_head.head = "0" * 40
+    with pytest.raises(ValueError, match="revision mismatch"):
+        vc.run_official(**clip_args(vbench), check_only=True)
+    (vbench.root / ".git").rmdir()
+    with pytest.raises(ValueError, match="Source is not a git checkout"):
+        vc.run_official(**clip_args(vbench), check_only=True)
 
 
 def test_backend_cache_errors(vbench, env):
@@ -205,7 +239,7 @@ def test_backend_full_run_env_and_golden(vbench, env, monkeypatch, capsys):
     assert kwargs["cwd"] == vbench.root
     assert kwargs["stderr"] == subprocess.STDOUT
     assert child_env(kwargs) == expected_backend_env(vbench, CUDA_VISIBLE_DEVICES="1")
-    request = {"wrapper": "score_vbench_official.py", "source": {"expected_revision": REV},
+    request = {"wrapper": "score_vbench_official.py", "source": {"expected_revision": REV, "revision": REV},
                "video": str(vbench.video), "dimensions": ["imaging_quality"], "mode": "custom_input",
                "prompt": None, "cache_dir": str(vbench.cache),
                "weights": {"pyiqa_model/musiq_spaq_ckpt-358bb6af.pth": str(vbench.cache / "pyiqa_model/musiq_spaq_ckpt-358bb6af.pth")},
@@ -323,7 +357,7 @@ def clip_args(v, **overrides):
 
 
 def clip_preflight(v):
-    return {"wrapper": "score_vbench_clip_score.py", "source": {"expected_revision": REV},
+    return {"wrapper": "score_vbench_clip_score.py", "source": {"expected_revision": REV, "revision": REV},
             "video": str(v.video), "prompt": PROMPT, "clip_model": str(v.model), "status": "preflight_passed"}
 
 
