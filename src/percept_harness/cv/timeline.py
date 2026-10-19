@@ -25,6 +25,7 @@ _STREAM_READ_BYTES = 64 * 1024
 # FFprobe commonly emits six decimal places; comparisons may therefore differ
 # by one microsecond across two independently rounded timestamps.
 _PTS_COMPARISON_TOLERANCE = Fraction(1, 1_000_000)
+_PROBE_FAILURE = "unable to probe video frame timeline"
 
 
 class TimelineError(RuntimeError):
@@ -54,7 +55,10 @@ def probe_frame_timeline(
     run: Callable[..., object] = subprocess.run,
 ) -> FrameTimeline:
     """Return decoder-order PTS on the zero-based container playback clock."""
-    descriptor, source_identity = _open_pinned_regular_file(path)
+    try:
+        descriptor, source_identity = _open_pinned(path)
+    except (OSError, ValueError):
+        raise TimelineError(_PROBE_FAILURE) from None
     try:
         completed = run(
             [
@@ -90,7 +94,7 @@ def probe_frame_timeline(
             for index, frame in enumerate(frames)
         )
         timeline = FrameTimeline(frames=points)
-        if _regular_file_identity(path) != source_identity:
+        if _identity(path) != source_identity:
             raise ValueError
         return timeline
     except (
@@ -102,35 +106,31 @@ def probe_frame_timeline(
         ValueError,
         InvalidOperation,
     ):
-        raise TimelineError("unable to probe video frame timeline") from None
+        raise TimelineError(_PROBE_FAILURE) from None
     finally:
         os.close(descriptor)
 
 
-def _regular_file_identity(path: Path) -> tuple[int, int]:
-    try:
-        status = path.lstat()
-    except OSError:
-        raise TimelineError("unable to probe video frame timeline") from None
-    if not stat.S_ISREG(status.st_mode):
-        raise TimelineError("unable to probe video frame timeline")
+def _identity(path: Path, *, directory: bool = False) -> tuple[int, int]:
+    status = path.lstat()
+    if not (stat.S_ISDIR if directory else stat.S_ISREG)(status.st_mode):
+        raise ValueError
     return status.st_dev, status.st_ino
 
 
-def _open_pinned_regular_file(path: Path) -> tuple[int, tuple[int, int]]:
+def _open_pinned(path: Path, *, directory: bool = False) -> tuple[int, tuple[int, int]]:
+    """Open a regular file or directory without following a final symlink."""
     nofollow = getattr(os, "O_NOFOLLOW", None)
-    if nofollow is None:
-        raise TimelineError("unable to probe video frame timeline")
-    try:
-        descriptor = os.open(path, os.O_RDONLY | nofollow)
-    except OSError:
-        raise TimelineError("unable to probe video frame timeline") from None
+    directory_flag = getattr(os, "O_DIRECTORY", None) if directory else 0
+    if nofollow is None or directory_flag is None:
+        raise ValueError
+    descriptor = os.open(path, os.O_RDONLY | directory_flag | nofollow)
     try:
         opened = os.fstat(descriptor)
         current = path.lstat()
         identity = opened.st_dev, opened.st_ino
         if (
-            not stat.S_ISREG(opened.st_mode)
+            not (stat.S_ISDIR if directory else stat.S_ISREG)(opened.st_mode)
             or stat.S_ISLNK(current.st_mode)
             or (current.st_dev, current.st_ino) != identity
         ):
@@ -138,7 +138,7 @@ def _open_pinned_regular_file(path: Path) -> tuple[int, tuple[int, int]]:
         return descriptor, identity
     except (OSError, ValueError):
         os.close(descriptor)
-        raise TimelineError("unable to probe video frame timeline") from None
+        raise
 
 
 def _descriptor_path(descriptor: int) -> str:
@@ -221,7 +221,7 @@ def materialize_sampled_frames(
 ) -> SampledFrameSet:
     """Extract selected decoder indices as zero-based SAM-local JPEG files."""
     try:
-        descriptor, source_identity = _open_pinned_regular_file(video_path)
+        descriptor, source_identity = _open_pinned(video_path)
         requested = tuple(indices)
         source_by_index = {point.frame_index: point for point in timeline.frames}
         if not requested or any(
@@ -231,16 +231,16 @@ def materialize_sampled_frames(
         if requested != tuple(sorted(set(requested))):
             raise ValueError
         destination.mkdir(parents=True, exist_ok=False)
-        destination_descriptor, destination_identity = _open_pinned_directory(destination)
+        destination_descriptor, destination_identity = _open_pinned(destination, directory=True)
         _extract_pinned_jpegs(
             descriptor,
             destination_descriptor,
             requested,
             run,
         )
-        if _regular_file_identity(video_path) != source_identity:
+        if _identity(video_path) != source_identity:
             raise ValueError
-        if _directory_identity(destination) != destination_identity:
+        if _identity(destination, directory=True) != destination_identity:
             raise ValueError
         expected_paths = tuple(destination / f"{number:06d}.jpg" for number in range(len(requested)))
         actual_paths = tuple(sorted(destination.glob("*.jpg")))
@@ -428,32 +428,3 @@ def _write_pinned_jpeg(
             view = view[written:]
     finally:
         os.close(output_descriptor)
-
-
-def _directory_identity(path: Path) -> tuple[int, int]:
-    status = path.lstat()
-    if not stat.S_ISDIR(status.st_mode):
-        raise ValueError
-    return status.st_dev, status.st_ino
-
-
-def _open_pinned_directory(path: Path) -> tuple[int, tuple[int, int]]:
-    nofollow = getattr(os, "O_NOFOLLOW", None)
-    directory = getattr(os, "O_DIRECTORY", None)
-    if nofollow is None or directory is None:
-        raise ValueError
-    descriptor = os.open(path, os.O_RDONLY | directory | nofollow)
-    try:
-        opened = os.fstat(descriptor)
-        current = path.lstat()
-        identity = opened.st_dev, opened.st_ino
-        if (
-            not stat.S_ISDIR(opened.st_mode)
-            or stat.S_ISLNK(current.st_mode)
-            or (current.st_dev, current.st_ino) != identity
-        ):
-            raise ValueError
-        return descriptor, identity
-    except (OSError, ValueError):
-        os.close(descriptor)
-        raise ValueError from None
