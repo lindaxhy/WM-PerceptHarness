@@ -106,8 +106,6 @@ def test_backend_check_only_metadata(vbench, env):
 @pytest.mark.parametrize("overrides, error, message", [
     ({"dimensions": ["motion_smoothness"]}, ValueError, "Supported dimensions"),
     ({"dimensions": []}, ValueError, "Supported dimensions"),
-    ({"mode": "vbench_standard"}, ValueError, "requires custom_input and local checkpoints"),
-    ({"load_ckpt_from_local": False}, ValueError, "requires custom_input and local checkpoints"),
     ({"imaging_quality_preprocessing_mode": "bogus"}, ValueError, "Invalid imaging-quality"),
     ({"dimensions": ["overall_consistency"]}, ValueError, "overall_consistency requires --prompt"),
     ({"dimensions": ["temporal_flickering"]}, ValueError, "temporal_flickering requires --static-subset-ack"),
@@ -252,11 +250,13 @@ def test_backend_metric_main(vbench, env, capsys):
     assert out == dumps(vb.run_official(**run_args(vbench), check_only=True))
     assert vb.metric_main("imaging_quality", argv + ["--gpu", "0,1"]) == 1
     assert capsys.readouterr().err == "imaging-quality failed: Select one GPU index or UUID for this single-process wrapper\n"
-    assert vb.metric_main("imaging_quality", argv + ["--mode", "custom_input", "--load-ckpt-from-local"]) == 0
-    capsys.readouterr()
-    with pytest.raises(SystemExit) as exit_info:
-        vb.metric_main("imaging_quality", argv + ["--mode", "other"])
-    assert exit_info.value.code == 2
+    for removed in (["--mode", "custom_input"], ["--load-ckpt-from-local"]):
+        with pytest.raises(SystemExit) as exit_info:
+            vb.metric_main("imaging_quality", argv + removed)
+        assert exit_info.value.code == 2
+        assert "unrecognized arguments" in capsys.readouterr().err
+    with pytest.raises(TypeError):
+        vb.run_official(**run_args(vbench), mode="custom_input", check_only=True)
     with pytest.raises(ValueError, match="Unsupported metric"):
         vb.metric_main("motion_smoothness", [])
     with pytest.raises(SystemExit):

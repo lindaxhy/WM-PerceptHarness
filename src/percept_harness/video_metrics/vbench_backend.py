@@ -143,11 +143,11 @@ def validate_result(path: Path, video: Path, dimensions: list[str]) -> dict:
 
 
 def run_official(*, vbench_root: Path, videos_path: Path, dimensions: list[str], output_dir: Path,
-                 mode: str = "custom_input", prompt: str | None = None, prompt_file: Path | None = None,
+                 prompt: str | None = None, prompt_file: Path | None = None,
                  cache_dir: Path | None = None, torch_home: Path | None = None, gpu: str | None = None,
-                 imaging_quality_preprocessing_mode: str = "longer", load_ckpt_from_local: bool = True,
-                 static_subset_ack: bool = False, weights_manifest: Path | None = None,
-                 allow_trusted_pickle: bool = False, check_only: bool = False) -> dict:
+                 imaging_quality_preprocessing_mode: str = "longer", static_subset_ack: bool = False,
+                 weights_manifest: Path | None = None, allow_trusted_pickle: bool = False,
+                 check_only: bool = False) -> dict:
     root = vbench_root.expanduser().resolve(strict=True)
     video = videos_path.expanduser().resolve(strict=True)
     output = output_dir.expanduser().resolve()
@@ -160,8 +160,6 @@ def run_official(*, vbench_root: Path, videos_path: Path, dimensions: list[str],
     dimensions = list(dict.fromkeys(dimensions))
     if not dimensions or set(dimensions) - DIRECT_DIMENSIONS:
         raise ValueError(f"Supported dimensions: {', '.join(sorted(DIRECT_DIMENSIONS))}; motion uses its already-submitted wrapper")
-    if mode != "custom_input" or not load_ckpt_from_local:
-        raise ValueError("This single-video wrapper requires custom_input and local checkpoints")
     if imaging_quality_preprocessing_mode not in ("shorter", "longer", "shorter_centercrop", "None"):
         raise ValueError("Invalid imaging-quality preprocessing mode")
     actual_prompt = resolve_prompt(video, prompt, prompt_file)
@@ -236,7 +234,6 @@ def metric_main(dimension: str, argv: list[str] | None = None) -> int:
     parser.set_defaults(dimensions=[dimension])
     parser.add_argument("--vbench-root", type=Path, required=True)
     parser.add_argument("--videos-path", type=Path, required=True, help="One lowercase .mp4 file")
-    parser.add_argument("--mode", choices=("custom_input",), default="custom_input")
     parser.add_argument("--prompt")
     parser.add_argument("--prompt-file", type=Path)
     parser.add_argument("--cache-dir", type=Path, required=True)
@@ -245,7 +242,6 @@ def metric_main(dimension: str, argv: list[str] | None = None) -> int:
     parser.add_argument("--gpu", help="One CUDA_VISIBLE_DEVICES index or UUID")
     parser.add_argument("--output-dir", type=Path, required=True, help="New result directory outside source checkout")
     parser.add_argument("--imaging-quality-preprocessing-mode", choices=("shorter", "longer", "shorter_centercrop", "None"), default="longer")
-    parser.add_argument("--load-ckpt-from-local", action="store_true", default=True, help="Always enabled by this wrapper")
     parser.add_argument("--static-subset-ack", action="store_true")
     parser.add_argument("--allow-trusted-pickle", action="store_true", help="Only for trusted checkpoints requiring legacy torch.load")
     parser.add_argument("--check-only", action="store_true")
