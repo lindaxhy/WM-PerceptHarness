@@ -1,12 +1,28 @@
 [project]
 name = "wm-percept-harness"
 version = "0.2.0"
+description = "Grounded video event annotation, event-timeline scoring and video quality metrics for world-model evaluation"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
   "httpx>=0.28,<1",
   "pydantic>=2.11,<3",
   "pydantic-settings>=2.10,<3",
 ]
+
+[project.urls]
+Repository = "https://github.com/lindaxhy/WM-PerceptHarness"
+Issues = "https://github.com/lindaxhy/WM-PerceptHarness/issues"
 
 [project.scripts]
 percept = "percept_harness.cli:main"
@@ -32,7 +48,7 @@ motion = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8.4,<9", "Pillow==11.3.0"]
+dev = ["pytest>=8.4,<9", "Pillow==11.3.0", "numpy==2.2.6"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -250,7 +250,7 @@ CLIPScore, DOVER and other external evaluators have separate entries in the [met
 
 `python scripts/verify_install.py` checks the local installation and a few basic behaviors. It does not call APIs, run model inference or establish benchmark validity. See [verification](docs/usage.md#verify-the-installation) for optional metric profiles.
 
-No project-wide open-source license has been granted yet. Third-party components retain their own license terms.
+The repository code is released under the [MIT License](LICENSE). Third-party components, optional extras and model weights keep their own license terms; see [third-party notices](docs/third-party-notices.md).
 
 ## Code structure
 
