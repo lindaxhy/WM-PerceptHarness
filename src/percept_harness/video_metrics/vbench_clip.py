@@ -94,7 +94,7 @@ def run_official(*, vbench_root: Path, videos_path: Path, prompt: str,
     info_path = output / "official_full_info.json"
     result_path = output / "clip_score_result.json"
     log_path = output / "vbench_clip_score.log"
-    write_json_exclusive(info_path, info, strict=False)
+    write_json_exclusive(info_path, info)
     # Call the unmodified official competition function.  The tiny runner is
     # orchestration only; all frame sampling, CLIP encoding and averaging stay
     # in competitions/clip_score.py.
@@ -112,7 +112,7 @@ def run_official(*, vbench_root: Path, videos_path: Path, prompt: str,
     metadata.update(status="complete", score=score,
                     official_result=str(result_path), log=str(log_path),
                     command=command)
-    write_json_exclusive(output / "wrapper_metadata.json", metadata, strict=False)
+    write_json_exclusive(output / "wrapper_metadata.json", metadata)
     return metadata
 
 

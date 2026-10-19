@@ -419,6 +419,16 @@ def test_clip_full_run_env_and_golden(vbench, env, monkeypatch):
     assert (vbench.out / "wrapper_metadata.json").read_text() == dumps(metadata)
 
 
+def test_clip_outputs_are_exclusive(vbench, monkeypatch):
+    def write(command, kwargs):
+        Path(command[-1]).write_text(json.dumps([0.25, [{"video_path": str(vbench.video), "video_results": 0.25}]]))
+        (vbench.out / "wrapper_metadata.json").write_text("{}")
+    monkeypatch.setattr(subprocess, "run", FakeRun(write))
+    with pytest.raises(FileExistsError):
+        vc.run_official(**clip_args(vbench))
+    assert (vbench.out / "wrapper_metadata.json").read_text() == "{}"
+
+
 def test_clip_env_without_pythonpath(vbench, env, monkeypatch):
     del os.environ["PYTHONPATH"]
     fake = FakeRun(returncode=2)

@@ -251,7 +251,10 @@ def _load(path: Path) -> Any:
 def _write_exclusive(path: Path, payload: Any) -> None:
     if path.exists():
         raise InputSchemaError(f"refusing to overwrite existing output: {path}")
-    write_json_exclusive(path, payload, parents=True, strict=False)
+    try:
+        write_json_exclusive(path, payload, parents=True)
+    except ValueError as exc:  # NaN/Infinity cannot be written as strict JSON
+        raise InputSchemaError(f"cannot write {path}: {exc}") from exc
 
 
 def main(argv: list[str] | None = None) -> int:

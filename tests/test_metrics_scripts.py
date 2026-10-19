@@ -173,6 +173,15 @@ def test_adapters_main_writes_and_refuses_overwrite(tmp_path, capsys):
     assert capsys.readouterr().out == f"Input adaptation failed: refusing to overwrite existing output: {out}\n"
 
 
+def test_adapters_main_rejects_non_finite_json(tmp_path, capsys):
+    source = tmp_path / "in.json"
+    source.write_text('[{"prompt": "p", "score": NaN}]')
+    out = tmp_path / "official.json"
+    assert adapters.main(["--adapter", "phygen_prompts", "--input", str(source), "--output", str(out)]) == 1
+    assert capsys.readouterr().out == f"Input adaptation failed: cannot write {out}: Out of range float values are not JSON compliant: nan\n"
+    assert not out.exists()
+
+
 def test_adapters_main_videophy_csv(tmp_path, capsys):
     source = tmp_path / "in.json"
     source.write_text(json.dumps([{"videopath": "a.mp4"}]))

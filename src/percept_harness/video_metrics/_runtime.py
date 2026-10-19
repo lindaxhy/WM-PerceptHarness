@@ -99,18 +99,13 @@ def single_row(rows, message: str) -> dict:
     return rows[0]
 
 
-def write_json_exclusive(path: Path, value, *, newline: bool = True, parents: bool = False,
-                         strict: bool = True) -> str:
-    """Create a new JSON file; ``strict=False`` keeps the legacy overwriting, NaN-tolerant writer."""
-    text = json.dumps(value, ensure_ascii=False, indent=2, allow_nan=not strict)
+def write_json_exclusive(path: Path, value, *, newline: bool = True, parents: bool = False) -> str:
+    """Create a new, strictly valid JSON file and return its text (without the newline)."""
+    text = json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False)
     if parents:
         path.parent.mkdir(parents=True, exist_ok=True)
-    content = text + "\n" if newline else text
-    if strict:
-        with path.open("x", encoding="utf-8") as stream:
-            stream.write(content)
-    else:
-        path.write_text(content, encoding="utf-8")
+    with path.open("x", encoding="utf-8") as stream:
+        stream.write(text + "\n" if newline else text)
     return text
 
 
