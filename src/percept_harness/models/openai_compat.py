@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import json
+import io
 import logging
 import random
 import tempfile
@@ -55,12 +56,12 @@ class OpenAICompatVideoModel:
     OUTPUT_TOKENS = {
         "confidence_draft": 16384, "grounded_draft": 16384, "evidence_review": 8192,
         "sam_prompt_review": 4096, "grounded_revision": 16384,
-        "revision_verification": 16384, "sam_target_plan": 4096,
+        "revision_verification": 16384, "sam_target_plan": 4096, "grounded_event_revision": 16384,
     }
 
     supports_semantic_result_cache = True
     # Bump these contracts when payload defaults or frame encoding/sampling change.
-    adapter_contract_version = "openai-compat-chat-completions-v1"
+    adapter_contract_version = "openai-compat-chat-completions-v2-bounded-images"
     frame_extraction_contract_version = "extract-frames-source-pts-v2"
 
     def __init__(self, *, base_url: str, api_key: str,
@@ -153,9 +154,42 @@ class OpenAICompatVideoModel:
                 ]
                 encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
             if len(encoded) > self.MAX_REQUEST_BYTES:
-                raise OpenAICompatBackendError("request exceeds configured size limit")
+                # Mandatory SAM overlays can dominate the payload even after
+                # thinning source frames. Preserve every remaining image, its
+                # dimensions and metadata; compact only its wire encoding.
+                self._compact_images(payload["messages"][0]["content"])
+                encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+            if len(encoded) > self.MAX_REQUEST_BYTES:
+                raise OpenAICompatBackendError("request exceeds configured size limit after image compaction")
             raw = self._post_with_retries(encoded)
             return self._parse(raw)
+
+    @staticmethod
+    def _compact_images(content: list[dict[str, Any]]) -> None:
+        """Use full-resolution quality-90 JPEG only when it reduces wire bytes."""
+        try:
+            from PIL import Image
+        except ImportError:
+            return  # Minimal installations retain the original bounded failure.
+        for item in content:
+            if item.get("type") != "image_url":
+                continue
+            url = item["image_url"]["url"]
+            if not url.startswith(("data:image/png;base64,", "data:image/jpeg;base64,")):
+                continue
+            raw = base64.b64decode(url.split(",", 1)[1], validate=True)
+            with Image.open(io.BytesIO(raw)) as image:
+                if "A" in image.getbands() or "transparency" in image.info:
+                    rgba = image.convert("RGBA")
+                    rgb = Image.new("RGB", rgba.size, "white")
+                    rgb.paste(rgba, mask=rgba.getchannel("A"))
+                else:
+                    rgb = image.convert("RGB")
+                buffer = io.BytesIO()
+                rgb.save(buffer, format="JPEG", quality=90, subsampling=0, optimize=True)
+            compact = "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+            if len(compact) < len(url):
+                item["image_url"]["url"] = compact
 
     def _post_with_retries(self, encoded: bytes) -> bytes:
         """POST once, then retry transient transport/service failures with backoff.

@@ -1,8 +1,20 @@
 """Pre-persistence validation of the active grounded annotation schemas."""
 from dataclasses import dataclass
 from collections.abc import Mapping
+import json
+from ..models.response_contract import preflight_plain
 
 SCHEMA_VALIDATION_FIELD = '_schema_validation'
+INVALID_CANDIDATE_FIELD = '_invalid_candidate'
+
+
+def bounded_invalid_candidate(result):
+    """Keep untrusted model data for repair, never as an accepted annotation."""
+    try:
+        preflight_plain(result, max_bytes=200_000, max_nodes=50_000, max_depth=32)
+        return json.loads(json.dumps(result, ensure_ascii=False, allow_nan=False))
+    except (ValueError, TypeError, RecursionError):
+        return None
 
 
 class DeclaredSchemaOutputError(ValueError):
@@ -42,8 +54,12 @@ class OutputSchemaRegistry:
             return entry.validator(result, validation_context)
         except DeclaredSchemaOutputError as error:
             codes = [code for code in error.issue_codes if code in entry.allowed_issue_codes]
-            return {SCHEMA_VALIDATION_FIELD: {'schema_name': schema_name, 'status': 'invalid',
+            envelope = {SCHEMA_VALIDATION_FIELD: {'schema_name': schema_name, 'status': 'invalid',
                     'issue_codes': codes or [entry.generic_issue_code], 'details': error.details}}
+            candidate = bounded_invalid_candidate(result)
+            if candidate is not None:
+                envelope[INVALID_CANDIDATE_FIELD] = candidate
+            return envelope
 
     def failure_codes(self, schema_name, result):
         if schema_name not in self._entries:

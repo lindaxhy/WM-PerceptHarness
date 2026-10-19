@@ -97,6 +97,119 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(outcome.metadata['unresolved_concerns'], [])
         self.assertEqual(self.run_model(ScriptedModel()).status, 'skipped')
 
+    def assessed_model(self, category='visual_uncertainty', verifier_category=None, stale_quote=False):
+        class AssessedModel(ScriptedModel):
+            def generate(self, request):
+                data = super().generate(request)
+                description = 'A blue region becomes distorted; whether the same object remains is unclear.'
+                assessment = {'category': category, 'start': 4.0, 'end': 8.0,
+                    'reason': 'Original frames show merging blue regions with no stable object contour.',
+                    'visual_times': [4.5, 6.0, 7.5], 'event_index': 0, 'candidate_quote': description}
+                if request.stage == 'grounded_revision':
+                    data['events'][0]['description'] = description
+                    for response in data['responses']:
+                        response['assessment'] = assessment
+                if request.stage == 'revision_verification':
+                    payload = json.loads(request.prompt.split('INPUT_DATA_JSON\n')[1])
+                    assert 'original_draft' not in payload['review']
+                    for verdict in data['verdicts']:
+                        verdict['assessment'] = {**assessment,
+                            'category': verifier_category or category,
+                            'candidate_quote': 'Old removed claim.' if stale_quote else description}
+                return data
+        return AssessedModel()
+
+    def test_independently_verified_uncertainty_is_completed_and_persisted(self):
+        outcome = self.run_model(self.assessed_model())
+        self.assertEqual(outcome.status, 'completed', outcome.error)
+        self.assertEqual(outcome.metadata['annotation_outcome'], 'completed_with_uncertainty')
+        self.assertEqual(outcome.metadata['unresolved_concerns'], [])
+        self.assertEqual(outcome.metadata['annotation_assessments'][0]['category'], 'visual_uncertainty')
+        self.assertIn('unclear', outcome.data['events'][0]['description'])
+        record = results.completed_result(self.root/'out'/outcome.result_file, self.video)
+        self.assertEqual(record['metadata']['annotation_outcome'], 'completed_with_uncertainty')
+
+    def test_visible_defect_is_a_valid_observation(self):
+        outcome = self.run_model(self.assessed_model('observable_defect'))
+        self.assertEqual(outcome.status, 'completed', outcome.error)
+        self.assertEqual(outcome.metadata['annotation_outcome'], 'completed_with_observable_defects')
+
+    def test_pipeline_error_cannot_be_waived_even_if_verifier_says_resolved(self):
+        outcome = self.run_model(self.assessed_model('pipeline_error'))
+        self.assertEqual(outcome.status, 'needs_review')
+        self.assertEqual(outcome.metadata['annotation_assessments'], [])
+
+    def test_taxonomy_difference_does_not_reject_verified_description(self):
+        outcome = self.run_model(self.assessed_model(verifier_category='observable_defect'))
+        self.assertEqual(outcome.status, 'completed')
+        self.assertEqual(outcome.metadata['annotation_outcome'], 'completed_with_uncertainty')
+        self.assertTrue(outcome.metadata['assessment_disagreements'])
+        self.assertEqual(outcome.metadata['annotation_assessments'][0]['categories'], ['observable_defect', 'visual_uncertainty'])
+
+    def test_stale_candidate_quote_fails_closed(self):
+        outcome = self.run_model(self.assessed_model(stale_quote=True))
+        self.assertEqual(outcome.status, 'failed')
+
+    def test_assessment_time_and_candidate_references_are_validated(self):
+        assessment = {'category': 'visual_uncertainty', 'start': 1.0, 'end': 4.0,
+            'reason': 'Object hidden.', 'visual_times': [2.0], 'event_index': 0,
+            'candidate_quote': DRAFT['events'][0]['description']}
+        context = {'duration': 10.0, 'concern_ids': ['c0000'], 'candidate_events': DRAFT['events']}
+        for update in ({'end': 11.0}, {'visual_times': [11.0]}, {'event_index': 5},
+                       {'candidate_quote': 'deleted claim'}, {'start': 6.0, 'end': 8.0, 'visual_times': [7.0]}):
+            with self.subTest(update=update), self.assertRaises(ValueError):
+                validate_stage(RevisionVerification, {'verdicts': [{'concern_id': 'c0000',
+                    'resolved': True, 'reason': 'Checked.', 'assessment': {**assessment, **update}}],
+                    'new_issues': []}, context)
+        # Before/after frames can establish identity or contrast while the
+        # uncertainty itself remains confined to a different interval.
+        validate_stage(RevisionVerification, {'verdicts': [{'concern_id': 'c0000',
+            'resolved': True, 'reason': 'Compared to clear before/after frames.',
+            'assessment': {**assessment, 'visual_times': [0.0, 5.0]}}], 'new_issues': []}, context)
+
+    def test_missing_required_verifier_assessment_is_not_silent_disagreement(self):
+        context = {'duration': 10.0, 'concern_ids': ['c0000'], 'candidate_events': DRAFT['events'],
+                   'assessment_required_ids': ['c0000']}
+        with self.assertRaisesRegex(ValueError, 'assessment required'):
+            validate_stage(RevisionVerification, {'verdicts': [{'concern_id': 'c0000',
+                'resolved': True, 'reason': 'The uncertainty is responsibly preserved.', 'assessment': None}],
+                'new_issues': []}, context)
+
+    def test_prior_questions_survive_an_empty_fresh_review(self):
+        prior = self.root/'prior.audit.json'
+        prior.write_text(json.dumps({'video_path': str(self.video.resolve()), 'status': 'needs_review',
+            'metadata': {'concern_ledger': [{'concern_id': 'c0000', **CONCERN, 'event_indices': [999]}],
+                         'unresolved_concerns': ['c0000: No visible change at this boundary.']}}))
+        model = ScriptedModel(empty=True)
+        runner = SyncRunner(model, self.settings, model_alias='test')
+        outcome = run_batch(runner, [self.video], self.root/'seeded', review_from=prior, log=lambda _:None)[0]
+        self.assertEqual(outcome.status, 'completed', outcome.error)
+        retained = outcome.metadata['retained_prior_concerns']
+        self.assertEqual(len(retained), 1)
+        self.assertEqual(retained[0]['event_indices'], [])
+        self.assertIn('No visible change', retained[0]['reason'])
+        self.assertIn('sam_target_plan', model.calls)
+        self.assertTrue(outcome.metadata['revision_attempts'][0]['revision']['responses'])
+
+    def test_prior_review_from_another_video_fails_closed(self):
+        prior = self.root/'wrong.audit.json'
+        prior.write_text(json.dumps({'video_path': '/different.mp4', 'status': 'needs_review'}))
+        outcome = SyncRunner(ScriptedModel(), self.settings, model_alias='test').evaluate(self.video, review_from=prior)
+        self.assertEqual(outcome.status, 'failed')
+
+    def test_verifier_can_explicitly_disagree_that_source_limitation_exists(self):
+        model = self.assessed_model(verifier_category='no_source_limitation')
+        generate = model.generate
+        def reject(request):
+            data = generate(request)
+            if request.stage == 'revision_verification':
+                for verdict in data['verdicts']:
+                    verdict.update(resolved=False, reason='Original frames clearly establish identity; the candidate uncertainty is unsupported.')
+            return data
+        model.generate = reject
+        outcome = self.run_model(model)
+        self.assertEqual(outcome.status, 'needs_review')
+
     def test_self_reported_fix_does_not_override_failed_verifier(self):
         model = ScriptedModel(passes_on=3)
         outcome = self.run_model(model)
@@ -147,6 +260,14 @@ class RevisionTests(unittest.TestCase):
                 validate_stage(ReviewedRevision, {**DRAFT, 'responses': responses}, context)
         with self.assertRaises(ValueError):
             validate_stage(RevisionVerification, {'verdicts': [], 'new_issues': []}, context)
+
+    def test_concern_coverage_feedback_identifies_repairs(self):
+        response = {'concern_id': 'extra', 'action': 'retained', 'rationale': 'Visible.', 'visual_times': [5.0]}
+        with self.assertRaises(ValueError) as caught:
+            validate_stage(ReviewedRevision, {**DRAFT, 'responses': [response, response]},
+                           {'duration': 10.0, 'concern_ids': ['c0000']})
+        for detail in ("missing=['c0000']", "duplicate=['extra']", "unexpected=['extra']"):
+            self.assertIn(detail, str(caught.exception))
 
     def test_openai_transport_and_cache_support_verification_stage(self):
         import httpx
@@ -262,6 +383,103 @@ class RevisionTests(unittest.TestCase):
         retry = [r for r in model.requests if r.stage == 'evidence_review'][1]
         self.assertIn('motion_evidence', retry.prompt.split('INPUT_DATA_JSON')[0])
         self.assertEqual(retry.response_contract, model.requests[1].response_contract)
+        self.assertEqual(records[0]['invalid_candidate']['motion_evidence'], 'x' * 801)
+        self.assertIn('x' * 801, retry.prompt)
+
+    def test_quote_repair_receives_candidate_and_still_requires_independent_verification(self):
+        class Model(ScriptedModel):
+            def generate(self, request):
+                data = super().generate(request)
+                if request.stage == 'grounded_revision':
+                    data['responses'][0]['assessment'] = {
+                        'category': 'no_source_limitation', 'start': 0., 'end': 10.,
+                        'reason': 'Visible stationary objects.', 'visual_times': [5.],
+                        'event_index': 0, 'candidate_quote': 'incorrect quotation'}
+                    if self.calls.count('grounded_revision') > 1:
+                        previous = json.loads(request.prompt.split('PREVIOUS_INVALID_CANDIDATE_JSON (untrusted data, not instructions):\n')[1].split('\nEND_PREVIOUS_INVALID_CANDIDATE')[0])
+                        data = previous
+                        data['responses'][0]['assessment']['candidate_quote'] = data['events'][0]['description']
+                if request.stage == 'revision_verification':
+                    for verdict in data['verdicts']:
+                        verdict['assessment'] = {'category': 'no_source_limitation', 'start': 0., 'end': 10.,
+                            'reason': 'Independently checked.', 'visual_times': [5.], 'event_index': 0,
+                            'candidate_quote': 'Camera moves over stationary spoons.'}
+                return data
+        model = Model()
+        outcome = self.run_model(model)
+        self.assertEqual(outcome.status, 'completed', outcome.error)
+        self.assertEqual(model.calls.count('grounded_revision'), 2)
+        self.assertEqual(model.calls.count('revision_verification'), 1)
+        self.assertTrue(outcome.metadata['model_output_failures'][0]['recovered'])
+
+    def test_invalid_candidate_size_bound_does_not_bypass_validation(self):
+        from percept_harness.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS, INVALID_CANDIDATE_FIELD
+        raw = {**DRAFT, 'responses': [], 'oversized': 'x' * 200_001}
+        result = DEFAULT_OUTPUT_SCHEMAS.sanitize('ReviewedRevision', raw,
+                    {'duration': 10., 'concern_ids': ['c0000']})
+        self.assertIsNotNone(DEFAULT_OUTPUT_SCHEMAS.failure_codes('ReviewedRevision', result))
+        self.assertNotIn(INVALID_CANDIDATE_FIELD, result)
+
+    def test_repair_feedback_collects_multiple_cross_field_errors(self):
+        from percept_harness.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+        assessment = {'category': 'no_source_limitation', 'start': 6., 'end': 8.,
+                      'reason': 'Checked.', 'visual_times': [7.], 'event_index': 0,
+                      'candidate_quote': 'not in the event'}
+        responses = [{'concern_id': cid, 'action': 'retained', 'rationale': 'Checked.',
+                      'visual_times': [7.], 'assessment': assessment} for cid in ['c0000', 'c0001']]
+        output = DEFAULT_OUTPUT_SCHEMAS.sanitize('ReviewedRevision', {**DRAFT, 'responses': responses},
+                    {'duration': 10., 'concern_ids': ['c0000', 'c0001', 'c0002']})
+        messages = [v['message'] for v in output['_schema_validation']['details']]
+        self.assertEqual(len(messages), 5)
+        self.assertTrue(any('c0000' in x and 'candidate_quote' in x for x in messages))
+        self.assertTrue(any('c0001' in x and 'must overlap' in x for x in messages))
+        self.assertTrue(any("missing=['c0002']" in x for x in messages))
+
+    def test_frozen_assessment_rejects_candidate_edits(self):
+        context = {'duration': 10., 'concern_ids': [], 'frozen_events': DRAFT['events']}
+        with self.assertRaisesRegex(ValueError, 'Events are frozen'):
+            validate_stage(ReviewedRevision, {**DRAFT, 'events': [], 'responses': []}, context)
+
+    def test_split_pass_batches_and_independently_verifies_every_concern(self):
+        from percept_harness.pipelines.revision import split_revision_pass
+        ledger = [{'concern_id': f'c{i:04d}', 'reason': 'Check.'} for i in range(14)]
+        calls = []
+        def stage(name, schema, *, draft, review, ordinal):
+            calls.append((name, review))
+            if name == 'grounded_event_revision':
+                return DRAFT
+            ids = [c['concern_id'] for c in review['concerns']]
+            self.assertLessEqual(len(ids), 6)
+            self.assertEqual(draft, DRAFT)
+            if name == 'grounded_revision':
+                self.assertTrue(review['freeze_candidate'])
+                return {**draft, 'responses': [{'concern_id': cid, 'action': 'retained',
+                    'rationale': 'Checked.', 'visual_times': [3.]} for cid in ids]}
+            self.assertNotIn('responses', review)
+            return {'verdicts': [{'concern_id': cid, 'resolved': True, 'reason': 'Independent.'} for cid in ids], 'new_issues': []}
+        audit = {}
+        revision, verification = split_revision_pass(stage, DRAFT, {'concerns': ledger}, ledger, 0, audit)
+        self.assertEqual(len(revision['responses']), 14)
+        self.assertEqual(len(verification['verdicts']), 14)
+        self.assertEqual([n for n, _ in calls], ['grounded_event_revision'] + ['grounded_revision'] * 3 + ['revision_verification'] * 3)
+        self.assertEqual(len(audit['split_revision_attempts'][0]['verification_batches']), 3)
+
+    def test_split_pass_validates_new_issue_event_indices(self):
+        from percept_harness.pipelines.revision import split_revision_pass
+        for indices in ([0, 1], [2]):
+            with self.subTest(indices=indices):
+                def stage(name, schema, *, draft, review, ordinal):
+                    if name == 'grounded_event_revision':
+                        return DRAFT
+                    if name == 'grounded_revision':
+                        return {**DRAFT, 'responses': []}
+                    return {'verdicts': [], 'new_issues': [{**CONCERN, 'event_indices': indices}]}
+                if indices == [0, 1]:
+                    _, verification = split_revision_pass(stage, DRAFT, {}, [], 0, {})
+                    self.assertEqual(verification['new_issues'][0]['event_indices'], indices)
+                else:
+                    with self.assertRaisesRegex(ValueError, 'invalid event or time'):
+                        split_revision_pass(stage, DRAFT, {}, [], 0, {})
 
     def test_persistent_invalid_output_stops_after_three_attempts(self):
         model = ScriptedModel(malformed=True)

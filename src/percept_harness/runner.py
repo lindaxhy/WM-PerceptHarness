@@ -65,6 +65,7 @@ class SyncRunner:
         video_path: Path,
         *,
         prompt_context: str | None = None,
+        review_from: Path | None = None,
     ) -> EvalOutcome:
         """Evaluate one video end-to-end and return its terminal outcome."""
         from .pipelines.base import PipelineContext, SafePipelineError
@@ -88,7 +89,14 @@ class SyncRunner:
             context = PipelineContext(
                 executor=executor, settings=self.settings, media_path=resolved,
             )
-            result = EmbodiedActionPipeline().run(context, prompt_context=prompt_context)
+            prior_review = None
+            if review_from is not None:
+                prior_review = results.read_record(Path(review_from))
+                if (not prior_review or prior_review.get('status') != 'needs_review' or
+                        prior_review.get('video_path') != str(resolved)):
+                    raise SafePipelineError('review_from must be a needs_review audit for this source video')
+                context.metadata['prior_review_source'] = str(Path(review_from).resolve())
+            result = EmbodiedActionPipeline().run(context, prompt_context=prompt_context, prior_review=prior_review)
             return EvalOutcome(
                 video_path=resolved,
                 status=("needs_review" if context.metadata.get("revision_validation", {}).get("status") == "needs_review" else "completed"),
@@ -135,6 +143,7 @@ def run_batch(
     output_dir: Path,
     *,
     prompt_context: str | None = None,
+    review_from: Path | None = None,
     force: bool = False,
     log=print,
 ) -> list[EvalOutcome]:
@@ -147,14 +156,17 @@ def run_batch(
     for index, source in enumerate(videos, start=1):
         video = Path(source).resolve()
         path = results.result_path(output_dir, video)
-        previous = results.completed_result(path, video) if not force and video.is_file() else None
+        previous = results.completed_result(path, video) if not force and review_from is None and video.is_file() else None
         if previous is not None:
             outcome = EvalOutcome(video_path=video, status="skipped", data=previous["data"],
                                   result_file=path.name, metadata=previous.get("metadata"))
             log(f"[{index}/{len(videos)}] skip {video.name} (completed result)")
         else:
             log(f"[{index}/{len(videos)}] eval {video.name} ...")
-            outcome = replace(runner.evaluate(video, prompt_context=prompt_context), result_file=path.name)
+            kwargs = {'prompt_context': prompt_context}
+            if review_from is not None:
+                kwargs['review_from'] = review_from
+            outcome = replace(runner.evaluate(video, **kwargs), result_file=path.name)
             _write_result(path, outcome)
             log(f"[{index}/{len(videos)}] {outcome.status} {video.name} -> {path.name}")
         outcomes.append(outcome)
