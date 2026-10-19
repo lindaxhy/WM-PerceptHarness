@@ -19,6 +19,11 @@ import re
 import subprocess
 import sys
 
+try:
+    from ._runtime import verify_source
+except ImportError:  # Run directly as a file by an older upstream Python.
+    from _runtime import verify_source
+
 DOVER_COMMIT = "f1ddc96215bc7fbcf8f315c65d47905f339c3419"
 DOVER_ORIGIN = "https://github.com/VQAssessment/DOVER"
 CONVNEXT_FILENAME = "convnext_tiny_1k_224_ema.pth"
@@ -27,14 +32,7 @@ RUNTIME_PACKAGES = (
     "torch", "torchvision", "numpy", "PyYAML", "decord", "opencv-python",
     "timm", "einops", "scikit-video", "scipy", "tqdm",
 )
-
-
-def verify_source(root: Path) -> dict:
-    for relative in ['evaluate_one_video.py', 'dover.yml', 'dover/__init__.py']:
-        path = root / relative
-        if not path.is_file():
-            raise FileNotFoundError(f"Missing required source file: {path}")
-    return {"origin": DOVER_ORIGIN, "expected_commit": DOVER_COMMIT}
+SOURCE_FILES = ("evaluate_one_video.py", "dover.yml", "dover/__init__.py")
 
 
 def checkpoint_record(path: Path) -> dict:
@@ -134,7 +132,7 @@ def run_official(*, dover_root: Path, video: Path, torch_home: Path, output_dir:
             raise ValueError("--video must be a nonempty single video file")
         if not re.fullmatch(r"cpu|cuda(?::\d+)?", device):
             raise ValueError("--device must be cpu, cuda, or cuda:N")
-        result["source"] = verify_source(root)
+        result["source"] = verify_source(root, SOURCE_FILES, {"origin": DOVER_ORIGIN, "expected_commit": DOVER_COMMIT})
         result["dover_root"] = str(root)
         result["video"] = {"path": str(video), "bytes": video.stat().st_size}
         # dover.yml intentionally remains unchanged.  Use a local symlink at

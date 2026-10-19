@@ -16,7 +16,9 @@ from pathlib import Path
 import subprocess
 import sys
 
-VBENCH_REVISION = "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490"
+from percept_harness.video_metrics._runtime import VBENCH_REVISION, verify_source
+
+SOURCE_FILES = ("evaluate.py", "vbench/__init__.py")
 DIRECT_DIMENSIONS = frozenset({
     "imaging_quality", "aesthetic_quality", "temporal_flickering", "dynamic_degree",
     "subject_consistency", "background_consistency", "overall_consistency",
@@ -50,14 +52,6 @@ def _object_without_duplicates(pairs):
 
 def read_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8-sig"), object_pairs_hook=_object_without_duplicates)
-
-
-def verify_source(root: Path) -> dict:
-    for relative in ['evaluate.py', 'vbench/__init__.py']:
-        path = root / relative
-        if not path.is_file():
-            raise FileNotFoundError(f"Missing required source file: {path}")
-    return {"expected_revision": VBENCH_REVISION}
 
 
 def resolve_prompt(video: Path, prompt: str | None, prompt_file: Path | None) -> str | None:
@@ -195,7 +189,7 @@ def run_official(*, vbench_root: Path, videos_path: Path, dimensions: list[str],
         raise ValueError("Keep the Torch hub cache outside the pinned source tree")
     if weights_manifest is not None:
         weights_manifest = weights_manifest.expanduser().resolve(strict=True)
-    source = verify_source(root)
+    source = verify_source(root, SOURCE_FILES, {"expected_revision": VBENCH_REVISION})
     weights = verify_cache(cache, dimensions, weights_manifest, torch_home=torch_home)
     env = os.environ.copy()
     env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")

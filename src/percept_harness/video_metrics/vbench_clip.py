@@ -24,16 +24,10 @@ from pathlib import Path
 import subprocess
 import sys
 
-VBENCH_REVISION = "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490"
+from percept_harness.video_metrics._runtime import VBENCH_REVISION, verify_source
+
 CLIP_FILENAME = "ViT-B-32.pt"
-
-
-def verify_source(root: Path) -> dict:
-    for relative in ['competitions/clip_score.py', 'vbench/__init__.py']:
-        path = root / relative
-        if not path.is_file():
-            raise FileNotFoundError(f"Missing required source file: {path}")
-    return {"expected_revision": VBENCH_REVISION}
+SOURCE_FILES = ("competitions/clip_score.py", "vbench/__init__.py")
 
 
 def verify_clip_cache(clip_home: Path) -> Path:
@@ -86,7 +80,7 @@ def run_official(*, vbench_root: Path, videos_path: Path, prompt: str,
         raise FileExistsError(f"Output directory already exists: {output}")
     if output == root or root in output.parents:
         raise ValueError("Keep output outside the pinned source tree")
-    source = verify_source(root)
+    source = verify_source(root, SOURCE_FILES, {"expected_revision": VBENCH_REVISION})
     model = verify_clip_cache(clip_home)
     info = build_full_info(video, prompt)
     metadata = {

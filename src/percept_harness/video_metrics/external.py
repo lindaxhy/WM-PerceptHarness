@@ -22,6 +22,8 @@ import subprocess
 import sys
 from typing import Sequence
 
+from percept_harness.video_metrics._runtime import VBENCH_REVISION
+
 
 @dataclass(frozen=True)
 class MetricSpec:
@@ -48,19 +50,19 @@ SPECS: dict[str, MetricSpec] = {
         "https://github.com/KaiyueSun98/T2V-CompBench", "dd5eff7b93af0550b9efa2bdabbb21b3b017ceda",
         "python Grounded-Segment-Anything/compbench_motion_binding_seg.py ...; python dot/compbench_eval_motion_binding.py ...", needs_manifest=True),
     "motion_order_understanding": MetricSpec(
-        "https://github.com/Vchitect/VBench", "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490",
+        "https://github.com/Vchitect/VBench", VBENCH_REVISION,
         "bash evaluate.sh --max_parallel_tasks 1", needs_manifest=True),
     "motion_rationality": MetricSpec(
-        "https://github.com/Vchitect/VBench", "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490",
+        "https://github.com/Vchitect/VBench", VBENCH_REVISION,
         "bash evaluate.sh --max_parallel_tasks 1", needs_manifest=True),
     "mechanics": MetricSpec(
-        "https://github.com/Vchitect/VBench", "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490",
+        "https://github.com/Vchitect/VBench", VBENCH_REVISION,
         "bash evaluate.sh --max_parallel_tasks 1", needs_manifest=True),
     "thermotics": MetricSpec(
-        "https://github.com/Vchitect/VBench", "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490",
+        "https://github.com/Vchitect/VBench", VBENCH_REVISION,
         "bash evaluate.sh --max_parallel_tasks 1", needs_manifest=True),
     "material": MetricSpec(
-        "https://github.com/Vchitect/VBench", "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490",
+        "https://github.com/Vchitect/VBench", VBENCH_REVISION,
         "bash evaluate.sh --max_parallel_tasks 1", needs_manifest=True),
     "phygen_eval_pca": MetricSpec(
         "https://github.com/OpenGVLab/PhyGenBench", "f8642cb796f3bcb01f0b7c1b2ec53b75d357c739",
