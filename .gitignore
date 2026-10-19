@@ -1,8 +1,4 @@
-.worktrees/
 .DS_Store
-.superpowers/
-.claude/
-/docs/superpowers/
 .env
 .venv/
 __pycache__/
@@ -16,11 +12,9 @@ htmlcov/
 *.egg-info/
 *.sqlite*
 /models/
-data/
-/evaluation/
+/data/
 work/
 outputs/
-/las_runs/
 *.mp4
 *.mov
 *.mkv

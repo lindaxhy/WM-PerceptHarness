@@ -43,7 +43,7 @@ or their model weights. Refer to the licenses shipped with the exact installed
 versions and to the upstream checkpoint terms.
 
 No model checkpoints or third-party model implementation are distributed here.
-The packaged [weight registry](../src/percept_harness/weights.py) records cache-relative filenames.
+The packaged [weight registry](../src/percept_harness/video_metrics/__init__.py) records cache-relative filenames.
 Download URLs and commands are documented in the README. Installation checks
 check file existence. CLIP-IQA+ checks both checkpoint paths when `--cache-dir`
 is supplied; omitting it retains PyIQA’s own default cache and download behavior.

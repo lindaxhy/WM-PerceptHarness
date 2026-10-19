@@ -69,26 +69,20 @@ The OpenAI-compatible backend retries timeouts, transport errors, and HTTP 429,
 500, 502, 503 and 504. Other HTTP errors fail immediately. Client class constants
 set three extra attempts and exponential backoff with jitter from a five-second
 base. Configure the fixed per-request timeout with
-`PERCEPT_OPENAI_TIMEOUT_SECONDS` (default 180 seconds). Dynamic video-length
-scaling and its upper timeout cap have been removed. This is not a batch deadline.
+`PERCEPT_OPENAI_TIMEOUT_SECONDS` (default 180 seconds). This is not a batch deadline.
 
 Each `ModelRequest` carries `max_frames` (default 128, including SAM overlays)
 and optional `max_output_tokens`. When the token limit is omitted, stage defaults
 are 16,384 for drafts/revision, 8,192 for evidence review and 4,096 for SAM prompt
 review. Stage payloads accept these same fields. Effective budgets enter the
-request-cache identity. The unused internal hints `media_resolution`,
-`reasoning_effort` and `clip_context` have been removed; they never changed the
-API payload. Provider-specific generation options remain in
-`PERCEPT_OPENAI_EXTRA_BODY`. Removing these hints from cache identity makes old
-request-cache entries miss; completed-result resume is unchanged. The CLI resolves model aliases before creating a client. Connection types, formats and numeric ranges are validated by `Settings`; the CLI checks required credentials. Direct Python callers of the internal client are responsible for supplying valid connection values. Reserved request-body overrides and external responses are still checked by the adapter.
+request-cache identity. Provider-specific generation options belong in
+`PERCEPT_OPENAI_EXTRA_BODY`. The CLI resolves model aliases before creating a client. Connection types, formats and numeric ranges are validated by `Settings`; the CLI checks required credentials. Direct Python callers of the internal client are responsible for supplying valid connection values. Reserved request-body overrides and external responses are still checked by the adapter.
 
 `OpenAICompatVideoModel.MAX_REQUEST_BYTES` fixes the encoded request limit at
 32 MiB; `MAX_OUTPUT_CHARS` limits model text to 1,000,000 characters. Oversized
 requests thin original video frames while retaining mandatory SAM overlays;
 requests that still exceed the limit fail. These limits and retry behavior are
-internal class constants, not environment settings. The former
-`PERCEPT_OPENAI_MAX_FRAMES`, request/output-size, retry and dynamic-timeout
-settings no longer apply. For repeatability, see
+internal class constants, not environment settings. For repeatability, see
 [result identity and resume](usage.md#result-identity-and-resume).
 
 ### Targeted SAM3.1 grounding
@@ -142,14 +136,14 @@ uncertainties. Confidence <= 0.6 requires a question; every reported question is
 processed regardless of confidence. With no questions, the draft-only route
 still takes one VLM call. Confident errors can remain unreported.
 
-The v6 workflow treats question kinds as descriptions, not SAM eligibility gates:
+The workflow treats question kinds as descriptions, not SAM eligibility gates:
 
 1. `grounded_draft` and `evidence_review` produce events and questions (or
    `confidence_draft` supplies both in confidence-gated mode).
 2. Every concrete question enters `sam_target_plan`, which sees only its source
    video window, expanded to include an outside-window identity reference when
    supplied, plus up to 0.5 seconds of context on each side. It selects one
-   relevant visible object/reference and a normalized XYXY box. Legacy free-text
+   relevant visible object/reference and a normalized XYXY box. Free-text
    unresolved issues lack timestamps and use the full source window rather than
    being skipped. A null target
    must include a reason; no target is invented when segmentation cannot help.
@@ -279,25 +273,14 @@ and overlay signatures. Do not modify cache entries while a run is using them.
 The simplified internal CV schema accepts one target and one spatial prompt.
 Each request uses the local ID `target` and retains the original target description.
 Request scopes distinguish tracks; the description remains part of the cache key.
-Old CV entries containing retired entity/sampling fields become cache misses and
-are recomputed. Public annotation JSON and completed-result resume rules are
-unchanged; use `--force` to regenerate an already completed annotation.
 
 Targeted tracking samples the selected window at `PERCEPT_CV_MAX_FPS` and always
 includes its reference frame. OOM retries use the same original frame indices.
-Unused full-video scan/refinement settings and area/occlusion thresholds were
-removed. Shared limits cover overlays (24), processed frames (10,000) and total
+Shared limits cover overlays (24), processed frames (10,000) and total
 observations (64,000). SAM uses its pinned upstream defaults for confidence
 (0.5), compilation (off), and object capacity (16). These defaults are not
 separate environment settings. Artifact byte limits are internal storage
 bounds, not model parameters or limits on the entire cache directory.
-
-The retired `PERCEPT_CV_MIN_CONFIDENCE`, `PERCEPT_CV_MODEL_ALIAS`,
-`PERCEPT_CV_COMPILE_MODEL`, `PERCEPT_CV_EXECUTION_CHUNK_FRAMES`,
-`PERCEPT_CV_CACHE_MAX_FILES`, and `PERCEPT_CV_CACHE_MAX_BYTES` variables are
-ignored; remove them from existing environments. CV requests no longer carry
-a configurable confidence threshold, so previous CV cache keys are not reused.
-Completed annotations still follow the existing resume rules.
 
 Environment numbers and booleans use Pydantic Settings parsing, including
 standard boolean spellings such as `true`/`false` and `1`/`0`. FPS and timeouts
@@ -449,5 +432,3 @@ The script does not download weights, contact a VLM API or perform model inferen
 For a reported run, record input paths and pair IDs; model/provider configuration without secrets; prompt/code revision; runtime versions and device; checkpoint sources and versions; sampling settings; sample counts and exclusions. Preserve raw results and separate output directories for independent repeats. Use `--force` for independent annotation repeats.
 
 Save `python --version`, `python -m pip freeze` and `python -m pip check` for each evaluator environment. The motion-only VBench environment deliberately differs from the full upstream dependency metadata. A successful local check does not establish successful real-model inference or a complete benchmark run.
-
-Historical LAS tools remain on [archive/las-comparison-viewer](https://github.com/lindaxhy/WM-PerceptHarness/tree/archive/las-comparison-viewer) and [legacy-las-service](https://github.com/lindaxhy/WM-PerceptHarness/tree/legacy-las-service).

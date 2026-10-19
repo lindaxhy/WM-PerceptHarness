@@ -54,8 +54,7 @@ percept annotate \
 
 Pass a directory to `--videos` to process its videos recursively. Annotation
 produces event descriptions and bounds on the original video clock through a
-single event annotation pipeline. The obsolete `--template` option has been removed;
-omit it from older commands.
+single event annotation pipeline.
 
 By default (`--event-workflow reviewed`), the VLM drafts events and independently reviews the original video. Only concrete object identity, location, occlusion or trajectory questions trigger SAM: a text + candidate box prompt is checked on one reference frame before tracking that object within the relevant window. There is no unconditional baseline SAM pass. Camera-motion doubts and editorial changes stay in the existing visual review. Tracking supports review but does not prove an action, outcome or boundary.
 
@@ -207,8 +206,7 @@ percept score motion --video ./videos/sample_001.mp4 \
 The JSON includes the score and paths to the official evaluator result and log. Motion Smoothness measures local interpolation smoothness; a smooth video can still depict an incorrect action.
 
 **Weights:** Install Python dependencies with `pip`, then download model weights
-with the `curl` commands above. The former `percept download` command has been
-removed. `video_metrics/__init__.py` only records cache-relative paths;
+with the `curl` commands above. `video_metrics/__init__.py` only records cache-relative paths;
 installation checks and scoring check that the files exist. No SHA-256 verification is performed. Use the same `--cache-dir`
 for checks and scoring; `./weights` is relative to the current directory.
 Other metrics require their own [checkpoint preparation](docs/metrics.md#checkpoint-preparation).
@@ -256,21 +254,22 @@ No project-wide open-source license has been granted yet. Third-party components
 
 ## Code structure
 
-Annotation flows through `cli → runner → pipelines → models`.
-`batch.py` adds batch scheduling and shared CV workers. Event scoring and video
-quality metrics have separate entry points.
+Annotation flows through `cli → runner → pipelines → execution → models/cv`.
+`batch.py` adds manifest scheduling and shared GPU workers. Event scoring and
+video quality metrics have separate entry points.
 
-Within annotation, pipelines call `StageExecutor.execute()` directly for VLM
-and SAM requests. There is no internal job queue or wait/poll layer. VLM request
-caching and the separate multi-GPU batch scheduler remain available.
+Pipelines call `StageExecutor.execute()` directly for VLM and SAM requests;
+there is no internal job queue or wait/poll layer.
 
 | Module | Responsibility |
 |---|---|
 | `config.py` | `PERCEPT_` settings and model/CV validation |
+| `backends.py` | Settings, VLM client and SAM executor setup shared by both annotation modes |
 | `media.py` | FFprobe metadata and timestamped FFmpeg frame extraction |
 | `pipelines/` | Event prompts, schemas, visual review and targeted SAM evidence |
 | `models/`, `cv/` | VLM backends and computer-vision adapters |
-| `runner.py` | Annotation inputs, synchronous stages, request caching and video orchestration |
+| `runner.py` | Video discovery, per-video orchestration, resume and batch results |
+| `execution.py` | Direct VLM/SAM stage execution and the VLM request cache |
 | `batch.py` | Manifest scheduling, shared GPU workers and concurrency control |
 | `results.py` | Annotation JSON, audit sidecars, filename collisions and resume |
 | `evaluation/`, `video_metrics/` | Event comparison, video quality metrics and checkpoint checks |
@@ -280,6 +279,3 @@ source timestamps. See [sampling behavior](docs/usage.md#video-frame-sampling).
 `results.py` manages
 files without a database. Its resume behavior is described in
 [usage](docs/usage.md).
-
-The [function audit](docs/function-audit.md) records callers, retained behavior,
-removed wrappers and remaining simplification candidates for the original top-level modules.

@@ -35,9 +35,8 @@ The following code is preparation/integration support. Local checks do not estab
 
 `pip install` installs Python packages, not model weights. Use the explicit
 `curl` commands in the README for [CLIP-IQA+](../README.md#clip-iqa) and
-[Motion Smoothness](../README.md#motion-smoothness). The former
-`percept download` command has been removed; downloading is handled outside the
-package.
+[Motion Smoothness](../README.md#motion-smoothness). Downloading is handled
+outside the package.
 
 | Metric | Files relative to the cache directory | Source |
 |---|---|---|
@@ -48,7 +47,7 @@ The examples save files under `./weights`, relative to the current directory.
 For another location, change the download destinations and pass that same path
 as `--cache-dir` to scoring and `scripts/verify_install.py`. Existing caches can
 be reused when the required files are present. The shared
-[weight registry](../src/percept_harness/weights.py) contains cache-relative paths;
+[weight registry](../src/percept_harness/video_metrics/__init__.py) contains cache-relative paths;
 installation checks and custom-cache scoring check file existence before model
 loading. Checkpoints are ignored by Git and are not shipped in the wheel.
 
