@@ -133,7 +133,7 @@ class _MaskArchiveWriter:
             raise RuntimeError
         self.budget.reserve(mask.nbytes + _ZIP_ENTRY_ALLOWANCE)
         mask_index = self.mask_count
-        _write_npy(self._archive, f"masks/{mask_index:08d}.npy", mask)
+        _write_npy(self._archive, _mask_member(mask_index), mask)
         self.mask_count += 1
         return mask_index
 
@@ -193,7 +193,6 @@ class Sam31EvidenceProvider:
         torch_module: Any,
         materialize_frames: Callable[..., SampledFrameSet] = materialize_sampled_frames,
         initial_sampler: Callable[..., tuple[int, ...]] = initial_sample_indices,
-        repository_revision: str = _PINNED_REPOSITORY_REVISION,
         overlay_renderer: Callable[..., None] | None = None,
         import_snapshot: dict[str, Any] | None = None,
         sam_source_root: Path | None = None,
@@ -206,7 +205,6 @@ class Sam31EvidenceProvider:
         self._initial_sampler = initial_sampler
         self._execution_chunk_frames = 8
         self._apply_execution_chunk_frames()
-        self.repository_revision = repository_revision
         self._overlay_renderer = overlay_renderer or _render_context_overlay
         self._import_snapshot = import_snapshot
         self._sam_source_root = sam_source_root
@@ -262,12 +260,12 @@ class Sam31EvidenceProvider:
             return cls(
                 predictor=predictor,
                 torch_module=torch_module,
-                repository_revision=_PINNED_REPOSITORY_REVISION,
                 import_snapshot=imported_snapshot,
                 sam_source_root=repository if _sam_modules() else None,
             )
         except BaseException as error:
-            _shutdown_predictor(predictor)
+            with suppress(BaseException):
+                _shutdown_predictor(predictor)
             if imported_snapshot is not None:
                 _restore_sam_modules(imported_snapshot)
             if isinstance(error, Exception):
@@ -314,12 +312,11 @@ class Sam31EvidenceProvider:
                     request.video_path, request.timeline, indices, destination
                 )
                 _validate_sampled_frames(sampled, request, indices, destination)
-                masks_directory = _create_private_directory(staging / "masks")
-                outputs.append(masks_directory)
+                outputs.append(_create_private_directory(staging / "masks"))
                 with _predictor_session(self._predictor, sampled) as session_id:
                     run = self._run_prompt(
                         request, sampled, session_id,
-                        masks_directory / f"{request.entities[0].entity_id}.npz", budget,
+                        staging / _mask_archive(request.entities[0].entity_id), budget,
                     )
                 artifact = _build_artifact(
                     request, staging, sampled, run, outputs, budget, self._overlay_renderer
@@ -329,8 +326,6 @@ class Sam31EvidenceProvider:
                 self._metrics = {
                     "processed_frames": len(sampled.frames),
                     "execution_chunk_frames": self.execution_chunk_frames,
-                    "entity_prompts": 1,
-                    "track_count": len(artifact.tracks),
                     "peak_allocated_bytes": _peak_memory(self._torch),
                 }
             return artifact
@@ -356,9 +351,7 @@ class Sam31EvidenceProvider:
         self._closed = True
         try:
             try:
-                shutdown = getattr(self._predictor, "shutdown", None)
-                if callable(shutdown):
-                    shutdown()
+                _shutdown_predictor(self._predictor)
             finally:
                 if self._import_snapshot is not None:
                     _restore_sam_modules(self._import_snapshot)
@@ -420,7 +413,7 @@ class Sam31EvidenceProvider:
             writer.finish(ordered, sampled)
             return _PromptRun(
                 entity.entity_id, ordered, tuple(present), *dimensions,
-                f"masks/{entity.entity_id}.npz",
+                _mask_archive(entity.entity_id),
             )
         except BaseException:
             writer.abort()
@@ -455,12 +448,9 @@ def _install_pinned_multiplex_init_compatibility(predictor: Any) -> None:
 
 
 def _shutdown_predictor(predictor: Any) -> None:
-    try:
-        shutdown = getattr(predictor, "shutdown", None)
-        if callable(shutdown):
-            shutdown()
-    except BaseException:
-        pass
+    shutdown = getattr(predictor, "shutdown", None)
+    if callable(shutdown):
+        shutdown()
 
 
 def _validated_repository(value: Path | str) -> Path:
@@ -766,7 +756,7 @@ def _build_artifact(
     records: list[OverlayRecord] = []
     tracks = tuple(
         CvTrack(
-            track_id=f"{run.entity_id}_{object_id}", entity_id=run.entity_id,
+            track_id=_track_id(run.entity_id, object_id), entity_id=run.entity_id,
             observations=tuple(
                 _observation(item, run.mask_relative) for item in run.detections
                 if item.object_id == object_id
@@ -792,18 +782,17 @@ def _build_artifact(
             relative = (
                 f"overlays/{run.entity_id}-{item.object_id}-{item.source_frame_index:08d}.png"
             )
-            x, y, width, height = item.box_xywh
             overlay_renderer(
                 frame_path=sampled.frames[item.local_frame_index].path,
                 archive_path=staging / run.mask_relative,
-                mask_member=f"masks/{item.mask_index:08d}.npy",
-                bbox_xyxy=(x, y, x + width, y + height), destination=staging / relative,
+                mask_member=_mask_member(item.mask_index),
+                bbox_xyxy=_xyxy(item.box_xywh), destination=staging / relative,
             )
             overlay_file = _artifact_file(staging, staging / relative)
             budget.record_file(overlay_file.size_bytes)
             files.append(overlay_file)
             records.append(OverlayRecord(
-                path=relative, track_id=f"{run.entity_id}_{item.object_id}",
+                path=relative, track_id=_track_id(run.entity_id, item.object_id),
                 frame_index=item.source_frame_index,
             ))
     return CvEvidenceArtifact(
@@ -824,17 +813,33 @@ def _build_artifact(
 
 
 def _observation(detection: _Detection, mask_relative: str) -> TrackObservation:
-    x, y, width, height = detection.box_xywh
     return TrackObservation(
         frame_index=detection.source_frame_index,
         timestamp_seconds=detection.timestamp_seconds,
-        bbox_xyxy=(x, y, x + width, y + height),
+        bbox_xyxy=_xyxy(detection.box_xywh),
         mask_ref=mask_relative,
         visible=True,
         confidence=detection.probability,
         area_fraction=detection.area_fraction,
         center_xy=detection.center_xy,
     )
+
+
+def _xyxy(box_xywh: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    x, y, width, height = box_xywh
+    return x, y, x + width, y + height
+
+
+def _track_id(entity_id: str, object_id: int) -> str:
+    return f"{entity_id}_{object_id}"
+
+
+def _mask_archive(entity_id: str) -> str:
+    return f"masks/{entity_id}.npz"
+
+
+def _mask_member(mask_index: int) -> str:
+    return f"masks/{mask_index:08d}.npy"
 
 
 def _select_overlays(run: _PromptRun) -> tuple[_Detection, ...]:
@@ -910,14 +915,18 @@ def _artifact_file(staging: Path, path: Path) -> ArtifactFile:
     return ArtifactFile(path=path.relative_to(staging).as_posix(), size_bytes=status.st_size)
 
 
+def _cuda(torch_module: Any, name: str) -> Any:
+    return getattr(getattr(torch_module, "cuda", None), name, None)
+
+
 def _reset_peak_memory(torch_module: Any) -> None:
-    reset = getattr(getattr(torch_module, "cuda", None), "reset_peak_memory_stats", None)
+    reset = _cuda(torch_module, "reset_peak_memory_stats")
     if callable(reset):
         reset()
 
 
 def _peak_memory(torch_module: Any) -> int:
-    maximum = getattr(getattr(torch_module, "cuda", None), "max_memory_allocated", None)
+    maximum = _cuda(torch_module, "max_memory_allocated")
     if not callable(maximum):
         return 0
     value = maximum()
@@ -927,14 +936,12 @@ def _peak_memory(torch_module: Any) -> int:
 
 
 def _empty_cuda_cache(torch_module: Any) -> None:
-    empty = getattr(getattr(torch_module, "cuda", None), "empty_cache", None)
+    empty = _cuda(torch_module, "empty_cache")
     if callable(empty):
-        try:
+        with suppress(BaseException):
             empty()
-        except BaseException:
-            pass
 
 
 def _is_cuda_oom(torch_module: Any, error: Exception) -> bool:
-    oom_type = getattr(getattr(torch_module, "cuda", None), "OutOfMemoryError", None)
+    oom_type = _cuda(torch_module, "OutOfMemoryError")
     return isinstance(oom_type, type) and isinstance(error, oom_type)
