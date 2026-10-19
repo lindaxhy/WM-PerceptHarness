@@ -88,6 +88,18 @@ SPECS: dict[str, MetricSpec] = {
 }
 
 
+VBENCH2_DIMENSIONS = frozenset(name for name, spec in SPECS.items() if spec.source_url == "https://github.com/Vchitect/VBench")
+
+
+def vbench2_auxiliary_problem(auxiliary, *, ordered_pair: bool) -> str | None:
+    """VBench-2.0 questions are a non-empty string list; Motion Order has exactly two actions."""
+    if not isinstance(auxiliary, list) or not auxiliary or not all(isinstance(x, str) and x.strip() for x in auxiliary):
+        return "shape"
+    if ordered_pair and len(auxiliary) != 2:
+        return "count"
+    return None
+
+
 def _resolved(value: Path | None, *, label: str, directory: bool | None = None) -> Path | None:
     if value is None:
         return None

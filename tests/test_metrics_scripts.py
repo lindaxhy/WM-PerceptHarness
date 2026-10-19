@@ -124,6 +124,11 @@ def vb2(dimension, aux, **extra):
     return {"video_id": "a", "video": "a.mp4", "prompt_en": " p ", "dimension": dimension, "auxiliary_info": aux, **extra}
 
 
+def test_vbench2_dimension_names_match_between_scripts():
+    assert adapters._VB2_NAMES == {"Motion_Order_Understanding", "Motion_Rationality", "Mechanics", "Thermotics", "Material"}
+    assert {name.lower() for name in adapters._VB2_NAMES} == manifest.AUXILIARY_DIMENSIONS
+
+
 def test_adapt_vbench2():
     result = adapters.adapt_vbench2([vb2("Mechanics", [" q "]), {**vb2(["Motion_Order_Understanding"], ["a", "b"]), "video_id": "b", "video": "b.mp4"}])
     assert result == {"official": [{"prompt_en": "p", "dimension": "Mechanics", "auxiliary_info": ["q"]},

@@ -75,11 +75,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     def run():
-        generated = args.generated_frames.expanduser().resolve(strict=True)
-        reference = args.reference_frames.expanduser().resolve(strict=True)
-        if not generated.is_dir() or not reference.is_dir():
-            raise ValueError("Both frame inputs must be directories")
-        payload = build_pairs(generated, reference, set(args.extension) if args.extension else None)
+        payload = build_pairs(args.generated_frames, args.reference_frames,
+                              set(args.extension) if args.extension else None)
         if args.require_complete and (payload["unmatched_generated"] or payload["unmatched_reference"]):
             raise ValueError("Frame directories are not complete matches; inspect unmatched_* in the manifest")
         output = args.output.expanduser().resolve()

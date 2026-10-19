@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from percept_harness.video_metrics._runtime import run_cli
+from percept_harness.video_metrics.external import VBENCH2_DIMENSIONS, vbench2_auxiliary_problem
 
 
 SEMANTIC_DIMENSIONS = frozenset(
@@ -40,7 +41,7 @@ SEMANTIC_DIMENSIONS = frozenset(
     }
 )
 REFERENCE_DIMENSIONS = frozenset({"psnr", "ssim", "lpips"})
-AUXILIARY_DIMENSIONS = frozenset({"motion_order_understanding", "motion_rationality", "mechanics", "thermotics", "material"})
+AUXILIARY_DIMENSIONS = VBENCH2_DIMENSIONS
 KNOWN_DIMENSIONS = SEMANTIC_DIMENSIONS | REFERENCE_DIMENSIONS | frozenset({
     "clipiqa+", "clipiqa_plus", "imaging_quality", "aesthetic_quality", "dover",
     "motion_smoothness", "temporal_flickering", "dynamic_degree", "video_phy_pc",
@@ -140,11 +141,12 @@ def validate_manifest(
                 errors.append(f"{prefix}.reference_frames cannot be the generated video path")
             if check_files and not reference_path.is_dir():
                 errors.append(f"{prefix}.reference_frames does not exist: {reference_path}")
-        auxiliary = item.get("auxiliary_info")
         if "auxiliary_info" in item or effective_dimensions & AUXILIARY_DIMENSIONS:
-            if not isinstance(auxiliary, list) or not auxiliary or not all(_string(value) for value in auxiliary):
+            problem = vbench2_auxiliary_problem(item.get("auxiliary_info"),
+                                                ordered_pair="motion_order_understanding" in effective_dimensions)
+            if problem == "shape":
                 errors.append(f"{prefix}.auxiliary_info must be a non-empty list of strings for VBench-2.0 question dimensions")
-            elif "motion_order_understanding" in effective_dimensions and len(auxiliary) != 2:
+            elif problem == "count":
                 errors.append(f"{prefix}.auxiliary_info must contain exactly two ordered actions for Motion Order Understanding")
     if errors:
         raise ValueError("\n".join(errors))
