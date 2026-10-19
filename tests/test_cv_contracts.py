@@ -167,6 +167,7 @@ def test_artifact_store_round_trip_and_manifest_golden(tmp_path):
     key = cv_cache_key(request)
     assert handle.key == key
     entry = root / key[:2] / key
+    assert store.entry_path(key) == entry.resolve()
     manifest = (entry / "manifest.json").read_bytes()
     assert hashlib.sha256(manifest).hexdigest() == "c4a3bec523adf27fdc1d3b6e5f0589e31045cda7083d862f756ab00808dc5c5b"
     assert manifest.startswith(b'{"artifact":{"checkpoint_identity":"/ckpt/sam3.1.pt:9:7","entities":')
@@ -205,8 +206,11 @@ def test_artifact_store_rejects_mismatches(tmp_path):
         with pytest.raises(CvArtifactError, match="unable to publish"):
             _publish(tmp_path / "cache", request, bad_artifact, bad_files)
     store = CvArtifactStore(tmp_path / "cache")
-    with pytest.raises(CvArtifactError):
-        store.lookup("A" * 64)
+    for key in ("A" * 64, "0" * 63, None):
+        with pytest.raises(CvArtifactError, match="invalid CV cache key"):
+            store.entry_path(key)
+        with pytest.raises(CvArtifactError):
+            store.lookup(key)
     with pytest.raises(CvArtifactError, match="unable to publish"):
         store.publish(request, tmp_path, artifact)
     assert store.lookup(cv_cache_key(request)) is None

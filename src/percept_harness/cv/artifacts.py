@@ -48,6 +48,11 @@ def cv_cache_key(request: CvEvidenceRequest) -> str:
     return hashlib.sha256(_canonical_json(_cache_identity(request))).hexdigest()
 
 
+def _require_key(key: str) -> None:
+    if not isinstance(key, str) or re.fullmatch(r"[0-9a-f]{64}", key) is None:
+        raise CvArtifactError("invalid CV cache key")
+
+
 class CvArtifactStore:
     """Validate files once per read and publish complete directories by rename."""
 
@@ -83,14 +88,15 @@ class CvArtifactStore:
                 or (private and status.st_mode & 0o077)):
             raise CvArtifactError("CV cache directories must be private and owned by the user")
 
-    def _entry_path(self, key: str) -> Path:
+    def entry_path(self, key: str) -> Path:
+        """Return the published directory for a cache key, whether or not it exists."""
+        _require_key(key)
         return self._root / key[:2] / key
 
     @contextmanager
     def _key_lock(self, key: str) -> Iterator[None]:
         self._check_open()
-        if not isinstance(key, str) or re.fullmatch(r"[0-9a-f]{64}", key) is None:
-            raise CvArtifactError("invalid CV cache key")
+        _require_key(key)
         prefix = self._root / key[:2]
         prefix.mkdir(mode=0o700, exist_ok=True)
         self._directory(prefix, private=True)
@@ -126,7 +132,7 @@ class CvArtifactStore:
 
     def lookup(self, key: str) -> CvArtifactHandle | None:
         with self._key_lock(key):
-            entry = self._entry_path(key)
+            entry = self.entry_path(key)
             if not entry.exists() and not entry.is_symlink():
                 return None
             try:
@@ -166,7 +172,7 @@ class CvArtifactStore:
             for directory in sorted(directories, key=lambda path: len(path.parts), reverse=True):
                 self._sync_directory(directory)
             with self._key_lock(key):
-                destination = self._entry_path(key)
+                destination = self.entry_path(key)
                 if destination.exists() or destination.is_symlink():
                     try:
                         existing = self._validate_entry(destination, key)
@@ -184,7 +190,7 @@ class CvArtifactStore:
     def load(self, handle: CvArtifactHandle) -> CvEvidenceArtifact:
         try:
             with self._key_lock(handle.key):
-                return self._validate_entry(self._entry_path(handle.key), handle.key)
+                return self._validate_entry(self.entry_path(handle.key), handle.key)
         except (OSError, ValueError, TypeError, AttributeError, RecursionError, CvArtifactError):
             raise CvArtifactError("unable to load CV artifact") from None
 
@@ -195,7 +201,7 @@ class CvArtifactStore:
                     or len(set(paths)) != len(paths)):
                 raise ValueError("invalid overlay request")
             with self._key_lock(handle.key):
-                entry = self._entry_path(handle.key)
+                entry = self.entry_path(handle.key)
                 artifact = self._validate_entry(entry, handle.key)
                 if not set(paths) <= {record.path for record in artifact.overlay_records}:
                     raise ValueError("unregistered overlay")
