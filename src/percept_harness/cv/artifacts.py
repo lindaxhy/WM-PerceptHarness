@@ -23,6 +23,7 @@ from .contracts import CvEvidenceArtifact, CvEvidenceRequest, MAX_ARTIFACT_BYTES
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _MANIFEST_NAME = "manifest.json"
 _MAX_MANIFEST_BYTES = 8 * 1024**2
+_MAX_OVERLAY_BYTES = 64 * 1024**2
 
 
 class CvArtifactError(RuntimeError):
@@ -187,13 +188,11 @@ class CvArtifactStore:
         except (OSError, ValueError, TypeError, AttributeError, RecursionError, CvArtifactError):
             raise CvArtifactError("unable to load CV artifact") from None
 
-    def read_overlays(self, handle: CvArtifactHandle, paths: tuple[str, ...], *,
-                      max_total_bytes: int = 64 * 1024**2) -> dict[str, bytes]:
+    def read_overlays(self, handle: CvArtifactHandle, paths: tuple[str, ...]) -> dict[str, bytes]:
         try:
             if (type(paths) is not tuple or len(paths) > MAX_OVERLAYS
                     or any(type(path) is not str for path in paths)
-                    or len(set(paths)) != len(paths) or type(max_total_bytes) is not int
-                    or not 0 < max_total_bytes <= 64 * 1024**2):
+                    or len(set(paths)) != len(paths)):
                 raise ValueError("invalid overlay request")
             with self._key_lock(handle.key):
                 entry = self._entry_path(handle.key)
@@ -201,7 +200,7 @@ class CvArtifactStore:
                 if not set(paths) <= {record.path for record in artifact.overlay_records}:
                     raise ValueError("unregistered overlay")
                 files = {file.path: file for file in artifact.files}
-                if sum(files[path].size_bytes for path in paths) > max_total_bytes:
+                if sum(files[path].size_bytes for path in paths) > _MAX_OVERLAY_BYTES:
                     raise ValueError("overlay byte budget exceeded")
                 output = {}
                 for path in paths:

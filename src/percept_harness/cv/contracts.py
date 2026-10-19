@@ -34,7 +34,6 @@ ObjectId = Annotated[
         pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$",
     ),
 ]
-TrackId = ObjectId
 Timestamp = Annotated[float, Field(ge=0, allow_inf_nan=False, strict=True)]
 PositiveTimestamp = Annotated[float, Field(gt=0, allow_inf_nan=False, strict=True)]
 Confidence = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False, strict=True)]
@@ -207,7 +206,7 @@ class TrackObservation(StrictModel):
 
 
 class CvTrack(StrictModel):
-    track_id: TrackId
+    track_id: ObjectId
     entity_id: ObjectId
     observations: Annotated[
         tuple[TrackObservation, ...], Field(max_length=MAX_PROCESSED_FRAMES)
@@ -243,7 +242,7 @@ class OverlayRecord(StrictModel):
     """Structured provenance for one prompt-safe rendered overlay."""
 
     path: Annotated[StrictStr, Field(max_length=512)]
-    track_id: TrackId
+    track_id: ObjectId
     frame_index: NonnegativeInt
 
     @field_validator("path")
