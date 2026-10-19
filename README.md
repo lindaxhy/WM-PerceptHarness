@@ -62,7 +62,7 @@ By default (`--event-workflow reviewed`), the VLM drafts events and independentl
 To try the experimental workflow that handles self-reported uncertainties:
 
 ```bash
-percept annotate --videos ./videos/sample_001.mp4 --cv sam31 \
+percept annotate --videos ./videos/sample_001.mp4 \
   --event-workflow confidence-gated --output ./outputs/experiment
 ```
 
@@ -121,7 +121,7 @@ SAM3.1 runtime as above, then create `corpus.jsonl` with one unique relative
 
 ```bash
 percept annotate --manifest corpus.jsonl \
-  --cv sam31 --cv-devices 0,1,2,3 \
+  --cv-devices 0,1,2,3 \
   --workers-per-gpu 2 --request-concurrency 9 \
   --output outputs/annotations
 ```

@@ -474,12 +474,14 @@ class RevisionTests(unittest.TestCase):
         manifest=self.root/'manifest.jsonl'
         manifest.write_text(json.dumps({'job_id':'one','video_path':str(self.video)})+'\n')
         args=SimpleNamespace(workers_per_gpu=1, request_concurrency=1, shard_index=0, shard_count=1,
-            cv='sam31', cv_devices='0', event_workflow='reviewed',manifest=manifest,output=self.root/'batch',force=False)
-        with patch.object(batch, 'Settings',return_value=self.settings) as configured, patch.object(batch,'GpuSlot',FakeSlot), \
-             patch('percept_harness.cli._load_backend',return_value=(ScriptedModel(passes_on=3),'test',lambda:None)):
-            configured.model_validate.side_effect = Settings.model_validate
+            cv_devices='0', event_workflow='reviewed', prompt_context='blue cups', manifest=manifest,
+            output=self.root/'batch', force=False)
+        model=ScriptedModel(passes_on=3)
+        with patch('percept_harness.cli.annotation_settings',return_value=self.settings), patch.object(batch,'GpuSlot',FakeSlot), \
+             patch('percept_harness.cli._load_backend',return_value=(model,'test',lambda:None)):
             code=batch.run_manifest(args)
         self.assertEqual(code,1)
+        self.assertTrue(all('blue cups' in request.prompt for request in model.requests))
         state=json.loads((args.output/'shard-00.status.json').read_text())
         self.assertEqual(state['counts']['needs_review'],1)
         self.assertEqual(state['jobs']['one']['status'],'needs_review')

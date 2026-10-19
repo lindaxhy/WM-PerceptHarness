@@ -20,7 +20,6 @@ import uuid
 import threading
 from dataclasses import replace
 import time
-from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 
 from .config import Settings
@@ -110,8 +109,8 @@ def _cv_worker(connection, cv_settings, gpu):
     try:
         from .cli import _cv_executor
         settings = Settings(**cv_settings)
-        with _cv_executor(settings.cv_provider, SimpleNamespace(cv_device=gpu), settings) as execute:
-            connection.send(("ready", {"pid": os.getpid(), "provider": settings.cv_provider,
+        with _cv_executor(settings) as execute:
+            connection.send(("ready", {"pid": os.getpid(), "provider": "sam31",
                                        "initialization": "deferred_until_target"}))
             while True:
                 payload = connection.recv()
@@ -137,7 +136,6 @@ class GpuSlot:
         parent, child = context.Pipe()
         self.connection = parent
         cv_settings = {k: v for k, v in settings.model_dump().items() if k.startswith("cv_")}
-        cv_settings["cv_device"] = gpu
         self.process = context.Process(target=_cv_worker, args=(child, cv_settings, gpu))
         self.process.start()
         child.close()
@@ -246,20 +244,15 @@ class ReviewRequiredRunner(SyncRunner):
 
 
 def run_manifest(arguments) -> int:
-    from .cli import _load_backend
+    from .cli import _load_backend, annotation_settings
     if arguments.workers_per_gpu <= 0 or arguments.request_concurrency <= 0:
         raise ValueError("worker and request concurrency must be positive")
     if not 0 <= arguments.shard_index < arguments.shard_count:
         raise ValueError("invalid shard index or count")
-    settings = Settings()
-    provider = arguments.cv or settings.cv_provider
-    if provider != "sam31":
-        raise ValueError("manifest annotation requires --cv sam31")
-    devices = [int(s) for s in (arguments.cv_devices or str(settings.cv_device)).split(",")]
+    settings = annotation_settings(arguments)
+    devices = [int(s) for s in (arguments.cv_devices or "0").split(",")]
     if any(g < 0 for g in devices) or len(set(devices)) != len(devices):
         raise ValueError("CV devices must be distinct nonnegative integers")
-    settings = Settings.model_validate({**settings.model_dump(), "cv_provider": provider,
-        "event_workflow": getattr(arguments, "event_workflow", None) or settings.event_workflow})
     rows = [row for row in read_manifest(arguments.manifest)
             if assignment(row["job_id"], arguments.shard_count) == arguments.shard_index]
     root = arguments.output.resolve()
@@ -299,8 +292,7 @@ def run_manifest(arguments) -> int:
             status("running" if slots and all(s.ready for s in slots) else "initializing")
 
     def worker(gpu, cv_execute, tasks):
-        lane_settings = settings.model_copy(update={"cv_device": gpu})
-        model, alias, closer = _load_backend(arguments, lane_settings)
+        model, alias, closer = _load_backend(arguments, settings)
         original_generate = model.generate
         def generate(request):
             with request_gate:
@@ -315,7 +307,7 @@ def run_manifest(arguments) -> int:
                 live_keys[key] = live_keys.get(key, 0) + 1
                 pending_keys.add(key)
             return cv_execute(payload)
-        runner = ReviewRequiredRunner(model, lane_settings, model_alias=alias, cv_executor=protected_cv)
+        runner = ReviewRequiredRunner(model, settings, model_alias=alias, cv_executor=protected_cv)
         try:
             while True:
                 try:
@@ -329,7 +321,7 @@ def run_manifest(arguments) -> int:
                 try:
                     video = Path(row["video_path"])
                     job_root = root / jid
-                    outcomes = run_batch(runner, [video], job_root,
+                    outcomes = run_batch(runner, [video], job_root, prompt_context=arguments.prompt_context,
                                          force=arguments.force, review_from=row.get('review_from'), log=lambda message: None)
                     outcome = outcomes[0]
                     if outcome.status not in {"completed", "skipped", "needs_review"}:
@@ -344,7 +336,7 @@ def run_manifest(arguments) -> int:
                         for record in evidence:
                             if record.get('status') != 'available':
                                 continue
-                            archived = archive_cv_evidence(record, lane_settings.cv_cache_root, root / '.cv-archive')
+                            archived = archive_cv_evidence(record, settings.cv_cache_root, root / '.cv-archive')
                             archived_keys.add(record['artifact_key'])
                             archives.append({'scope': record['scope'], 'archive_path': str(archived)})
                     write_json(job_root / '.percept' / 'cv-artifact.json', {
@@ -369,10 +361,10 @@ def run_manifest(arguments) -> int:
                     # recoverable in the archive; never evict unexported entries.
                     with archive_lock:
                         for key in list(archived_keys):
-                            if shutil.disk_usage(lane_settings.cv_cache_root).free >= 12 * 1024**3:
+                            if shutil.disk_usage(settings.cv_cache_root).free >= 12 * 1024**3:
                                 break
-                            source = lane_settings.cv_cache_root / key[:2] / key
-                            retired = lane_settings.cv_cache_root / (".retired-" + uuid.uuid4().hex)
+                            source = settings.cv_cache_root / key[:2] / key
+                            retired = settings.cv_cache_root / (".retired-" + uuid.uuid4().hex)
                             with mutex:
                                 if live_keys.get(key, 0) or not source.exists():
                                     continue

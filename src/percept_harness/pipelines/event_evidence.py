@@ -68,7 +68,7 @@ class EvidenceOrchestrator:
         selected = FrameTimeline(frames=(reference,) if mode == 'probe' else points)
         spatial = SpatialPrompt(entity_id=entity.entity_id,
                                 frame_index=reference.frame_index, bbox_xyxy=target.bbox_xyxy)
-        request = CvEvidenceRequest(schema_version='cv_request_v1', provider=settings.cv_provider,
+        request = CvEvidenceRequest(schema_version='cv_request_v1', provider='sam31',
             model_identity="sam3.1", video_path=self.media_path, video_identity=self.video_identity,
             duration_seconds=self.duration, frame_count=len(self.timeline.frames), checkpoint_identity=local_asset_identity(settings.cv_checkpoint_path),
             timeline=selected, entities=(entity,), mode=mode, spatial_prompts=(spatial,),

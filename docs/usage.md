@@ -93,14 +93,13 @@ settings no longer apply. For repeatability, see
 
 ### Targeted SAM3.1 grounding
 
-Use the pinned SAM source revision `660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7`, its checkpoint and `sam3/assets/bpe_simple_vocab_16e6.txt.gz` tokenizer, a compatible GPU runtime, and FFmpeg 5.1+. The provider verifies the source revision. Annotation defaults to `--cv sam31`. SAM assets and the GPU are loaded only when the visual reviewer requests a targeted check. Configure them for production coverage; a failed check is recorded as unresolved and the final revision must remain conservative. Point these settings at actual local assets:
+Use the pinned SAM source revision `660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7`, its checkpoint and `sam3/assets/bpe_simple_vocab_16e6.txt.gz` tokenizer, a compatible GPU runtime, and FFmpeg 5.1+. The provider verifies the source revision. Single-video annotation runs SAM on the first visible GPU; choose it with `CUDA_VISIBLE_DEVICES`. SAM assets and the GPU are loaded only when the visual reviewer requests a targeted check. Configure them for production coverage; a failed check is recorded as unresolved and the final revision must remain conservative. Point these settings at actual local assets:
 
 | Environment variable | Value |
 |---|---|
 | `PERCEPT_CV_REPOSITORY_PATH` | Local SAM source checkout |
 | `PERCEPT_CV_CHECKPOINT_PATH` | Local checkpoint file |
 | `PERCEPT_CV_BPE_PATH` | `<repository>/sam3/assets/bpe_simple_vocab_16e6.txt.gz` (default `models/sam3/sam3/assets/...`) |
-| `PERCEPT_CV_DEVICE` | GPU device index |
 | `PERCEPT_CV_CACHE_ROOT` | Writable evidence cache |
 
 SAM loads the clean pinned checkout, checkpoint and tokenizer directly from
@@ -113,21 +112,25 @@ The core install neither installs this runtime nor validates a live GPU run. Run
 
 ## Annotation
 
-`percept annotate` runs the annotation workflow. The backend is `openai`, for OpenAI-compatible model APIs.
+`percept annotate` runs the annotation workflow against an OpenAI-compatible chat completions API.
 
 ```bash
 percept annotate --videos video.mp4 \
   --output outputs/actions
 ```
 
+`--prompt-context TEXT` adds object naming hints to every annotation request in
+both single-video and manifest mode. The text is passed as data, not as
+instructions, and becomes part of the request cache identity.
+
 Each successful `<video_stem>.json` is exactly `{ "duration": number, "events": [{ "start": number, "end": number, "description": string }] }`. The sibling `<video_stem>.audit.json` contains execution status, errors and review metadata. A failure writes its audit without a public annotation; an empty successful event list remains a valid annotation. `results.jsonl` summarizes the batch.
 
 The validator canonicalizes model duration rounding within one microsecond to authoritative media metadata (including an endpoint overshoot within that tolerance); larger duration discrepancies still fail. Times are finite seconds relative to the original container playback start and lie within the video endpoint. Initial video-stream delays are preserved; trailing audio does not extend an available video-stream duration. SAM uses decoded frame PTS on this clock and preserves original decoder indices. Each event is an independently describable visible process or change, bounded by meaningful completion, interruption or a different activity. Long events, gaps, overlaps and unfinished actions are valid. Segmentation follows the original event-boundary rules: independently describable phases may remain separate, with no requirement to merge a continuous manipulation into one event or to exhaustively cover the timeline. There are no event categories or fixed event-length limits.
 
-Experimental confidence-gated annotation is available on the experiment branch:
+Experimental confidence-gated annotation:
 
 ```bash
-percept annotate --videos video.mp4 --cv sam31 \
+percept annotate --videos video.mp4 \
   --event-workflow confidence-gated --output outputs/confidence
 ```
 
@@ -392,7 +395,7 @@ of its category.
 
 ## Multi-GPU manifest annotation
 
-Manifest mode requires SAM3.1 (`--cv sam31`).
+Manifest mode runs one SAM3.1 worker per GPU listed in `--cv-devices` (default `0`).
 
 A JSONL manifest supplies one absolute `video_path` and a unique relative
 `job_id` per line. Input checksum fields are not used.
@@ -400,7 +403,7 @@ Each job writes normal annotation results under `<output>/<job_id>/`.
 
 ```bash
 percept annotate --manifest corpus.jsonl \
-  --cv sam31 --cv-devices 0,1,2,3 --workers-per-gpu 2 \
+  --cv-devices 0,1,2,3 --workers-per-gpu 2 \
   --request-concurrency 9 --output outputs/annotations
 ```
 

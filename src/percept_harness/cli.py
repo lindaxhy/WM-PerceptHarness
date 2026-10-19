@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 from importlib import import_module
-import os
 import sys
 from collections.abc import Sequence
 from contextlib import ExitStack, contextmanager
@@ -83,12 +82,6 @@ def _parser() -> argparse.ArgumentParser:
         help="video files and/or directories (searched recursively)",
     )
     evaluate.add_argument(
-        "--backend",
-        default="openai",
-        choices=("openai",),
-        help="VLM backend configured in the environment",
-    )
-    evaluate.add_argument(
         "--output",
         required=True,
         type=Path,
@@ -111,18 +104,7 @@ def _parser() -> argparse.ArgumentParser:
     evaluate.add_argument(
         "--prompt-context",
         default=None,
-        help="naming context for embodied_action_captioning (object hints, not an SOP)",
-    )
-    evaluate.add_argument(
-        "--cv",
-        default=None,
-        choices=("disabled", "sam31"),
-        help="CV evidence provider (default: PERCEPT_CV_PROVIDER from the environment)",
-    )
-    evaluate.add_argument(
-        "--cv-device",
-        default=None,
-        help="CUDA device ordinal for the sam31 provider (default: PERCEPT_CV_DEVICE)",
+        help="object naming hints passed to the annotator as data (not instructions)",
     )
     return parser
 
@@ -136,24 +118,15 @@ def _eval(arguments: argparse.Namespace) -> int:
             print(f"error: {error}", file=sys.stderr)
             return 2
     try:
-        overrides = {
-            name: value for name, value in (
-                ("cv_provider", arguments.cv),
-                ("cv_device", arguments.cv_device),
-                ("event_workflow", arguments.event_workflow),
-            ) if value is not None
-        }
-        settings = Settings(**overrides)
+        settings = annotation_settings(arguments)
         videos = collect_videos(arguments.videos)
         if not videos:
             raise ValueError("no videos found under the given sources")
         with ExitStack() as resources:
             model, alias, closer = _load_backend(arguments, settings)
             resources.callback(closer)
-            cv_executor = resources.enter_context(
-                _cv_executor(settings.cv_provider, arguments, settings)
-            )
-            print(f"backend={arguments.backend} model={alias} cv={settings.cv_provider} videos={len(videos)}")
+            cv_executor = resources.enter_context(_cv_executor(settings))
+            print(f"model={alias} videos={len(videos)}")
             runner = SyncRunner(model, settings, model_alias=alias, cv_executor=cv_executor)
             outcomes = run_batch(
                 runner, videos, arguments.output,
@@ -169,6 +142,13 @@ def _eval(arguments: argparse.Namespace) -> int:
     needs_review = sum(outcome.status == "needs_review" for outcome in outcomes)
     print(f"done: {completed} completed, {skipped} skipped, {needs_review} needs review, {failed} failed")
     return 0 if failed == 0 and needs_review == 0 else 1
+
+
+def annotation_settings(arguments: argparse.Namespace) -> Settings:
+    """Environment settings with command-line overrides shared by both annotation modes."""
+    if arguments.event_workflow is None:
+        return Settings()
+    return Settings(event_workflow=arguments.event_workflow)
 
 
 def _load_backend(arguments: argparse.Namespace, settings: Settings):
@@ -210,39 +190,31 @@ def _single_alias(registry: dict, name: str) -> str:
     return next(iter(registry))
 
 
-def annotation_cv_preflight(provider_name, settings, *, check_assets=True):
-    if provider_name == 'disabled':
-        raise ValueError('Annotation requires SAM; disabled CV is not supported')
-    if provider_name != 'sam31':
-        raise ValueError('Unsupported annotation CV provider')
-    if check_assets:
-        for name, kind in (('cv_repository_path', 'directory'), ('cv_checkpoint_path', 'file'), ('cv_bpe_path', 'file')):
-            path = getattr(settings, name)
-            if not (path.is_dir() if kind == 'directory' else path.is_file()):
-                raise ValueError(f'{name} must be an existing local {kind}')
+def _check_sam_assets(settings: Settings) -> None:
+    for name, kind in (('cv_repository_path', 'directory'), ('cv_checkpoint_path', 'file'), ('cv_bpe_path', 'file')):
+        path = getattr(settings, name)
+        if not (path.is_dir() if kind == 'directory' else path.is_file()):
+            raise ValueError(f'{name} must be an existing local {kind}')
 
 
 @contextmanager
-def _cv_executor(provider_name: str, arguments: argparse.Namespace, settings: Settings):
+def _cv_executor(settings: Settings):
     """Acquire SAM assets only when annotation requests CV evidence."""
-    annotation_cv_preflight(provider_name, settings, check_assets=False)
     executor = None
     with ExitStack() as resources:
         def execute(payload):
             nonlocal executor
             if executor is None:
-                executor = resources.enter_context(
-                    _loaded_cv_executor(provider_name, arguments, settings)
-                )
+                executor = resources.enter_context(_loaded_cv_executor(settings))
             return executor(payload)
 
         yield execute
 
 
 @contextmanager
-def _loaded_cv_executor(provider_name: str, arguments: argparse.Namespace, settings: Settings):
+def _loaded_cv_executor(settings: Settings):
     """Own provider and artifact lifetimes for synchronous CV execution."""
-    annotation_cv_preflight(provider_name, settings)
+    _check_sam_assets(settings)
 
     from .cv.artifacts import CvArtifactStore
     from .cv.executor import SyncCvExecutor
@@ -250,12 +222,6 @@ def _loaded_cv_executor(provider_name: str, arguments: argparse.Namespace, setti
     artifact_store = CvArtifactStore(settings.cv_cache_root)
     provider = None
     try:
-        cv_device = (
-            int(arguments.cv_device)
-            if arguments.cv_device is not None
-            else settings.cv_device
-        )
-        os.environ.setdefault("CUDA_VISIBLE_DEVICES", str(cv_device))
         from .cv.sam31 import Sam31EvidenceProvider
 
         provider = Sam31EvidenceProvider.load(

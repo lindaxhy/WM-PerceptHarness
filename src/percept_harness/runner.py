@@ -75,10 +75,6 @@ class SyncRunner:
         video_path = Path(video_path)
         context = None
         try:
-            if self.settings.cv_provider == 'disabled':
-                raise SafePipelineError('Annotation requires SAM; disabled CV is not supported')
-            if self.settings.cv_provider != 'sam31':
-                raise SafePipelineError('Annotation requires the sam31 CV provider')
             resolved = video_path.resolve(strict=True)
             if not resolved.is_file():
                 raise ValueError("video path must be a regular file")
