@@ -87,9 +87,9 @@ def read_manifest(path: Path) -> list[dict]:
             raise ValueError(f"unsafe job_id at row {number}")
         if row["job_id"] in seen:
             raise ValueError(f"duplicate job_id at row {number}")
-        video = Path(row["video_path"])
-        if not video.is_absolute() or not video.is_file():
-            raise ValueError(f"missing absolute video path at row {number}: {video}")
+        video = Path(row["video_path"]) if isinstance(row.get("video_path"), str) else None
+        if video is None or not video.is_absolute() or not video.is_file():
+            raise ValueError(f"missing absolute video path at row {number}: {row.get('video_path')}")
         seen.add(row["job_id"])
         rows.append(row)
     return rows

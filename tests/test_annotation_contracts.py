@@ -148,7 +148,8 @@ class InputTests(unittest.TestCase):
         for bad, message in (({'video_path': str(video)}, 'requires a job_id'),
                              ({'job_id': '../x', 'video_path': str(video)}, 'unsafe job_id'),
                              ({'job_id': '/x', 'video_path': str(video)}, 'unsafe job_id'),
-                             ({'job_id': 'a', 'video_path': 'v.mp4'}, 'missing absolute video path')):
+                             ({'job_id': 'a', 'video_path': 'v.mp4'}, 'missing absolute video path'),
+                             ({'job_id': 'a'}, 'missing absolute video path')):
             with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, message):
                 rows(bad)
         with self.assertRaisesRegex(ValueError, 'duplicate job_id at row 2'):

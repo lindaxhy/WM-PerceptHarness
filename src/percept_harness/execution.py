@@ -40,9 +40,9 @@ class SemanticResultCache:
     miss and rewritten.
     """
 
-    # Bumped when the stored payload's meaning changes, so entries written by
-    # an incompatible version are ignored rather than misread. Version 1 stored
-    # the sanitized shape; version 2 stores the raw model output.
+    # Version of the stored entry layout (raw model output). Bump it when the
+    # stored payload's meaning changes so incompatible entries are ignored.
+    # The key's own "cache_version" covers changes to request identity.
     _FORMAT_VERSION = 2
 
     def __init__(self, root: Path) -> None:
