@@ -14,7 +14,8 @@ from percept_harness.cv.artifacts import CvArtifactHandle, CvArtifactStore, cv_c
 from percept_harness.cv.base import CvOutOfMemoryError, CvProviderError
 from percept_harness.cv.contracts import CvEvidenceArtifact, CvEvidenceRequest
 from percept_harness.cv.executor import SyncCvExecutor
-from percept_harness.cv.sam31 import Sam31EvidenceProvider, _git_blob_digest, _local_path
+from percept_harness.cv.sam31 import Sam31EvidenceProvider
+from percept_harness.cv.sam31_runtime import git_blob_digest, local_path
 from percept_harness.cv.timeline import SampledFrame, SampledFrameSet
 
 PNG = b"\x89PNG\r\n\x1a\nfake"
@@ -242,8 +243,8 @@ def test_executor_with_sam_provider_retries_oom(tmp_path):
 def test_runtime_path_helpers(tmp_path):
     blob = tmp_path / "blob"
     blob.write_bytes(b"hello\n")
-    assert _git_blob_digest(blob) == "ce013625030ba8dba906f756967f9e9ca394464a"
-    assert _local_path("relative/file") == Path("relative/file")
+    assert git_blob_digest(blob) == "ce013625030ba8dba906f756967f9e9ca394464a"
+    assert local_path("relative/file") == Path("relative/file")
     for value in ("", "//host/share", "https://example.com/x", "git@host:repo", "a\x00b"):
         with pytest.raises(ValueError):
-            _local_path(value)
+            local_path(value)
