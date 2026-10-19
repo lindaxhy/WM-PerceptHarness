@@ -19,21 +19,16 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
 from pathlib import Path
-import subprocess
 import sys
 
-VBENCH_REVISION = "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490"
+from percept_harness.video_metrics._runtime import (
+    VBENCH_REVISION, finite_number, run_cli, run_logged, single_row, subprocess_env, verify_source,
+    write_json_exclusive,
+)
+
 CLIP_FILENAME = "ViT-B-32.pt"
-
-
-def verify_source(root: Path) -> dict:
-    for relative in ['competitions/clip_score.py', 'vbench/__init__.py']:
-        path = root / relative
-        if not path.is_file():
-            raise FileNotFoundError(f"Missing required source file: {path}")
-    return {"expected_revision": VBENCH_REVISION}
+SOURCE_FILES = ("competitions/clip_score.py", "vbench/__init__.py")
 
 
 def verify_clip_cache(clip_home: Path) -> Path:
@@ -60,19 +55,15 @@ def validate_result(path: Path, video: Path) -> dict:
     if not isinstance(data, list) or len(data) != 2:
         raise ValueError("Official CLIP Score result must be [aggregate, video_results]")
     aggregate, rows = data
-    if isinstance(aggregate, bool) or not isinstance(aggregate, (int, float)) or not math.isfinite(float(aggregate)):
-        raise ValueError("Official CLIP Score aggregate is not finite")
-    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
-        raise ValueError("Expected one official per-video CLIP Score result")
-    row = rows[0]
+    aggregate = finite_number(aggregate, "Official CLIP Score aggregate is not finite")
+    row = single_row(rows, "Expected one official per-video CLIP Score result")
     if Path(row.get("video_path", "")).resolve() != video:
         raise ValueError("Official result refers to a different video")
     raw = row.get("video_results")
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(float(raw)):
-        raise ValueError("Official CLIP Score video result is not finite")
-    if not math.isclose(float(aggregate), float(raw), rel_tol=1e-7, abs_tol=1e-9):
+    if not math.isclose(aggregate, finite_number(raw, "Official CLIP Score video result is not finite"),
+                        rel_tol=1e-7, abs_tol=1e-9):
         raise ValueError("Official aggregate and single-video score differ")
-    return {"score": float(aggregate), "official_video_score": raw, "higher_is_better": True}
+    return {"score": aggregate, "official_video_score": raw, "higher_is_better": True}
 
 
 def run_official(*, vbench_root: Path, videos_path: Path, prompt: str,
@@ -86,11 +77,11 @@ def run_official(*, vbench_root: Path, videos_path: Path, prompt: str,
         raise FileExistsError(f"Output directory already exists: {output}")
     if output == root or root in output.parents:
         raise ValueError("Keep output outside the pinned source tree")
-    source = verify_source(root)
+    source = verify_source(root, SOURCE_FILES, {"expected_revision": VBENCH_REVISION}, VBENCH_REVISION)
     model = verify_clip_cache(clip_home)
     info = build_full_info(video, prompt)
     metadata = {
-        "wrapper": "score_vbench_clip_score.py", "source": source,
+        "wrapper": "percept score vbench-clip", "source": source,
         "video": str(video),
         "prompt": prompt, "clip_model": str(model),
         "status": "preflight_passed",
@@ -103,7 +94,7 @@ def run_official(*, vbench_root: Path, videos_path: Path, prompt: str,
     info_path = output / "official_full_info.json"
     result_path = output / "clip_score_result.json"
     log_path = output / "vbench_clip_score.log"
-    info_path.write_text(json.dumps(info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_json_exclusive(info_path, info)
     # Call the unmodified official competition function.  The tiny runner is
     # orchestration only; all frame sampling, CLIP encoding and averaging stay
     # in competitions/clip_score.py.
@@ -113,22 +104,15 @@ def run_official(*, vbench_root: Path, videos_path: Path, prompt: str,
         "result=compute_clip_score(sys.argv[1], torch.device('cuda'), []); "
         "json.dump(result, open(sys.argv[2], 'w', encoding='utf-8'), ensure_ascii=False)"
     )
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(root) + os.pathsep + env.get("PYTHONPATH", "")
-    env["HOME"] = str(clip_home.expanduser().resolve())
-    env["PYTHONNOUSERSITE"] = "1"
+    env = subprocess_env(prepend={"PYTHONPATH": str(root)},
+                         values={"HOME": str(clip_home.expanduser().resolve()), "PYTHONNOUSERSITE": "1"})
     command = [sys.executable, "-c", runner, str(info_path), str(result_path)]
-    with log_path.open("x", encoding="utf-8") as stream:
-        completed = subprocess.run(command, cwd=root, env=env,
-                                   stdout=stream, stderr=subprocess.STDOUT)
-    if completed.returncode:
-        raise RuntimeError(f"Official CLIP Score exited with {completed.returncode}; see {log_path}")
+    run_logged(command, log=log_path, label="Official CLIP Score", cwd=root, env=env)
     score = validate_result(result_path, video)
     metadata.update(status="complete", score=score,
                     official_result=str(result_path), log=str(log_path),
                     command=command)
-    (output / "wrapper_metadata.json").write_text(
-        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_json_exclusive(output / "wrapper_metadata.json", metadata)
     return metadata
 
 
@@ -142,12 +126,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args(argv)
-    try:
-        print(json.dumps(run_official(**vars(args)), ensure_ascii=False, indent=2))
-        return 0
-    except Exception as error:
-        print(f"VBench CLIP Score wrapper failed: {error}", file=sys.stderr)
-        return 1
+    return run_cli("VBench CLIP Score wrapper", lambda: run_official(**vars(args)), allow_nan=True)
 
 
 if __name__ == "__main__":

@@ -10,8 +10,9 @@ temporal alignment, equal geometry, or that the reference is real future GT.
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
+
+from percept_harness.video_metrics._runtime import run_cli, write_json_exclusive
 
 
 DEFAULT_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".bmp", ".webp"})
@@ -72,25 +73,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--extension", action="append")
     parser.add_argument("--require-complete", action="store_true")
     args = parser.parse_args(argv)
-    try:
-        generated = args.generated_frames.expanduser().resolve(strict=True)
-        reference = args.reference_frames.expanduser().resolve(strict=True)
-        if not generated.is_dir() or not reference.is_dir():
-            raise ValueError("Both frame inputs must be directories")
-        payload = build_pairs(generated, reference, set(args.extension) if args.extension else None)
+
+    def run():
+        payload = build_pairs(args.generated_frames, args.reference_frames,
+                              set(args.extension) if args.extension else None)
         if args.require_complete and (payload["unmatched_generated"] or payload["unmatched_reference"]):
             raise ValueError("Frame directories are not complete matches; inspect unmatched_* in the manifest")
         output = args.output.expanduser().resolve()
         if output.exists():
             raise FileExistsError(f"Output already exists: {output}")
-        output.parent.mkdir(parents=True, exist_ok=True)
-        with output.open("x", encoding="utf-8") as stream:
-            stream.write(json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-        return 0
-    except Exception as error:
-        print(f"Reference manifest failed: {error}", file=__import__("sys").stderr)
-        return 1
+        write_json_exclusive(output, payload, parents=True)
+        return payload
+    return run_cli("Reference manifest", run)
 
 
 if __name__ == "__main__":

@@ -26,6 +26,9 @@ import json
 from pathlib import Path
 from typing import Any, Iterable
 
+from percept_harness.video_metrics._runtime import write_json_exclusive
+from percept_harness.video_metrics.external import VBENCH2_DIMENSIONS, vbench2_auxiliary_problem
+
 
 class InputSchemaError(ValueError):
     """Raised when a caller manifest cannot be represented by the official format."""
@@ -154,13 +157,7 @@ def adapt_object_interactions(payload: Any) -> dict[str, Any]:
     return {"official": official, "video_map": mapping, "format": "T2V-CompBench/V2/object_interactions.json"}
 
 
-_VB2_NAMES = {
-    "Motion_Order_Understanding",
-    "Motion_Rationality",
-    "Mechanics",
-    "Thermotics",
-    "Material",
-}
+_VB2_NAMES = {name.title() for name in VBENCH2_DIMENSIONS}
 
 
 def adapt_vbench2(payload: Any) -> dict[str, Any]:
@@ -182,9 +179,10 @@ def adapt_vbench2(payload: Any) -> dict[str, Any]:
         if not isinstance(dims, list) or len(dims) != 1 or dims[0] not in _VB2_NAMES:
             raise InputSchemaError(f"records[{i}].dimension must be one VBench-2.0 retained dimension")
         aux = row.get("auxiliary_info")
-        if not isinstance(aux, list) or not aux or not all(isinstance(x, str) and x.strip() for x in aux):
+        problem = vbench2_auxiliary_problem(aux, ordered_pair=dims[0] == "Motion_Order_Understanding")
+        if problem == "shape":
             raise InputSchemaError(f"records[{i}].auxiliary_info must be a non-empty list of strings")
-        if dims[0] == "Motion_Order_Understanding" and len(aux) != 2:
+        if problem == "count":
             raise InputSchemaError("Motion_Order_Understanding auxiliary_info must contain exactly two actions")
         # Preserve the shape of the pinned upstream asset: the per-dimension
         # files use a string, while VBench2_full_info.json uses a one-item
@@ -253,8 +251,10 @@ def _load(path: Path) -> Any:
 def _write_exclusive(path: Path, payload: Any) -> None:
     if path.exists():
         raise InputSchemaError(f"refusing to overwrite existing output: {path}")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    try:
+        write_json_exclusive(path, payload, parents=True)
+    except ValueError as exc:  # NaN/Infinity cannot be written as strict JSON
+        raise InputSchemaError(f"cannot write {path}: {exc}") from exc
 
 
 def main(argv: list[str] | None = None) -> int:

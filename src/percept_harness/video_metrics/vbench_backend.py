@@ -8,15 +8,17 @@ without importing GPU packages, downloading anything, or creating an output.
 from __future__ import annotations
 
 import argparse
-import importlib.metadata
 import json
 import math
-import os
 from pathlib import Path
-import subprocess
 import sys
 
-VBENCH_REVISION = "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490"
+from percept_harness.video_metrics._runtime import (
+    VBENCH_REVISION, finite_number, package_versions, run_cli, run_vbench, single_row, subprocess_env, verify_source,
+    write_json_exclusive,
+)
+
+SOURCE_FILES = ("evaluate.py", "vbench/__init__.py")
 DIRECT_DIMENSIONS = frozenset({
     "imaging_quality", "aesthetic_quality", "temporal_flickering", "dynamic_degree",
     "subject_consistency", "background_consistency", "overall_consistency",
@@ -50,14 +52,6 @@ def _object_without_duplicates(pairs):
 
 def read_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8-sig"), object_pairs_hook=_object_without_duplicates)
-
-
-def verify_source(root: Path) -> dict:
-    for relative in ['evaluate.py', 'vbench/__init__.py']:
-        path = root / relative
-        if not path.is_file():
-            raise FileNotFoundError(f"Missing required source file: {path}")
-    return {"expected_revision": VBENCH_REVISION}
 
 
 def resolve_prompt(video: Path, prompt: str | None, prompt_file: Path | None) -> str | None:
@@ -111,12 +105,6 @@ def verify_cache(cache: Path, dimensions: list[str], manifest: Path | None,
     return records
 
 
-def _number(value, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-        raise ValueError(f"Expected a finite numeric {name}")
-    return float(value)
-
-
 def validate_result(path: Path, video: Path, dimensions: list[str]) -> dict:
     data = read_json(path)
     if not isinstance(data, dict) or set(data) != set(dimensions):
@@ -127,19 +115,18 @@ def validate_result(path: Path, video: Path, dimensions: list[str]) -> dict:
         if not isinstance(item, list) or len(item) != 2:
             raise ValueError(f"Invalid official result structure: {dimension}")
         aggregate, rows = item
-        if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
-            raise ValueError(f"Expected exactly one video result: {dimension}")
-        if not isinstance(rows[0].get("video_path"), str) or Path(rows[0]["video_path"]).resolve() != video:
+        row = single_row(rows, f"Expected exactly one video result: {dimension}")
+        if not isinstance(row.get("video_path"), str) or Path(row["video_path"]).resolve() != video:
             raise ValueError(f"Official result refers to a different video: {dimension}")
-        raw = rows[0].get("video_results")
-        aggregate = _number(aggregate, f"{dimension} aggregate")
+        raw = row.get("video_results")
+        aggregate = finite_number(aggregate, f"Expected a finite numeric {dimension} aggregate")
         if dimension == "dynamic_degree":
             # Official RAFT path emits a JSON Boolean, aggregate is 0.0/1.0.
             if not isinstance(raw, bool):
                 raise ValueError("Official single-video Dynamic Degree must be Boolean")
             numeric = float(raw)
         else:
-            numeric = _number(raw, f"{dimension} video score")
+            numeric = finite_number(raw, f"Expected a finite numeric {dimension} video score")
         expected = numeric / 100.0 if dimension == "imaging_quality" else numeric
         if not math.isclose(aggregate, expected, rel_tol=1e-7, abs_tol=1e-9):
             raise ValueError(f"Official aggregate/video ratio mismatch: {dimension}")
@@ -156,11 +143,11 @@ def validate_result(path: Path, video: Path, dimensions: list[str]) -> dict:
 
 
 def run_official(*, vbench_root: Path, videos_path: Path, dimensions: list[str], output_dir: Path,
-                 mode: str = "custom_input", prompt: str | None = None, prompt_file: Path | None = None,
+                 prompt: str | None = None, prompt_file: Path | None = None,
                  cache_dir: Path | None = None, torch_home: Path | None = None, gpu: str | None = None,
-                 imaging_quality_preprocessing_mode: str = "longer", load_ckpt_from_local: bool = True,
-                 static_subset_ack: bool = False, weights_manifest: Path | None = None,
-                 allow_trusted_pickle: bool = False, check_only: bool = False) -> dict:
+                 imaging_quality_preprocessing_mode: str = "longer", static_subset_ack: bool = False,
+                 weights_manifest: Path | None = None, allow_trusted_pickle: bool = False,
+                 check_only: bool = False) -> dict:
     root = vbench_root.expanduser().resolve(strict=True)
     video = videos_path.expanduser().resolve(strict=True)
     output = output_dir.expanduser().resolve()
@@ -173,8 +160,6 @@ def run_official(*, vbench_root: Path, videos_path: Path, dimensions: list[str],
     dimensions = list(dict.fromkeys(dimensions))
     if not dimensions or set(dimensions) - DIRECT_DIMENSIONS:
         raise ValueError(f"Supported dimensions: {', '.join(sorted(DIRECT_DIMENSIONS))}; motion uses its already-submitted wrapper")
-    if mode != "custom_input" or not load_ckpt_from_local:
-        raise ValueError("This single-video wrapper requires custom_input and local checkpoints")
     if imaging_quality_preprocessing_mode not in ("shorter", "longer", "shorter_centercrop", "None"):
         raise ValueError("Invalid imaging-quality preprocessing mode")
     actual_prompt = resolve_prompt(video, prompt, prompt_file)
@@ -195,26 +180,19 @@ def run_official(*, vbench_root: Path, videos_path: Path, dimensions: list[str],
         raise ValueError("Keep the Torch hub cache outside the pinned source tree")
     if weights_manifest is not None:
         weights_manifest = weights_manifest.expanduser().resolve(strict=True)
-    source = verify_source(root)
+    source = verify_source(root, SOURCE_FILES, {"expected_revision": VBENCH_REVISION}, VBENCH_REVISION)
     weights = verify_cache(cache, dimensions, weights_manifest, torch_home=torch_home)
-    env = os.environ.copy()
-    env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
-    env["VBENCH_CACHE_DIR"] = str(cache)
-    env["TORCH_HOME"] = str(torch_home)
-    env["PYTHONPATH"] = str(root)
-    env["PYTHONNOUSERSITE"] = "1"
-    # Never inherit a request to enable unrestricted pickle loading.
-    env.pop("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", None)
-    if allow_trusted_pickle:
-        if not weights:
-            raise ValueError("--allow-trusted-pickle requires local model files")
-        env.pop("TORCH_FORCE_WEIGHTS_ONLY_LOAD", None)
-        env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
-    env.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
-    if gpu is not None:
-        env["CUDA_VISIBLE_DEVICES"] = gpu
-    # Do not inherit a torchrun allocation and accidentally wait for other ranks.
-    env.update({"RANK": "0", "LOCAL_RANK": "0", "WORLD_SIZE": "1", "MASTER_ADDR": "127.0.0.1"})
+    if allow_trusted_pickle and not weights:
+        raise ValueError("--allow-trusted-pickle requires local model files")
+    env = subprocess_env(
+        venv_path=True, alloc_conf=True, gpu=gpu,
+        # Never inherit a request to enable unrestricted pickle loading.
+        unset=("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD",) + (("TORCH_FORCE_WEIGHTS_ONLY_LOAD",) if allow_trusted_pickle else ()),
+        values={"VBENCH_CACHE_DIR": str(cache), "TORCH_HOME": str(torch_home), "PYTHONPATH": str(root),
+                "PYTHONNOUSERSITE": "1",
+                **({"TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD": "1"} if allow_trusted_pickle else {}),
+                # Do not inherit a torchrun allocation and accidentally wait for other ranks.
+                "RANK": "0", "LOCAL_RANK": "0", "WORLD_SIZE": "1", "MASTER_ADDR": "127.0.0.1"})
     command = [sys.executable, str(root / "evaluate.py"), "--videos_path", str(video),
                "--dimension", *dimensions, "--mode", "custom_input", "--output_path", str(output),
                "--load_ckpt_from_local", "True", "--imaging_quality_preprocessing_mode", imaging_quality_preprocessing_mode]
@@ -222,7 +200,9 @@ def run_official(*, vbench_root: Path, videos_path: Path, dimensions: list[str],
     # prompt as a string, never the official --prompt_file dictionary path.
     if actual_prompt is not None:
         command += ["--prompt", actual_prompt]
-    metadata = {"wrapper": "score_vbench_official.py", "source": source, "video": str(video),
+    # The CLI runs one dimension per command; other callers name this module.
+    wrapper = f"percept {dimensions[0].replace('_', '-')}" if len(dimensions) == 1 else __name__
+    metadata = {"wrapper": wrapper, "source": source, "video": str(video),
                 "dimensions": dimensions, "mode": "custom_input",
                 "prompt": actual_prompt, "cache_dir": str(cache), "weights": weights,
                 "torch_home": env["TORCH_HOME"], "cuda_visible_devices": env.get("CUDA_VISIBLE_DEVICES"),
@@ -234,27 +214,14 @@ def run_official(*, vbench_root: Path, videos_path: Path, dimensions: list[str],
     output.mkdir(parents=True, exist_ok=False)
     log_path = output / "vbench.log"
     print(f"Official VBench output and log: {output}", file=sys.stderr)
-    with (output / "wrapper_request.json").open("x", encoding="utf-8") as stream:
-        json.dump(metadata, stream, ensure_ascii=False, indent=2, allow_nan=False)
-    with log_path.open("x", encoding="utf-8") as stream:
-        completed = subprocess.run(command, cwd=root, env=env, stdout=stream, stderr=subprocess.STDOUT)
-    if completed.returncode:
-        raise RuntimeError(f"Official VBench exited with {completed.returncode}; see {log_path}")
-    results = list(output.glob("*_eval_results.json"))
-    if len(results) != 1:
-        raise ValueError(f"Expected exactly one official evaluation JSON; see {output}")
-    scores = validate_result(results[0], video, dimensions)
-    versions = {}
-    for name in ("torch", "torchvision", "pyiqa", "openai-clip", "decord", "numpy"):
-        try:
-            versions[name] = importlib.metadata.version(name)
-        except importlib.metadata.PackageNotFoundError:
-            versions[name] = None
+    write_json_exclusive(output / "wrapper_request.json", metadata, newline=False)
+    result_path = run_vbench(command, log=log_path, output=output, label="Official VBench", cwd=root, env=env,
+                             missing=ValueError(f"Expected exactly one official evaluation JSON; see {output}"))
+    scores = validate_result(result_path, video, dimensions)
+    versions = package_versions(("torch", "torchvision", "pyiqa", "openai-clip", "decord", "numpy"))
     metadata.update(status="complete", scores=scores, versions=versions,
-                    official_result=str(results[0]), log=str(log_path))
-    with (output / "wrapper_metadata.json").open("x", encoding="utf-8") as stream:
-        json.dump(metadata, stream, ensure_ascii=False, indent=2, allow_nan=False)
-        stream.write("\n")
+                    official_result=str(result_path), log=str(log_path))
+    write_json_exclusive(output / "wrapper_metadata.json", metadata)
     return metadata
 
 
@@ -269,7 +236,6 @@ def metric_main(dimension: str, argv: list[str] | None = None) -> int:
     parser.set_defaults(dimensions=[dimension])
     parser.add_argument("--vbench-root", type=Path, required=True)
     parser.add_argument("--videos-path", type=Path, required=True, help="One lowercase .mp4 file")
-    parser.add_argument("--mode", choices=("custom_input",), default="custom_input")
     parser.add_argument("--prompt")
     parser.add_argument("--prompt-file", type=Path)
     parser.add_argument("--cache-dir", type=Path, required=True)
@@ -278,14 +244,8 @@ def metric_main(dimension: str, argv: list[str] | None = None) -> int:
     parser.add_argument("--gpu", help="One CUDA_VISIBLE_DEVICES index or UUID")
     parser.add_argument("--output-dir", type=Path, required=True, help="New result directory outside source checkout")
     parser.add_argument("--imaging-quality-preprocessing-mode", choices=("shorter", "longer", "shorter_centercrop", "None"), default="longer")
-    parser.add_argument("--load-ckpt-from-local", action="store_true", default=True, help="Always enabled by this wrapper")
     parser.add_argument("--static-subset-ack", action="store_true")
     parser.add_argument("--allow-trusted-pickle", action="store_true", help="Only for trusted checkpoints requiring legacy torch.load")
     parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args(argv)
-    try:
-        print(json.dumps(run_official(**vars(args)), ensure_ascii=False, indent=2, allow_nan=False))
-        return 0
-    except Exception as error:
-        print(f"{name} failed: {error}", file=sys.stderr)
-        return 1
+    return run_cli(name, lambda: run_official(**vars(args)))

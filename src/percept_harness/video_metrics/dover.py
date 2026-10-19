@@ -10,14 +10,17 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import importlib.metadata
 import json
 import math
-import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+
+try:
+    from ._runtime import package_versions, subprocess_env, verify_source
+except ImportError:  # Run directly as a file by an older upstream Python.
+    from _runtime import package_versions, subprocess_env, verify_source
 
 DOVER_COMMIT = "f1ddc96215bc7fbcf8f315c65d47905f339c3419"
 DOVER_ORIGIN = "https://github.com/VQAssessment/DOVER"
@@ -27,14 +30,7 @@ RUNTIME_PACKAGES = (
     "torch", "torchvision", "numpy", "PyYAML", "decord", "opencv-python",
     "timm", "einops", "scikit-video", "scipy", "tqdm",
 )
-
-
-def verify_source(root: Path) -> dict:
-    for relative in ['evaluate_one_video.py', 'dover.yml', 'dover/__init__.py']:
-        path = root / relative
-        if not path.is_file():
-            raise FileNotFoundError(f"Missing required source file: {path}")
-    return {"origin": DOVER_ORIGIN, "expected_commit": DOVER_COMMIT}
+SOURCE_FILES = ("evaluate_one_video.py", "dover.yml", "dover/__init__.py")
 
 
 def checkpoint_record(path: Path) -> dict:
@@ -44,12 +40,7 @@ def checkpoint_record(path: Path) -> dict:
 
 
 def inspect_runtime(device: str, allow_unverified_runtime: bool, gpu: str | None = None) -> dict:
-    versions = {}
-    for name in RUNTIME_PACKAGES:
-        try:
-            versions[name] = importlib.metadata.version(name)
-        except importlib.metadata.PackageNotFoundError:
-            versions[name] = None
+    versions = package_versions(RUNTIME_PACKAGES)
     problems = [f"Missing package: {name}" for name, value in versions.items() if value is None]
     original_torch = bool(re.match(r"^1\.13\.", versions["torch"] or ""))
     if not original_torch and not allow_unverified_runtime:
@@ -62,9 +53,6 @@ def inspect_runtime(device: str, allow_unverified_runtime: bool, gpu: str | None
     cuda = None
     if device.startswith("cuda") and versions["torch"]:
         try:
-            probe_env = os.environ.copy()
-            if gpu is not None:
-                probe_env["CUDA_VISIBLE_DEVICES"] = gpu
             probe = subprocess.run(
                 [sys.executable, "-c", "import json,sys,torch; "
                  "i=int(sys.argv[1]); "
@@ -73,7 +61,7 @@ def inspect_runtime(device: str, allow_unverified_runtime: bool, gpu: str | None
                  "'capability':list(torch.cuda.get_device_capability(i)), "
                  "'compiled_arches':torch.cuda.get_arch_list()}))",
                  device.partition(":")[2] or "0"],
-                env=probe_env, capture_output=True, text=True, timeout=30,
+                env=subprocess_env(gpu=gpu), capture_output=True, text=True, timeout=30,
             )
             if probe.returncode:
                 raise RuntimeError(probe.stderr[-2000:] or f"CUDA probe exited {probe.returncode}")
@@ -134,7 +122,8 @@ def run_official(*, dover_root: Path, video: Path, torch_home: Path, output_dir:
             raise ValueError("--video must be a nonempty single video file")
         if not re.fullmatch(r"cpu|cuda(?::\d+)?", device):
             raise ValueError("--device must be cpu, cuda, or cuda:N")
-        result["source"] = verify_source(root)
+        result["source"] = verify_source(root, SOURCE_FILES, {"origin": DOVER_ORIGIN, "expected_commit": DOVER_COMMIT},
+                                         DOVER_COMMIT)
         result["dover_root"] = str(root)
         result["video"] = {"path": str(video), "bytes": video.stat().st_size}
         # dover.yml intentionally remains unchanged.  Use a local symlink at
@@ -149,13 +138,8 @@ def run_official(*, dover_root: Path, video: Path, torch_home: Path, output_dir:
         result["runtime"] = inspect_runtime(device, allow_unverified_runtime, gpu)
         if result["runtime"]["problems"]:
             raise RuntimeError("; ".join(result["runtime"]["problems"]))
-        env = os.environ.copy()
-        env["TORCH_HOME"] = str(torch_home)
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
-        env["WANDB_MODE"] = "disabled"
-        env["HF_HUB_OFFLINE"] = "1"
-        if gpu is not None:
-            env["CUDA_VISIBLE_DEVICES"] = gpu
+        env = subprocess_env(gpu=gpu, values={"TORCH_HOME": str(torch_home), "PYTHONDONTWRITEBYTECODE": "1",
+                                              "WANDB_MODE": "disabled", "HF_HUB_OFFLINE": "1"})
         result["environment"] = {key: env.get(key) for key in ("TORCH_HOME", "CUDA_VISIBLE_DEVICES", "PYTHONDONTWRITEBYTECODE", "WANDB_MODE", "HF_HUB_OFFLINE")}
         command = build_command(root, video, device)
         result["command"] = command

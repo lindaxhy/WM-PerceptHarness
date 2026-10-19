@@ -18,6 +18,12 @@ class Match:
     iou: float
 
 
+def check_threshold(value):
+    if not 0 < _number(value) <= 1:
+        raise ValueError("invalid temporal IoU threshold")
+    return value
+
+
 def temporal_iou(a, b) -> float:
     intersection = max(0, min(a.end, b.end) - max(a.start, b.start))
     return intersection / ((a.end - a.start) + (b.end - b.start) - intersection)
@@ -25,8 +31,7 @@ def temporal_iou(a, b) -> float:
 
 def match_weight_matrix(scores, threshold=0.75) -> list[Match]:
     """Maximize eligible pair count, then summed IoU, using one dummy per row."""
-    if not 0 < _number(threshold) <= 1:
-        raise ValueError("invalid temporal IoU threshold")
+    check_threshold(threshold)
     n = len(scores)
     real = len(scores[0]) if n else 0
     if max(n, real) >= 1_000_000:
