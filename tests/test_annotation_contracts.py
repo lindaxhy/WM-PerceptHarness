@@ -207,11 +207,11 @@ class ResultFileTests(unittest.TestCase):
         results.write_json(path, DRAFT)
         self.assertEqual(results.annotation_record(path), DRAFT)
 
-    def test_legacy_envelope_is_read(self):
+    def test_single_file_envelope_is_not_an_annotation(self):
         path = self.root / 'old.json'
         results.write_json(path, {'status': 'completed', 'data': DRAFT, 'video_path': '/v.mp4'})
-        self.assertEqual(results.annotation_record(path)['data'], DRAFT)
-        self.assertTrue(results.is_annotation_record({'data': None}))
+        self.assertIsNone(results.annotation_record(path))
+        self.assertFalse(results.is_annotation_record({'data': None}))
 
 
 class RequestGateTests(unittest.TestCase):

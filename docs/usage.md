@@ -244,8 +244,8 @@ to locate it. Existing unreadable files are preserved and a free suffix is used.
 A result is skipped by default when its
 source path matches, its status is completed, its annotation passes schema
 validation, and its current-version audit records successful verification (or the explicit
-confidence-gated draft-only route). Failed, incomplete or malformed results are retried. Legacy result
-envelopes can still be read. There are no content checksums, code/environment
+confidence-gated draft-only route). Failed, incomplete or malformed results are retried.
+There are no content checksums, code/environment
 fingerprints, automatic history archives or per-run manifests.
 
 ```bash

@@ -159,7 +159,7 @@ percept score events --reference outputs/reference \
   --system model=outputs/generated --out outputs/event_scores
 ```
 
-`--out` names a directory containing `events.json`. The scorer also accepts flat result directories; it identifies samples from audit metadata or the annotation filename. Plain human-authored `{duration, events}` ground truth and legacy result envelopes are also accepted. A missing, failed or invalid annotation makes the system aggregate null and the command exits nonzero. A successful empty `events` list is valid. Old categorical `segments`/`semantic_events` JSON is incompatible and must be regenerated. The scoring formula and adaptation limits are in [event evaluation](docs/usage.md#grounded-event-scoring).
+`--out` names a directory containing `events.json`. The scorer also accepts flat result directories; it identifies samples from audit metadata or the annotation filename. Plain human-authored `{duration, events}` ground truth is also accepted. A missing, failed or invalid annotation makes the system aggregate null and the command exits nonzero. A successful empty `events` list is valid. Old categorical `segments`/`semantic_events` JSON is incompatible and must be regenerated. The scoring formula and adaptation limits are in [event evaluation](docs/usage.md#grounded-event-scoring).
 
 ## Evaluate video quality
 
