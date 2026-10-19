@@ -23,6 +23,7 @@ MAX_ARTIFACT_BYTES = 8 * 1024**3
 MAX_OVERLAYS = 24
 MAX_PROCESSED_FRAMES = 10_000
 MAX_OBSERVATIONS = 64_000
+_MAX_PATH_LENGTH = 512
 
 
 Label = Annotated[StrictStr, Field(min_length=1, max_length=256, pattern=r"\S")]
@@ -42,6 +43,21 @@ PositiveInt = Annotated[int, Field(gt=0, le=2**63 - 1, strict=True)]
 NonnegativeInt = Annotated[
     int, Field(ge=0, le=2**63 - 1, strict=True)
 ]
+ArtifactPath = Annotated[StrictStr, Field(max_length=_MAX_PATH_LENGTH)]
+
+
+def _require_ordered_box(box: tuple[float, float, float, float]) -> None:
+    left, top, right, bottom = box
+    if left >= right or top >= bottom:
+        raise ValueError("bbox_xyxy must have ordered positive-width bounds")
+
+
+def _require_strictly_increasing(points: tuple[Any, ...], indices: str, timestamps: str) -> None:
+    for previous, current in zip(points, points[1:]):
+        if previous.frame_index >= current.frame_index:
+            raise ValueError(f"{indices} must be strictly increasing")
+        if previous.timestamp_seconds >= current.timestamp_seconds:
+            raise ValueError(f"{timestamps} must be strictly increasing")
 
 
 class StrictModel(BaseModel):
@@ -92,11 +108,7 @@ class FrameTimeline(StrictModel):
     def require_strictly_increasing_frames(self) -> FrameTimeline:
         if not self.frames:
             raise ValueError("timeline must contain at least one frame")
-        for previous, current in zip(self.frames, self.frames[1:]):
-            if previous.frame_index >= current.frame_index:
-                raise ValueError("frame indices must be strictly increasing")
-            if previous.timestamp_seconds >= current.timestamp_seconds:
-                raise ValueError("frame timestamps must be strictly increasing")
+        _require_strictly_increasing(self.frames, "frame indices", "frame timestamps")
         return self
 
 
@@ -113,9 +125,7 @@ class SpatialPrompt(StrictModel):
 
     @model_validator(mode="after")
     def require_ordered_box(self) -> SpatialPrompt:
-        left, top, right, bottom = self.bbox_xyxy
-        if left >= right or top >= bottom:
-            raise ValueError("bbox_xyxy must have ordered positive-width bounds")
+        _require_ordered_box(self.bbox_xyxy)
         return self
 
 
@@ -166,7 +176,7 @@ class CvEvidenceRequest(StrictModel):
 def _validate_relative_posix_path(value: str) -> str:
     if (
         not value
-        or len(value) > 512
+        or len(value) > _MAX_PATH_LENGTH
         or "\\" in value
         or value.startswith("/")
     ):
@@ -199,9 +209,7 @@ class TrackObservation(StrictModel):
 
     @model_validator(mode="after")
     def require_ordered_bounding_box(self) -> TrackObservation:
-        left, top, right, bottom = self.bbox_xyxy
-        if left >= right or top >= bottom:
-            raise ValueError("bbox_xyxy must have ordered positive-width bounds")
+        _require_ordered_box(self.bbox_xyxy)
         return self
 
 
@@ -220,16 +228,14 @@ class CvTrack(StrictModel):
             raise ValueError("available track requires at least one observation")
         if self.status is not EvidenceStatus.AVAILABLE and self.observations:
             raise ValueError("nonavailable track cannot contain observations")
-        for previous, current in zip(self.observations, self.observations[1:]):
-            if previous.frame_index >= current.frame_index:
-                raise ValueError("track observation frame indices must be strictly increasing")
-            if previous.timestamp_seconds >= current.timestamp_seconds:
-                raise ValueError("track observation timestamps must be strictly increasing")
+        _require_strictly_increasing(
+            self.observations, "track observation frame indices", "track observation timestamps"
+        )
         return self
 
 
 class ArtifactFile(StrictModel):
-    path: Annotated[StrictStr, Field(max_length=512)]
+    path: ArtifactPath
     size_bytes: NonnegativeInt
 
     @field_validator("path")
@@ -241,7 +247,7 @@ class ArtifactFile(StrictModel):
 class OverlayRecord(StrictModel):
     """Structured provenance for one prompt-safe rendered overlay."""
 
-    path: Annotated[StrictStr, Field(max_length=512)]
+    path: ArtifactPath
     track_id: ObjectId
     frame_index: NonnegativeInt
 
@@ -322,13 +328,10 @@ class CvEvidenceArtifact(StrictModel):
             if self.processed_timeline is not None
             else {}
         )
-        total_observations = 0
+        # bound_observations already capped the total before construction.
         for track in self.tracks:
             if track.entity_id != self.entities[0].entity_id:
                 raise ValueError("track entity_id must reference an artifact entity")
-            total_observations += len(track.observations)
-            if total_observations > MAX_OBSERVATIONS:
-                raise ValueError("artifact has too many total observations")
             for observation in track.observations:
                 if processed_clock.get(observation.frame_index) != (
                     observation.timestamp_seconds
