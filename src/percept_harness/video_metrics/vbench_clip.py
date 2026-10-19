@@ -22,7 +22,9 @@ import math
 from pathlib import Path
 import sys
 
-from percept_harness.video_metrics._runtime import VBENCH_REVISION, run_logged, subprocess_env, verify_source
+from percept_harness.video_metrics._runtime import (
+    VBENCH_REVISION, finite_number, run_logged, single_row, subprocess_env, verify_source,
+)
 
 CLIP_FILENAME = "ViT-B-32.pt"
 SOURCE_FILES = ("competitions/clip_score.py", "vbench/__init__.py")
@@ -52,19 +54,15 @@ def validate_result(path: Path, video: Path) -> dict:
     if not isinstance(data, list) or len(data) != 2:
         raise ValueError("Official CLIP Score result must be [aggregate, video_results]")
     aggregate, rows = data
-    if isinstance(aggregate, bool) or not isinstance(aggregate, (int, float)) or not math.isfinite(float(aggregate)):
-        raise ValueError("Official CLIP Score aggregate is not finite")
-    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
-        raise ValueError("Expected one official per-video CLIP Score result")
-    row = rows[0]
+    aggregate = finite_number(aggregate, "Official CLIP Score aggregate is not finite")
+    row = single_row(rows, "Expected one official per-video CLIP Score result")
     if Path(row.get("video_path", "")).resolve() != video:
         raise ValueError("Official result refers to a different video")
     raw = row.get("video_results")
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(float(raw)):
-        raise ValueError("Official CLIP Score video result is not finite")
-    if not math.isclose(float(aggregate), float(raw), rel_tol=1e-7, abs_tol=1e-9):
+    if not math.isclose(aggregate, finite_number(raw, "Official CLIP Score video result is not finite"),
+                        rel_tol=1e-7, abs_tol=1e-9):
         raise ValueError("Official aggregate and single-video score differ")
-    return {"score": float(aggregate), "official_video_score": raw, "higher_is_better": True}
+    return {"score": aggregate, "official_video_score": raw, "higher_is_better": True}
 
 
 def run_official(*, vbench_root: Path, videos_path: Path, prompt: str,

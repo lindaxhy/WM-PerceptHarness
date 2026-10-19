@@ -14,7 +14,9 @@ import math
 from pathlib import Path
 import sys
 
-from percept_harness.video_metrics._runtime import VBENCH_REVISION, run_vbench, subprocess_env, verify_source
+from percept_harness.video_metrics._runtime import (
+    VBENCH_REVISION, finite_number, run_vbench, single_row, subprocess_env, verify_source,
+)
 
 SOURCE_FILES = ("evaluate.py", "vbench/__init__.py")
 DIRECT_DIMENSIONS = frozenset({
@@ -103,12 +105,6 @@ def verify_cache(cache: Path, dimensions: list[str], manifest: Path | None,
     return records
 
 
-def _number(value, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-        raise ValueError(f"Expected a finite numeric {name}")
-    return float(value)
-
-
 def validate_result(path: Path, video: Path, dimensions: list[str]) -> dict:
     data = read_json(path)
     if not isinstance(data, dict) or set(data) != set(dimensions):
@@ -119,19 +115,18 @@ def validate_result(path: Path, video: Path, dimensions: list[str]) -> dict:
         if not isinstance(item, list) or len(item) != 2:
             raise ValueError(f"Invalid official result structure: {dimension}")
         aggregate, rows = item
-        if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
-            raise ValueError(f"Expected exactly one video result: {dimension}")
-        if not isinstance(rows[0].get("video_path"), str) or Path(rows[0]["video_path"]).resolve() != video:
+        row = single_row(rows, f"Expected exactly one video result: {dimension}")
+        if not isinstance(row.get("video_path"), str) or Path(row["video_path"]).resolve() != video:
             raise ValueError(f"Official result refers to a different video: {dimension}")
-        raw = rows[0].get("video_results")
-        aggregate = _number(aggregate, f"{dimension} aggregate")
+        raw = row.get("video_results")
+        aggregate = finite_number(aggregate, f"Expected a finite numeric {dimension} aggregate")
         if dimension == "dynamic_degree":
             # Official RAFT path emits a JSON Boolean, aggregate is 0.0/1.0.
             if not isinstance(raw, bool):
                 raise ValueError("Official single-video Dynamic Degree must be Boolean")
             numeric = float(raw)
         else:
-            numeric = _number(raw, f"{dimension} video score")
+            numeric = finite_number(raw, f"Expected a finite numeric {dimension} video score")
         expected = numeric / 100.0 if dimension == "imaging_quality" else numeric
         if not math.isclose(aggregate, expected, rel_tol=1e-7, abs_tol=1e-9):
             raise ValueError(f"Official aggregate/video ratio mismatch: {dimension}")

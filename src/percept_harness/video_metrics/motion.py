@@ -17,7 +17,7 @@ import sys
 import sysconfig
 import tempfile
 
-from percept_harness.video_metrics._runtime import run_vbench, subprocess_env
+from percept_harness.video_metrics._runtime import is_number, run_vbench, subprocess_env
 
 VBENCH_VERSION = "0.1.5"
 
@@ -30,7 +30,7 @@ def read_score(result_path: Path, video: Path) -> float:
         raise ValueError("Expected exactly one result for the requested video")
     score = rows[0]["video_results"]
     for value in (score, mean):
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
+        if not is_number(value):
             raise ValueError("Expected a numeric Motion Smoothness score")
         if not math.isfinite(value) or not 0 <= value <= 1:
             raise ValueError("Invalid Motion Smoothness score")

@@ -5,6 +5,7 @@ as a script by an older upstream Python without the package installed.
 """
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -55,3 +56,19 @@ def run_vbench(command, *, log: Path, output: Path, label: str, missing: Excepti
     if len(results) != 1:
         raise missing
     return results[0]
+
+
+def is_number(value) -> bool:
+    return not isinstance(value, bool) and isinstance(value, (int, float))
+
+
+def finite_number(value, message: str) -> float:
+    if not is_number(value) or not math.isfinite(value):
+        raise ValueError(message)
+    return float(value)
+
+
+def single_row(rows, message: str) -> dict:
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+        raise ValueError(message)
+    return rows[0]
