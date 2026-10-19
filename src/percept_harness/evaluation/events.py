@@ -12,7 +12,7 @@ import httpx
 from percept_harness.pipelines.event_schemas import GroundedEvents
 from percept_harness.models.base import parse_strict_json
 from percept_harness import results
-from .event_matching import match_weight_matrix, temporal_iou
+from .event_matching import check_threshold, match_weight_matrix, temporal_iou
 
 
 class JudgeError(ValueError):
@@ -59,9 +59,15 @@ def _prf(matches, reference_count, prediction_count):
     return {"precision": precision, "recall": recall, "f1": f1}
 
 
+def _check_tiou(value):
+    try:
+        check_threshold(value)
+    except ValueError:
+        raise ValueError("tIoU threshold must be finite in (0,1]") from None
+
+
 def score_pair(reference: GroundedEvents, prediction: GroundedEvents, judge: Callable, tiou_threshold: float = .75) -> dict:
-    if type(tiou_threshold) not in (float, int) or not math.isfinite(tiou_threshold) or not 0 < tiou_threshold <= 1:
-        raise ValueError("tIoU threshold must be finite in (0,1]")
+    _check_tiou(tiou_threshold)
     refs, preds = reference.events, prediction.events
     matrix = [[temporal_iou(a, b) for b in preds] for a in refs]
     temporal = match_weight_matrix(matrix, tiou_threshold)
@@ -134,6 +140,11 @@ def _identity(path: Path, root: Path, record: dict) -> str:
     return Path(video).stem
 
 
+def _ignored(root: Path, path: Path) -> bool:
+    relative = path.relative_to(root)
+    return any(part in {".percept", ".cv-archive"} for part in relative.parts) or (len(relative.parts) == 1 and bool(re.fullmatch(r"shard-\d+\.status\.json", path.name)))
+
+
 def load_group(root: Path) -> dict:
     root = Path(root)
     if not root.is_dir():
@@ -141,16 +152,15 @@ def load_group(root: Path) -> dict:
     items = {}
     candidates = set()
     for path in root.rglob("*.json"):
-        relative = path.relative_to(root)
-        if any(part in {".percept", ".cv-archive"} for part in relative.parts) or (len(relative.parts) == 1 and re.fullmatch(r"shard-\d+\.status\.json", path.name)):
+        if _ignored(root, path):
             continue
         if path.name.endswith(".audit.json") and not results.is_annotation_record(results.read_record(path)):
             path = path.with_name(path.name[:-len(".audit.json")] + ".json")
+            # The primary of shard-N.status.audit.json is a skipped status file.
+            if _ignored(root, path):
+                continue
         candidates.add(path)
     for path in sorted(candidates):
-        relative = path.relative_to(root)
-        if any(part in {".percept", ".cv-archive"} for part in relative.parts) or (len(relative.parts) == 1 and re.fullmatch(r"shard-\d+\.status\.json", path.name)):
-            continue
         try:
             record = results.annotation_record(path)
             if not isinstance(record, dict):
@@ -171,8 +181,7 @@ def _scoring_record(record: dict) -> dict:
 
 
 def evaluate(reference_dir: Path, systems: dict[str, Path], judge: Callable, tiou_threshold: float = .75) -> dict:
-    if type(tiou_threshold) not in (float, int) or not math.isfinite(tiou_threshold) or not 0 < tiou_threshold <= 1:
-        raise ValueError("tIoU threshold must be finite in (0,1]")
+    _check_tiou(tiou_threshold)
     refs = load_group(reference_dir)
     report = {"protocol": {"name": "WGO-inspired grounded event adaptation", "version": 1, "tiou_threshold": tiou_threshold, "time_basis": "original video seconds; no duration normalization", "matching": "cardinality-first then IoU; independent temporal and joint assignments"}, "reference": str(reference_dir), "systems": {}}
     for name, directory in systems.items():
