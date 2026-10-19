@@ -14,7 +14,8 @@ from percept_harness.media import TimeSpan
 from percept_harness.models.base import ModelRequest
 from percept_harness.pipelines.event_prompts import prompt
 from percept_harness.pipelines import output_validation
-from percept_harness.runner import SemanticResultCache, StageExecutor, collect_videos
+from percept_harness.execution import SemanticResultCache, StageExecutor
+from percept_harness.runner import collect_videos
 
 DRAFT = {'duration': 10.0, 'events': [{'start': 0.0, 'end': 5.0, 'description': 'A hand lifts a cup.'}]}
 REVIEW = {'concerns': [{'concern_id': 'c0000', 'kind': 'event_boundary', 'reason': 'Boundary?',
@@ -260,7 +261,7 @@ class CliTests(unittest.TestCase):
         for status, code in cases.items():
             outcome = EvalOutcome(video_path=self.video, status=status, data=DRAFT if status != 'failed' else None, metadata={})
             with self.subTest(status=status), \
-                 patch('percept_harness.cli._load_backend', return_value=(object(), 'alias', lambda: None)), \
+                 patch('percept_harness.backends.load_model', return_value=(object(), 'alias', lambda: None)), \
                  patch('percept_harness.runner.SyncRunner.evaluate', return_value=outcome), \
                  patch('builtins.print'):
                 self.assertEqual(self.run_cli('--force'), code)

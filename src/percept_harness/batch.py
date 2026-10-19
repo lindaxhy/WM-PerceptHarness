@@ -22,9 +22,10 @@ from dataclasses import replace
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+from . import backends
 from .config import Settings
 from .results import write_json
-from .runner import SyncRunner, run_batch, _write_result
+from .runner import SyncRunner, run_batch, write_outcome
 
 
 class RequestGate:
@@ -107,9 +108,8 @@ def _cv_worker(connection, cv_settings, gpu):
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
     os.environ.pop("PERCEPT_OPENAI_API_KEY", None)
     try:
-        from .cli import _cv_executor
         settings = Settings(**cv_settings)
-        with _cv_executor(settings) as execute:
+        with backends.cv_executor(settings) as execute:
             connection.send(("ready", {"pid": os.getpid(), "provider": "sam31",
                                        "initialization": "deferred_until_target"}))
             while True:
@@ -244,12 +244,11 @@ class ReviewRequiredRunner(SyncRunner):
 
 
 def run_manifest(arguments) -> int:
-    from .cli import _load_backend, annotation_settings
     if arguments.workers_per_gpu <= 0 or arguments.request_concurrency <= 0:
         raise ValueError("worker and request concurrency must be positive")
     if not 0 <= arguments.shard_index < arguments.shard_count:
         raise ValueError("invalid shard index or count")
-    settings = annotation_settings(arguments)
+    settings = backends.annotation_settings(arguments)
     devices = [int(s) for s in (arguments.cv_devices or "0").split(",")]
     if any(g < 0 for g in devices) or len(set(devices)) != len(devices):
         raise ValueError("CV devices must be distinct nonnegative integers")
@@ -292,7 +291,7 @@ def run_manifest(arguments) -> int:
             status("running" if slots and all(s.ready for s in slots) else "initializing")
 
     def worker(gpu, cv_execute, tasks):
-        model, alias, closer = _load_backend(arguments, settings)
+        model, alias, closer = backends.load_model(settings, arguments.model)
         original_generate = model.generate
         def generate(request):
             with request_gate:
@@ -346,7 +345,7 @@ def run_manifest(arguments) -> int:
                             result_file=str(job_root / outcome.result_file), cv_archives=archives, resumed=outcome.status == 'skipped')
                 except Exception as error:
                     if outcome is not None and outcome.status in {"completed", "skipped", "needs_review"}:
-                        _write_result(job_root / outcome.result_file, replace(
+                        write_outcome(job_root / outcome.result_file, replace(
                             outcome, status="failed", data=None, error=f"Evidence export failed: {error}"))
                     with mutex:
                         states[jid].update(status="failed", finished_unix=time.time(), error=str(error))

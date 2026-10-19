@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import Settings
-from ..runner import StageExecutor
+from ..execution import StageExecutor
 
 
 class SafePipelineError(RuntimeError):

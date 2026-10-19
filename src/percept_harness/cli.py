@@ -6,10 +6,10 @@ import argparse
 from importlib import import_module
 import sys
 from collections.abc import Sequence
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack
 from pathlib import Path
 
-from .config import Settings
+from . import backends
 from .runner import (
     SyncRunner,
     collect_videos,
@@ -118,14 +118,14 @@ def _eval(arguments: argparse.Namespace) -> int:
             print(f"error: {error}", file=sys.stderr)
             return 2
     try:
-        settings = annotation_settings(arguments)
+        settings = backends.annotation_settings(arguments)
         videos = collect_videos(arguments.videos)
         if not videos:
             raise ValueError("no videos found under the given sources")
         with ExitStack() as resources:
-            model, alias, closer = _load_backend(arguments, settings)
+            model, alias, closer = backends.load_model(settings, arguments.model)
             resources.callback(closer)
-            cv_executor = resources.enter_context(_cv_executor(settings))
+            cv_executor = resources.enter_context(backends.cv_executor(settings))
             print(f"model={alias} videos={len(videos)}")
             runner = SyncRunner(model, settings, model_alias=alias, cv_executor=cv_executor)
             outcomes = run_batch(
@@ -142,100 +142,6 @@ def _eval(arguments: argparse.Namespace) -> int:
     needs_review = sum(outcome.status == "needs_review" for outcome in outcomes)
     print(f"done: {completed} completed, {skipped} skipped, {needs_review} needs review, {failed} failed")
     return 0 if failed == 0 and needs_review == 0 else 1
-
-
-def annotation_settings(arguments: argparse.Namespace) -> Settings:
-    """Environment settings with command-line overrides shared by both annotation modes."""
-    if arguments.event_workflow is None:
-        return Settings()
-    return Settings(event_workflow=arguments.event_workflow)
-
-
-def _load_backend(arguments: argparse.Namespace, settings: Settings):
-    """Return (model, model_alias, closer) for the selected backend."""
-    if settings.openai_api_key is None or not settings.openai_api_key.get_secret_value().strip():
-        raise ValueError("PERCEPT_OPENAI_API_KEY is not configured")
-    if not settings.openai_base_url:
-        raise ValueError("PERCEPT_OPENAI_BASE_URL is not configured")
-    registry = settings.openai_model_aliases
-    if not registry:
-        raise ValueError(
-            "PERCEPT_OPENAI_MODEL (or PERCEPT_OPENAI_MODEL_REGISTRY) is not configured"
-        )
-    alias = arguments.model or _single_alias(registry, "PERCEPT_OPENAI_MODEL_REGISTRY")
-    if alias not in registry:
-        raise KeyError(
-            f"model alias {alias!r} is absent from PERCEPT_OPENAI_MODEL_REGISTRY"
-        )
-    from .models.openai_compat import OpenAICompatVideoModel
-
-    model = OpenAICompatVideoModel(
-        base_url=settings.openai_base_url,
-        api_key=settings.openai_api_key.get_secret_value(),
-        model_name=registry[alias],
-        response_format=settings.openai_response_format,
-        extra_body=settings.openai_extra_body,
-        extra_headers=settings.openai_extra_headers,
-        timeout_seconds=settings.openai_timeout_seconds,
-        proxy=settings.openai_proxy.get_secret_value() if settings.openai_proxy else None,
-    )
-    return model, alias, model.close
-
-
-def _single_alias(registry: dict, name: str) -> str:
-    if len(registry) != 1:
-        raise ValueError(
-            f"{name} has {len(registry)} entries; pass --model to choose one"
-        )
-    return next(iter(registry))
-
-
-def _check_sam_assets(settings: Settings) -> None:
-    for name, kind in (('cv_repository_path', 'directory'), ('cv_checkpoint_path', 'file'), ('cv_bpe_path', 'file')):
-        path = getattr(settings, name)
-        if not (path.is_dir() if kind == 'directory' else path.is_file()):
-            raise ValueError(f'{name} must be an existing local {kind}')
-
-
-@contextmanager
-def _cv_executor(settings: Settings):
-    """Acquire SAM assets only when annotation requests CV evidence."""
-    executor = None
-    with ExitStack() as resources:
-        def execute(payload):
-            nonlocal executor
-            if executor is None:
-                executor = resources.enter_context(_loaded_cv_executor(settings))
-            return executor(payload)
-
-        yield execute
-
-
-@contextmanager
-def _loaded_cv_executor(settings: Settings):
-    """Own provider and artifact lifetimes for synchronous CV execution."""
-    _check_sam_assets(settings)
-
-    from .cv.artifacts import CvArtifactStore
-    from .cv.executor import SyncCvExecutor
-
-    artifact_store = CvArtifactStore(settings.cv_cache_root)
-    provider = None
-    try:
-        from .cv.sam31 import Sam31EvidenceProvider
-
-        provider = Sam31EvidenceProvider.load(
-            settings.cv_repository_path,
-            settings.cv_checkpoint_path,
-            bpe_path=settings.cv_bpe_path,
-        )
-        yield SyncCvExecutor(provider, artifact_store)
-    finally:
-        try:
-            if provider is not None:
-                provider.close()
-        finally:
-            artifact_store.close()
 
 
 if __name__ == "__main__":
