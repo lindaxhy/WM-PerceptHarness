@@ -15,14 +15,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 import subprocess
 import sys
 from typing import Sequence
 
-from percept_harness.video_metrics._runtime import VBENCH_REVISION
+from percept_harness.video_metrics._runtime import VBENCH_REVISION, subprocess_env
 
 
 @dataclass(frozen=True)
@@ -169,7 +168,7 @@ def run_official(*, metric: str, source_dir: Path | None, checkpoint: Path | Non
             stream = log.open("x", encoding="utf-8")
         completed = runner(list(command), cwd=details["source"], check=False,
                            stdout=stream, stderr=subprocess.STDOUT,
-                           env=os.environ.copy(), text=True)
+                           env=subprocess_env(), text=True)
         if completed.returncode:
             raise RuntimeError(f"official {metric} command exited with {completed.returncode}")
     finally:

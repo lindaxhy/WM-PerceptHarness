@@ -18,6 +18,8 @@ import sys
 import sysconfig
 import tempfile
 
+from percept_harness.video_metrics._runtime import subprocess_env
+
 VBENCH_VERSION = "0.1.5"
 
 
@@ -60,16 +62,8 @@ def score_video(video: Path, cache: Path, output: Path, gpu: str | None = None) 
     # Keep official output and logs; a fresh directory prevents stale-result reuse.
     run_dir = Path(tempfile.mkdtemp(prefix=output.stem + ".vbench-", dir=output.parent))
     log = run_dir / "vbench.log"
-    env = os.environ.copy()
-    # VBench starts its distributed child using the literal command 'python'.
-    # Do not resolve sys.executable symlinks: preserve the active virtualenv.
-    env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
-    env["VBENCH_CACHE_DIR"] = str(cache)
-    env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
-    env.pop("TORCH_FORCE_WEIGHTS_ONLY_LOAD", None)
-    env.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
-    if gpu is not None:
-        env["CUDA_VISIBLE_DEVICES"] = gpu
+    env = subprocess_env(venv_path=True, alloc_conf=True, gpu=gpu, unset=("TORCH_FORCE_WEIGHTS_ONLY_LOAD",),
+                         values={"VBENCH_CACHE_DIR": str(cache), "TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD": "1"})
     command = [str(executable), "evaluate", "--videos_path", str(video),
                "--dimension", "motion_smoothness", "--mode", "custom_input",
                "--output_path", str(run_dir)]

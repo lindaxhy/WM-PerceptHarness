@@ -13,16 +13,15 @@ from datetime import datetime, timezone
 import importlib.metadata
 import json
 import math
-import os
 from pathlib import Path
 import re
 import subprocess
 import sys
 
 try:
-    from ._runtime import verify_source
+    from ._runtime import subprocess_env, verify_source
 except ImportError:  # Run directly as a file by an older upstream Python.
-    from _runtime import verify_source
+    from _runtime import subprocess_env, verify_source
 
 DOVER_COMMIT = "f1ddc96215bc7fbcf8f315c65d47905f339c3419"
 DOVER_ORIGIN = "https://github.com/VQAssessment/DOVER"
@@ -60,9 +59,6 @@ def inspect_runtime(device: str, allow_unverified_runtime: bool, gpu: str | None
     cuda = None
     if device.startswith("cuda") and versions["torch"]:
         try:
-            probe_env = os.environ.copy()
-            if gpu is not None:
-                probe_env["CUDA_VISIBLE_DEVICES"] = gpu
             probe = subprocess.run(
                 [sys.executable, "-c", "import json,sys,torch; "
                  "i=int(sys.argv[1]); "
@@ -71,7 +67,7 @@ def inspect_runtime(device: str, allow_unverified_runtime: bool, gpu: str | None
                  "'capability':list(torch.cuda.get_device_capability(i)), "
                  "'compiled_arches':torch.cuda.get_arch_list()}))",
                  device.partition(":")[2] or "0"],
-                env=probe_env, capture_output=True, text=True, timeout=30,
+                env=subprocess_env(gpu=gpu), capture_output=True, text=True, timeout=30,
             )
             if probe.returncode:
                 raise RuntimeError(probe.stderr[-2000:] or f"CUDA probe exited {probe.returncode}")
@@ -147,13 +143,8 @@ def run_official(*, dover_root: Path, video: Path, torch_home: Path, output_dir:
         result["runtime"] = inspect_runtime(device, allow_unverified_runtime, gpu)
         if result["runtime"]["problems"]:
             raise RuntimeError("; ".join(result["runtime"]["problems"]))
-        env = os.environ.copy()
-        env["TORCH_HOME"] = str(torch_home)
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
-        env["WANDB_MODE"] = "disabled"
-        env["HF_HUB_OFFLINE"] = "1"
-        if gpu is not None:
-            env["CUDA_VISIBLE_DEVICES"] = gpu
+        env = subprocess_env(gpu=gpu, values={"TORCH_HOME": str(torch_home), "PYTHONDONTWRITEBYTECODE": "1",
+                                              "WANDB_MODE": "disabled", "HF_HUB_OFFLINE": "1"})
         result["environment"] = {key: env.get(key) for key in ("TORCH_HOME", "CUDA_VISIBLE_DEVICES", "PYTHONDONTWRITEBYTECODE", "WANDB_MODE", "HF_HUB_OFFLINE")}
         command = build_command(root, video, device)
         result["command"] = command

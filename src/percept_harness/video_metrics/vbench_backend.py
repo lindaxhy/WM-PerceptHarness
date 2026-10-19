@@ -11,12 +11,11 @@ import argparse
 import importlib.metadata
 import json
 import math
-import os
 from pathlib import Path
 import subprocess
 import sys
 
-from percept_harness.video_metrics._runtime import VBENCH_REVISION, verify_source
+from percept_harness.video_metrics._runtime import VBENCH_REVISION, subprocess_env, verify_source
 
 SOURCE_FILES = ("evaluate.py", "vbench/__init__.py")
 DIRECT_DIMENSIONS = frozenset({
@@ -191,24 +190,17 @@ def run_official(*, vbench_root: Path, videos_path: Path, dimensions: list[str],
         weights_manifest = weights_manifest.expanduser().resolve(strict=True)
     source = verify_source(root, SOURCE_FILES, {"expected_revision": VBENCH_REVISION})
     weights = verify_cache(cache, dimensions, weights_manifest, torch_home=torch_home)
-    env = os.environ.copy()
-    env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
-    env["VBENCH_CACHE_DIR"] = str(cache)
-    env["TORCH_HOME"] = str(torch_home)
-    env["PYTHONPATH"] = str(root)
-    env["PYTHONNOUSERSITE"] = "1"
-    # Never inherit a request to enable unrestricted pickle loading.
-    env.pop("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", None)
-    if allow_trusted_pickle:
-        if not weights:
-            raise ValueError("--allow-trusted-pickle requires local model files")
-        env.pop("TORCH_FORCE_WEIGHTS_ONLY_LOAD", None)
-        env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
-    env.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
-    if gpu is not None:
-        env["CUDA_VISIBLE_DEVICES"] = gpu
-    # Do not inherit a torchrun allocation and accidentally wait for other ranks.
-    env.update({"RANK": "0", "LOCAL_RANK": "0", "WORLD_SIZE": "1", "MASTER_ADDR": "127.0.0.1"})
+    if allow_trusted_pickle and not weights:
+        raise ValueError("--allow-trusted-pickle requires local model files")
+    env = subprocess_env(
+        venv_path=True, alloc_conf=True, gpu=gpu,
+        # Never inherit a request to enable unrestricted pickle loading.
+        unset=("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD",) + (("TORCH_FORCE_WEIGHTS_ONLY_LOAD",) if allow_trusted_pickle else ()),
+        values={"VBENCH_CACHE_DIR": str(cache), "TORCH_HOME": str(torch_home), "PYTHONPATH": str(root),
+                "PYTHONNOUSERSITE": "1",
+                **({"TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD": "1"} if allow_trusted_pickle else {}),
+                # Do not inherit a torchrun allocation and accidentally wait for other ranks.
+                "RANK": "0", "LOCAL_RANK": "0", "WORLD_SIZE": "1", "MASTER_ADDR": "127.0.0.1"})
     command = [sys.executable, str(root / "evaluate.py"), "--videos_path", str(video),
                "--dimension", *dimensions, "--mode", "custom_input", "--output_path", str(output),
                "--load_ckpt_from_local", "True", "--imaging_quality_preprocessing_mode", imaging_quality_preprocessing_mode]

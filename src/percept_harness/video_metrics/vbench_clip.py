@@ -19,12 +19,11 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
 from pathlib import Path
 import subprocess
 import sys
 
-from percept_harness.video_metrics._runtime import VBENCH_REVISION, verify_source
+from percept_harness.video_metrics._runtime import VBENCH_REVISION, subprocess_env, verify_source
 
 CLIP_FILENAME = "ViT-B-32.pt"
 SOURCE_FILES = ("competitions/clip_score.py", "vbench/__init__.py")
@@ -107,10 +106,8 @@ def run_official(*, vbench_root: Path, videos_path: Path, prompt: str,
         "result=compute_clip_score(sys.argv[1], torch.device('cuda'), []); "
         "json.dump(result, open(sys.argv[2], 'w', encoding='utf-8'), ensure_ascii=False)"
     )
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(root) + os.pathsep + env.get("PYTHONPATH", "")
-    env["HOME"] = str(clip_home.expanduser().resolve())
-    env["PYTHONNOUSERSITE"] = "1"
+    env = subprocess_env(prepend={"PYTHONPATH": str(root)},
+                         values={"HOME": str(clip_home.expanduser().resolve()), "PYTHONNOUSERSITE": "1"})
     command = [sys.executable, "-c", runner, str(info_path), str(result_path)]
     with log_path.open("x", encoding="utf-8") as stream:
         completed = subprocess.run(command, cwd=root, env=env,
