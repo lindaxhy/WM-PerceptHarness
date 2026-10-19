@@ -24,8 +24,14 @@ from concurrent.futures import ThreadPoolExecutor
 
 from . import backends
 from .config import Settings
+from .cv.artifacts import CvArtifactHandle, CvArtifactStore, cv_cache_key
+from .cv.contracts import CvEvidenceRequest
 from .results import write_json
 from .runner import SyncRunner, run_batch, write_outcome
+
+
+# Evict archived SAM cache entries until this much disk space is free.
+_MIN_FREE_CACHE_BYTES = 12 * 1024**3
 
 
 class RequestGate:
@@ -177,13 +183,12 @@ class GpuSlot:
 
 def archive_cv_evidence(evidence, cache_root: Path, archive_root: Path) -> Path:
     """Retain SAM files outside the bounded local runtime cache."""
-    from .cv.artifacts import CvArtifactStore, CvArtifactHandle
     handle = CvArtifactHandle(evidence["artifact_key"])
     destination = archive_root / handle.key[:2] / handle.key
     if not destination.exists():
         with CvArtifactStore(cache_root) as store:
             store.load(handle)  # Check the entry structure before exporting.
-        source = cache_root / handle.key[:2] / handle.key
+            source = store.entry_path(handle.key)
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = Path(tempfile.mkdtemp(prefix=".cv-copy-", dir=destination.parent))
         try:
@@ -299,8 +304,6 @@ def run_manifest(arguments) -> int:
         model.generate = generate
         pending_keys = set()
         def protected_cv(payload):
-            from .cv.artifacts import cv_cache_key
-            from .cv.contracts import CvEvidenceRequest
             key = cv_cache_key(CvEvidenceRequest.model_validate(payload, strict=True))
             with mutex:
                 live_keys[key] = live_keys.get(key, 0) + 1
@@ -358,11 +361,11 @@ def run_manifest(arguments) -> int:
                     # Atomic detachment under the same lock as CV registration
                     # keeps active source entries intact. The evidence remains
                     # recoverable in the archive; never evict unexported entries.
-                    with archive_lock:
+                    with archive_lock, CvArtifactStore(settings.cv_cache_root) as store:
                         for key in list(archived_keys):
-                            if shutil.disk_usage(settings.cv_cache_root).free >= 12 * 1024**3:
+                            if shutil.disk_usage(settings.cv_cache_root).free >= _MIN_FREE_CACHE_BYTES:
                                 break
-                            source = settings.cv_cache_root / key[:2] / key
+                            source = store.entry_path(key)
                             retired = settings.cv_cache_root / (".retired-" + uuid.uuid4().hex)
                             with mutex:
                                 if live_keys.get(key, 0) or not source.exists():

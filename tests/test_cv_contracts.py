@@ -214,3 +214,18 @@ def test_artifact_store_rejects_mismatches(tmp_path):
     with pytest.raises(CvArtifactError, match="unable to publish"):
         store.publish(request, tmp_path, artifact)
     assert store.lookup(cv_cache_key(request)) is None
+
+
+def test_archive_export_copies_a_verified_entry(tmp_path):
+    from percept_harness.batch import archive_cv_evidence
+    request = CvEvidenceRequest.model_validate(request_data())
+    files = {"masks/target.npz": b"masks", "overlays/target-0-00000002.png": PNG}
+    _, handle = _publish(tmp_path / "cache", request, CvEvidenceArtifact.model_validate(artifact_data()), files)
+    archived = archive_cv_evidence({"artifact_key": handle.key}, tmp_path / "cache", tmp_path / "archive")
+    assert archived == tmp_path / "archive" / handle.key[:2] / handle.key
+    assert sorted(p.relative_to(archived).as_posix() for p in archived.rglob("*") if p.is_file()) == [
+        "manifest.json", *sorted(files)]
+    assert archive_cv_evidence({"artifact_key": handle.key}, tmp_path / "cache", tmp_path / "archive") == archived
+    (archived / "masks" / "target.npz").write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="size mismatch"):
+        archive_cv_evidence({"artifact_key": handle.key}, tmp_path / "cache", tmp_path / "archive")
