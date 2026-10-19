@@ -1,14 +1,17 @@
-"""Synchronous, store-free execution for CV evidence jobs."""
+"""Synchronous, in-process execution of CV evidence jobs through the artifact cache."""
 
 from __future__ import annotations
 
 import time
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .artifacts import CvArtifactStore, cv_cache_key
-from .base import CvEvidenceProvider, CvOutOfMemoryError
+from .base import CvOutOfMemoryError
 from .contracts import CvEvidenceArtifact, CvEvidenceRequest
+
+if TYPE_CHECKING:
+    from .sam31 import Sam31EvidenceProvider
 
 
 class SyncCvExecutor:
@@ -16,7 +19,7 @@ class SyncCvExecutor:
 
     def __init__(
         self,
-        provider: CvEvidenceProvider,
+        provider: Sam31EvidenceProvider,
         artifact_store: CvArtifactStore,
     ) -> None:
         self.provider = provider
