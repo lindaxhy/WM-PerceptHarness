@@ -12,7 +12,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 from . import results
 from .config import Settings
@@ -202,12 +202,6 @@ class ExecutionError(RuntimeError):
     """Base class for stable execution-boundary failures."""
 
 
-class CvExecutor(Protocol):
-    """Execute one CV evidence payload to its published-result mapping."""
-
-    def __call__(self, payload: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]: ...
-
-
 class SemanticResultCache:
     """Local cache of raw per-request model results.
 
@@ -295,18 +289,11 @@ class StageExecutor:
         model: VideoModel,
         *,
         default_model_alias: str,
-        output_schemas: Any | None = None,
-        cv_executor: CvExecutor | None = None,
+        cv_executor=None,
         semantic_cache: SemanticResultCache | None = None,
     ) -> None:
-        if output_schemas is None:
-            # Load pipeline schemas only when annotation execution starts.
-            from .pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
-
-            output_schemas = DEFAULT_OUTPUT_SCHEMAS
         self.model = model
         self.default_model_alias = default_model_alias
-        self._output_schemas = output_schemas
         self._cv_executor = cv_executor
         self._semantic_cache = (
             semantic_cache
@@ -326,14 +313,11 @@ class StageExecutor:
 
     def _execute_model(self, stage: str, payload: Mapping[str, Any],
                        model_name: str) -> dict[str, Any]:
+        from .pipelines import output_validation as schemas
+
         request = _model_request(stage, payload, model_name)
         context = _schema_validation_context(payload)
-        request = replace(
-            request,
-            response_contract=self._output_schemas.model_response_contract(
-                request.schema_name, context
-            ),
-        )
+        request = replace(request, response_contract=schemas.response_contract(request.schema_name))
         cache_key: str | None = None
         if self._semantic_cache is not None:
             identity = getattr(self.model, "semantic_cache_identity", None)
@@ -348,14 +332,10 @@ class StageExecutor:
                     # Replay the raw output through the same sanitize step a
                     # live call runs, so the pipeline sees an identical result.
                     try:
-                        result = self._output_schemas.sanitize(
-                            request.schema_name, cached, context
-                        )
+                        result = schemas.sanitize(request.schema_name, cached, context)
                     except (ValueError, TypeError):
                         result = None
-                    if result is not None and self._output_schemas.failure_codes(
-                        request.schema_name, result
-                    ) is None:
+                    if result is not None and schemas.failure_codes(request.schema_name, result) is None:
                         return result
         cacheable = True
         try:
@@ -363,14 +343,14 @@ class StageExecutor:
             if not isinstance(generated, Mapping):
                 raise ModelOutputError("model output must be a structured object")
             raw = dict(generated)
-            result = self._output_schemas.sanitize(request.schema_name, raw, context)
-            if self._output_schemas.failure_codes(request.schema_name, result) is not None:
+            result = schemas.sanitize(request.schema_name, raw, context)
+            if schemas.failure_codes(request.schema_name, result) is not None:
                 # An invalid-output envelope is a terminal verdict for this
                 # attempt, not a result: caching it would replay the rejection
                 # on every retry instead of reaching the model again.
                 cacheable = False
         except ModelOutputError:
-            result = self._output_schemas.model_output_failure(request.schema_name)
+            result = schemas.model_output_failure(request.schema_name)
             if result is None:
                 raise
             cacheable = False  # never replay a malformed-output placeholder

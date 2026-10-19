@@ -13,7 +13,7 @@ from percept_harness.config import Settings
 from percept_harness.media import TimeSpan
 from percept_harness.models.base import ModelRequest
 from percept_harness.pipelines.event_prompts import prompt
-from percept_harness.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+from percept_harness.pipelines import output_validation
 from percept_harness.runner import SemanticResultCache, StageExecutor, collect_videos
 
 DRAFT = {'duration': 10.0, 'events': [{'start': 0.0, 'end': 5.0, 'description': 'A hand lifts a cup.'}]}
@@ -54,9 +54,9 @@ class RequestIdentityTests(unittest.TestCase):
             'RevisionVerification': '169a4b8aae251b5f4c1ad1907cad792a7f53d11654e12c69e0cbdcdf98054b53',
             'SamTargetPlan': 'c72e51a6e547a7e650ed92052ffa1bfa38a3230d1eace0bde77b23e83c92cb92',
         }
-        actual = {name: sha(DEFAULT_OUTPUT_SCHEMAS.model_response_contract(name, None).schema_json) for name in expected}
+        actual = {name: sha(output_validation.response_contract(name).schema_json) for name in expected}
         self.assertEqual(actual, expected)
-        self.assertIsNone(DEFAULT_OUTPUT_SCHEMAS.model_response_contract('Unknown', None))
+        self.assertIsNone(output_validation.response_contract('Unknown'))
 
 
 class SemanticCacheTests(unittest.TestCase):
@@ -101,7 +101,7 @@ class SemanticCacheTests(unittest.TestCase):
         cache = SemanticResultCache(self.root / 'cache')
         executor = StageExecutor(model, default_model_alias='alias', semantic_cache=cache)
         invalid = executor.execute('grounded_draft', self.payload())
-        self.assertIsNotNone(DEFAULT_OUTPUT_SCHEMAS.failure_codes('GroundedEvents', invalid))
+        self.assertIsNotNone(output_validation.failure_codes('GroundedEvents', invalid))
         first = executor.execute('grounded_draft', self.payload())
         second = executor.execute('grounded_draft', self.payload())
         self.assertEqual(len(calls), 2)

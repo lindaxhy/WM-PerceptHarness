@@ -1,8 +1,7 @@
 """Strict natural event contracts; times always refer to the source video."""
 from typing import Annotated, Literal
 import math
-from ..models.response_contract import ModelResponseContract, compile_local_schema, canonical
-from pydantic import Field, StrictStr, StrictBool, ValidationError, field_validator, model_validator
+from pydantic import Field, StrictStr, StrictBool, field_validator, model_validator
 from ..cv.contracts import StrictModel, Timestamp, PositiveTimestamp, Fraction
 
 Text = Annotated[StrictStr, Field(min_length=1, max_length=4000)]
@@ -277,29 +276,8 @@ def validate_stage(schema, data, context, *, discarded_targets=None):
     return value.model_dump(mode='json')
 
 
-def register_event_schemas(registry):
-    from .output_validation import DeclaredSchemaOutputError
-    for schema in (GroundedEvents, ConfidenceDraft, EvidenceReview, SamPromptReview, ReviewedRevision, RevisionVerification, SamTargetPlan):
-        def validator(data, context, schema=schema):
-            try:
-                validated = validate_stage(schema, data, context or {})
-                # Preserve recoverable raw target data through stage execution;
-                # pipeline validation records discarded targets in its audit.
-                return dict(data) if schema is ConfidenceDraft else validated
-            except (ValueError, TypeError, KeyError) as error:
-                if isinstance(error, ValidationError):
-                    details = [{'location': list(e['loc']), 'type': e['type'],
-                                'message': e['msg'][:500]}
-                               for e in error.errors(include_input=False, include_context=False, include_url=False)[:16]]
-                elif isinstance(error, CrossFieldValidationError):
-                    details = [{'location': [], 'type': 'ValueError', 'message': message[:500]}
-                               for message in error.issues]
-                else:
-                    details = [{'location': [], 'type': type(error).__name__, 'message': str(error)[:500]}]
-                raise DeclaredSchemaOutputError(('GROUNDED_SCHEMA_INVALID',), details=details) from None
-        def response_contract(context, schema=schema):
-            encoded = canonical(compile_local_schema(schema.model_json_schema()))
-            return ModelResponseContract(schema.__name__, encoded)
-        registry.register(schema.__name__, validator,
-                          allowed_issue_codes=('GROUNDED_SCHEMA_INVALID',),
-                          generic_issue_code='GROUNDED_SCHEMA_INVALID', response_contract_factory=response_contract)
+STAGE_SCHEMAS = {'grounded_draft': GroundedEvents, 'confidence_draft': ConfidenceDraft,
+                 'evidence_review': EvidenceReview, 'sam_target_plan': SamTargetPlan,
+                 'sam_prompt_review': SamPromptReview, 'grounded_revision': ReviewedRevision,
+                 'revision_verification': RevisionVerification}
+SCHEMAS = {schema.__name__: schema for schema in STAGE_SCHEMAS.values()}

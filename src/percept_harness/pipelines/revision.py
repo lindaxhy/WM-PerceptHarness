@@ -1,5 +1,5 @@
 """Bounded revision and independent verification of review concerns."""
-from .event_schemas import ReviewedRevision, RevisionVerification, Concern
+from .event_schemas import Concern
 
 MAX_REVISION_ATTEMPTS = 2
 
@@ -27,9 +27,9 @@ def resolve_review(stage, draft, review, concerns, audit, *, collect_evidence):
         audit['concern_ledger'] = list(ledger)
         revision_context = {'original_review': review, 'original_draft': original,
                             'concerns': ledger, 'previous_verification': feedback}
-        revision = stage('grounded_revision', ReviewedRevision, draft=draft,
+        revision = stage('grounded_revision', draft=draft,
                          review=revision_context, ordinal=attempt)
-        verification = stage('revision_verification', RevisionVerification,
+        verification = stage('revision_verification',
             draft={key: revision[key] for key in ('duration', 'events')},
             review={'concerns': ledger, 'assessment_required_ids': [r['concern_id']
                 for r in revision['responses'] if r.get('assessment') is not None]}, ordinal=attempt)

@@ -31,8 +31,7 @@ class ScriptedModel:
         self.calls.append(request.stage)
         self.requests.append(request)
         # Also exercise schema compilation and the transport allowlist.
-        self_contract = request.response_contract.format()
-        assert self_contract['name'] == request.schema_name
+        assert request.response_contract.name == request.schema_name
         payload = json.loads(request.prompt.split('INPUT_DATA_JSON\n')[1])
         if request.stage == 'grounded_draft':
             return DRAFT
@@ -282,7 +281,7 @@ class RevisionTests(unittest.TestCase):
             self.assertGreater(body['max_tokens'], 0)
             fake = SimpleNamespace(stage=stages[name], schema_name=name,
                 prompt=body['messages'][0]['content'][0]['text'],
-                response_contract=SimpleNamespace(format=lambda: {'name': name}))
+                response_contract=SimpleNamespace(name=name))
             data = scripted.generate(fake)
             return httpx.Response(200, json={'choices': [{'finish_reason': 'stop',
                 'message': {'role': 'assistant', 'content': json.dumps(data)}}]})
@@ -413,21 +412,22 @@ class RevisionTests(unittest.TestCase):
         self.assertTrue(outcome.metadata['model_output_failures'][0]['recovered'])
 
     def test_invalid_candidate_size_bound_does_not_bypass_validation(self):
-        from percept_harness.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS, INVALID_CANDIDATE_FIELD
+        from percept_harness.pipelines import output_validation
+        from percept_harness.pipelines.output_validation import INVALID_CANDIDATE_FIELD
         raw = {**DRAFT, 'responses': [], 'oversized': 'x' * 200_001}
-        result = DEFAULT_OUTPUT_SCHEMAS.sanitize('ReviewedRevision', raw,
+        result = output_validation.sanitize('ReviewedRevision', raw,
                     {'duration': 10., 'concern_ids': ['c0000']})
-        self.assertIsNotNone(DEFAULT_OUTPUT_SCHEMAS.failure_codes('ReviewedRevision', result))
+        self.assertIsNotNone(output_validation.failure_codes('ReviewedRevision', result))
         self.assertNotIn(INVALID_CANDIDATE_FIELD, result)
 
     def test_repair_feedback_collects_multiple_cross_field_errors(self):
-        from percept_harness.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+        from percept_harness.pipelines import output_validation
         assessment = {'category': 'no_source_limitation', 'start': 6., 'end': 8.,
                       'reason': 'Checked.', 'visual_times': [7.], 'event_index': 0,
                       'candidate_quote': 'not in the event'}
         responses = [{'concern_id': cid, 'action': 'retained', 'rationale': 'Checked.',
                       'visual_times': [7.], 'assessment': assessment} for cid in ['c0000', 'c0001']]
-        output = DEFAULT_OUTPUT_SCHEMAS.sanitize('ReviewedRevision', {**DRAFT, 'responses': responses},
+        output = output_validation.sanitize('ReviewedRevision', {**DRAFT, 'responses': responses},
                     {'duration': 10., 'concern_ids': ['c0000', 'c0001', 'c0002']})
         messages = [v['message'] for v in output['_schema_validation']['details']]
         self.assertEqual(len(messages), 5)
