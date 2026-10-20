@@ -29,7 +29,7 @@ def temporal_iou(a, b) -> float:
     return intersection / ((a.end - a.start) + (b.end - b.start) - intersection)
 
 
-def match_weight_matrix(scores, threshold=0.75) -> list[Match]:
+def match_weight_matrix(scores, threshold=0.5) -> list[Match]:
     """Maximize eligible pair count, then summed IoU, using one dummy per row."""
     check_threshold(threshold)
     n = len(scores)

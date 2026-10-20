@@ -66,7 +66,7 @@ def _check_tiou(value):
         raise ValueError("tIoU threshold must be finite in (0,1]") from None
 
 
-def score_pair(reference: GroundedEvents, prediction: GroundedEvents, judge: Callable, tiou_threshold: float = .75) -> dict:
+def score_pair(reference: GroundedEvents, prediction: GroundedEvents, judge: Callable, tiou_threshold: float = .5) -> dict:
     _check_tiou(tiou_threshold)
     refs, preds = reference.events, prediction.events
     matrix = [[temporal_iou(a, b) for b in preds] for a in refs]
@@ -180,7 +180,7 @@ def _scoring_record(record: dict) -> dict:
     return record
 
 
-def evaluate(reference_dir: Path, systems: dict[str, Path], judge: Callable, tiou_threshold: float = .75) -> dict:
+def evaluate(reference_dir: Path, systems: dict[str, Path], judge: Callable, tiou_threshold: float = .5) -> dict:
     _check_tiou(tiou_threshold)
     refs = load_group(reference_dir)
     report = {"protocol": {"name": "WGO-inspired grounded event adaptation", "version": 1, "tiou_threshold": tiou_threshold, "time_basis": "original video seconds; no duration normalization", "matching": "cardinality-first then IoU; independent temporal and joint assignments"}, "reference": str(reference_dir), "systems": {}}

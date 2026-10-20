@@ -170,6 +170,7 @@ def test_evaluate_missing_and_incomplete(dataset):
     (sys_dir / "a.json").unlink()
     (sys_dir / "b" / "result.audit.json").write_text(json.dumps({"status": "failed", "error": "boom"}))
     report = events.evaluate(ref, {"m": sys_dir}, same_text)
+    assert report["protocol"]["tiou_threshold"] == 0.5
     samples = report["systems"]["m"]["samples"]
     assert samples["a"] == {"status": "error", "error": "missing prediction"}
     assert samples["b"]["error"] == "ValueError: annotation status is not completed: boom"
