@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .events import OpenAIJudge, evaluate
+from .events import JUDGE_PROMPTS, OpenAIJudge, evaluate
 
 
 def _safe_url(value):
@@ -34,6 +34,10 @@ def main(argv=None, *, judge=None):
     parser.add_argument("--judge-base-url", default=os.getenv("PERCEPT_JUDGE_BASE_URL"))
     parser.add_argument("--judge-model", default=os.getenv("PERCEPT_JUDGE_MODEL"))
     parser.add_argument("--judge-api-key", default=os.getenv("PERCEPT_JUDGE_API_KEY"))
+    parser.add_argument("--judge-mode", choices=tuple(JUDGE_PROMPTS), default="observation",
+                        help="observation: both sides describe videos; instruction: the reference holds per-interval generation instructions")
+    parser.add_argument("--judge-extra-body", default=os.getenv("PERCEPT_JUDGE_EXTRA_BODY"),
+                        help="JSON object merged into each judge request, e.g. provider thinking options")
     args = parser.parse_args(argv)
     systems = {}
     for spec in args.system:
@@ -43,13 +47,16 @@ def main(argv=None, *, judge=None):
         systems[name] = Path(directory)
     if judge is None:
         try:
-            judge = OpenAIJudge(args.judge_base_url, args.judge_model, args.judge_api_key)
+            extra_body = json.loads(args.judge_extra_body) if args.judge_extra_body else None
+            judge = OpenAIJudge(args.judge_base_url, args.judge_model, args.judge_api_key,
+                                mode=args.judge_mode, extra_body=extra_body)
         except ValueError as error:
             parser.error(str(error))
     try:
         safe_url = _safe_url(args.judge_base_url)
         report = evaluate(args.reference, systems, judge, args.tiou_threshold)
-        report["judge"] = {"protocol": "OpenAI-compatible chat completions, strict JSON match/reason", "base_url": safe_url, "model": args.judge_model} if isinstance(judge, OpenAIJudge) else {"protocol": "injected callable"}
+        report["judge"] = {"protocol": "OpenAI-compatible chat completions, strict JSON match/reason", "base_url": safe_url, "model": args.judge_model,
+                           "mode": judge.mode, "system_prompt": JUDGE_PROMPTS[judge.mode], "extra_body": judge.extra_body} if isinstance(judge, OpenAIJudge) else {"protocol": "injected callable"}
         failed = any(system["invalid_count"] for system in report["systems"].values())
     except (OSError, ValueError) as error:
         report = {"status": "error", "error": f"{type(error).__name__}: {error}", "systems": {name: {"samples": {}, "valid_count": 0, "invalid_count": 1, "aggregate": None, "error": f"{type(error).__name__}: {error}"} for name in systems}, "judge": {"protocol": "OpenAI-compatible chat completions", "base_url": None, "model": args.judge_model}}
