@@ -59,6 +59,7 @@ the exact revision you install.
 | [IQA-PyTorch / PyIQA](https://github.com/chaofengc/IQA-PyTorch) | `percept score clipiqa`, `percept score external` | PolyForm Noncommercial 1.0.0 for the 0.1.16 wheel (see above) |
 | [VideoPhy](https://github.com/Hritikbansal/videophy) | `percept score external`, `percept score videophy-joint` inputs | MIT |
 | [WorldModelBench](https://github.com/WorldModelBench-Team/WorldModelBench), [T2V-CompBench](https://github.com/KaiyueSun98/T2V-CompBench), [PhyGenBench](https://github.com/OpenGVLab/PhyGenBench) | `percept score external`, `scripts/official_input_adapters.py` | No license file in the upstream repository; obtain permission or check upstream terms before use |
+| [WBench](https://github.com/meituan-longcat/WBench) prompt builder and case data | `scripts/build_wbench_references.py` | MIT (code and Hugging Face dataset `meituan-longcat/WBench`) |
 | [google-research](https://github.com/google-research/google-research) (FVD) | `percept score external` | Apache-2.0 |
 | Model backbones loaded by these evaluators (OpenAI CLIP, ViCLIP/InternVideo, DINO, RAFT, MUSIQ) | VBench and PyIQA | CLIP: MIT; InternVideo: Apache-2.0; DINO: Apache-2.0; RAFT: BSD-3-Clause; MUSIQ: via PyIQA |
 
