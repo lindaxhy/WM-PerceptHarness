@@ -31,10 +31,7 @@ class Settings(BaseSettings):
     semantic_result_cache: bool = True
     openai_proxy: SecretStr | None = None
     event_workflow: Literal["reviewed", "confidence-gated"] = "reviewed"
-    event_split_revision: bool = False
     # Optional computer-vision evidence.
-    cv_device: int = Field(default=3, ge=0)
-    cv_provider: Literal["disabled", "sam31"] = "sam31"
     cv_repository_path: Path = Path("models/sam3")
     cv_checkpoint_path: Path = Path("models/sam3/checkpoints/sam3.pt")
     cv_bpe_path: Path = Path("models/sam3/sam3/assets/bpe_simple_vocab_16e6.txt.gz")

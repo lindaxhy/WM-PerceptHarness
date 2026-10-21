@@ -1,6 +1,5 @@
 """Bounded revision and independent verification of review concerns."""
-from .event_schemas import ReviewedRevision, RevisionVerification, Concern, GroundedEvents, validate_stage
-import json
+from .event_schemas import Concern
 
 MAX_REVISION_ATTEMPTS = 2
 
@@ -11,42 +10,7 @@ def accepted_assessment(response, verdict):
     return not any(a and a['category'] == 'pipeline_error' for a in (left, right))
 
 
-def split_revision_pass(stage, draft, revision_context, ledger, attempt, audit):
-    candidate = stage('grounded_event_revision', GroundedEvents, draft=draft,
-                      review=revision_context, ordinal=attempt)
-    # Persist successful intermediate stages even when a later batch fails.
-    record = {'attempt': attempt, 'candidate': candidate, 'response_batches': [], 'verification_batches': []}
-    audit.setdefault('split_revision_attempts', []).append(record)
-    responses, verdicts, new_issues = [], [], []
-    seen_issues = set()
-    batches = [ledger[i:i + 6] for i in range(0, len(ledger), 6)] or [[]]
-    for i, concerns in enumerate(batches):
-        revision = stage('grounded_revision', ReviewedRevision, draft=candidate,
-            review={'concerns': concerns, 'freeze_candidate': True}, ordinal=attempt * 1000 + i)
-        record['response_batches'].append(revision)
-        responses.extend(revision['responses'])
-    for i, concerns in enumerate(batches):
-        ids = {c['concern_id'] for c in concerns}
-        verification = stage('revision_verification', RevisionVerification, draft=candidate,
-            review={'concerns': concerns, 'assessment_required_ids': [v['concern_id'] for v in responses
-                   if v['concern_id'] in ids and v.get('assessment') is not None]}, ordinal=attempt * 1000 + i)
-        record['verification_batches'].append(verification)
-        verdicts.extend(verification['verdicts'])
-        for issue in verification['new_issues']:
-            key = json.dumps(issue, sort_keys=True)
-            if key not in seen_issues:
-                seen_issues.add(key)
-                new_issues.append(issue)
-    context = {'duration': candidate['duration'], 'event_count': len(candidate['events']),
-               'concern_ids': [c['concern_id'] for c in ledger],
-               'candidate_events': candidate['events'], 'frozen_events': candidate['events'],
-               'assessment_required_ids': [v['concern_id'] for v in responses if v.get('assessment') is not None]}
-    revision = validate_stage(ReviewedRevision, {**candidate, 'responses': responses}, context)
-    verification = validate_stage(RevisionVerification, {'verdicts': verdicts, 'new_issues': new_issues}, context)
-    return revision, verification
-
-
-def resolve_review(stage, draft, review, concerns, audit, *, collect_evidence, split_revision=False):
+def resolve_review(stage, draft, review, concerns, audit, *, collect_evidence):
     ledger = []
     for concern in concerns:
         ledger.append({'concern_id': f'c{len(ledger):04d}', **concern.model_dump(mode='json')})
@@ -63,15 +27,12 @@ def resolve_review(stage, draft, review, concerns, audit, *, collect_evidence, s
         audit['concern_ledger'] = list(ledger)
         revision_context = {'original_review': review, 'original_draft': original,
                             'concerns': ledger, 'previous_verification': feedback}
-        if split_revision:
-            revision, verification = split_revision_pass(stage, draft, revision_context, ledger, attempt, audit)
-        else:
-            revision = stage('grounded_revision', ReviewedRevision, draft=draft,
-                             review=revision_context, ordinal=attempt)
-            verification = stage('revision_verification', RevisionVerification,
-                draft={key: revision[key] for key in ('duration', 'events')},
-                review={'concerns': ledger, 'assessment_required_ids': [r['concern_id']
-                    for r in revision['responses'] if r.get('assessment') is not None]}, ordinal=attempt)
+        revision = stage('grounded_revision', draft=draft,
+                         review=revision_context, ordinal=attempt)
+        verification = stage('revision_verification',
+            draft={key: revision[key] for key in ('duration', 'events')},
+            review={'concerns': ledger, 'assessment_required_ids': [r['concern_id']
+                for r in revision['responses'] if r.get('assessment') is not None]}, ordinal=attempt)
         candidate = {key: revision[key] for key in ('duration', 'events')}
         self_unresolved = {r['concern_id'] for r in revision['responses'] if r['action'] == 'unresolved'}
         responses = {r['concern_id']: r for r in revision['responses']}

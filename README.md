@@ -54,15 +54,14 @@ percept annotate \
 
 Pass a directory to `--videos` to process its videos recursively. Annotation
 produces event descriptions and bounds on the original video clock through a
-single event annotation pipeline. The obsolete `--template` option has been removed;
-omit it from older commands.
+single event annotation pipeline.
 
 By default (`--event-workflow reviewed`), the VLM drafts events and independently reviews the original video. Only concrete object identity, location, occlusion or trajectory questions trigger SAM: a text + candidate box prompt is checked on one reference frame before tracking that object within the relevant window. There is no unconditional baseline SAM pass. Camera-motion doubts and editorial changes stay in the existing visual review. Tracking supports review but does not prove an action, outcome or boundary.
 
 To try the experimental workflow that handles self-reported uncertainties:
 
 ```bash
-percept annotate --videos ./videos/sample_001.mp4 --cv sam31 \
+percept annotate --videos ./videos/sample_001.mp4 \
   --event-workflow confidence-gated --output ./outputs/experiment
 ```
 
@@ -121,7 +120,7 @@ SAM3.1 runtime as above, then create `corpus.jsonl` with one unique relative
 
 ```bash
 percept annotate --manifest corpus.jsonl \
-  --cv sam31 --cv-devices 0,1,2,3 \
+  --cv-devices 0,1,2,3 \
   --workers-per-gpu 2 --request-concurrency 9 \
   --output outputs/annotations
 ```
@@ -159,7 +158,7 @@ percept score events --reference outputs/reference \
   --system model=outputs/generated --out outputs/event_scores
 ```
 
-`--out` names a directory containing `events.json`. The scorer also accepts flat result directories; it identifies samples from audit metadata or the annotation filename. Plain human-authored `{duration, events}` ground truth and legacy result envelopes are also accepted. A missing, failed or invalid annotation makes the system aggregate null and the command exits nonzero. A successful empty `events` list is valid. Old categorical `segments`/`semantic_events` JSON is incompatible and must be regenerated. The scoring formula and adaptation limits are in [event evaluation](docs/usage.md#grounded-event-scoring).
+`--out` names a directory containing `events.json`. The scorer also accepts flat result directories; it identifies samples from audit metadata or the annotation filename. Plain human-authored `{duration, events}` ground truth is also accepted. A missing, failed or invalid annotation makes the system aggregate null and the command exits nonzero. A successful empty `events` list is valid. Old categorical `segments`/`semantic_events` JSON is incompatible and must be regenerated. The scoring formula and adaptation limits are in [event evaluation](docs/usage.md#grounded-event-scoring).
 
 ## Evaluate video quality
 
@@ -207,8 +206,7 @@ percept score motion --video ./videos/sample_001.mp4 \
 The JSON includes the score and paths to the official evaluator result and log. Motion Smoothness measures local interpolation smoothness; a smooth video can still depict an incorrect action.
 
 **Weights:** Install Python dependencies with `pip`, then download model weights
-with the `curl` commands above. The former `percept download` command has been
-removed. `video_metrics/__init__.py` only records cache-relative paths;
+with the `curl` commands above. `video_metrics/__init__.py` only records cache-relative paths;
 installation checks and scoring check that the files exist. No SHA-256 verification is performed. Use the same `--cache-dir`
 for checks and scoring; `./weights` is relative to the current directory.
 Other metrics require their own [checkpoint preparation](docs/metrics.md#checkpoint-preparation).
@@ -227,7 +225,7 @@ These commands select a metric directly:
 | `percept background-consistency` | Background consistency |
 | `percept overall-consistency` | Video-text consistency with ViCLIP |
 
-They share the official VBench implementation internally. Prepare the [pinned source checkout, runtime and per-metric weight manifest](docs/metrics.md#individual-metric-commands) first. For example:
+They share the official VBench implementation internally. Prepare the [pinned VBench git checkout (its HEAD is verified), runtime and per-metric weight manifest](docs/metrics.md#individual-metric-commands) first. For example:
 
 ```bash
 percept imaging-quality \
@@ -252,25 +250,26 @@ CLIPScore, DOVER and other external evaluators have separate entries in the [met
 
 `python scripts/verify_install.py` checks the local installation and a few basic behaviors. It does not call APIs, run model inference or establish benchmark validity. See [verification](docs/usage.md#verify-the-installation) for optional metric profiles.
 
-No project-wide open-source license has been granted yet. Third-party components retain their own license terms.
+The repository code is released under the [MIT License](LICENSE). Third-party components, optional extras and model weights keep their own license terms; see [third-party notices](docs/third-party-notices.md).
 
 ## Code structure
 
-Annotation flows through `cli → runner → pipelines → models`.
-`batch.py` adds batch scheduling and shared CV workers. Event scoring and video
-quality metrics have separate entry points.
+Annotation flows through `cli → runner → pipelines → execution → models/cv`.
+`batch.py` adds manifest scheduling and shared GPU workers. Event scoring and
+video quality metrics have separate entry points.
 
-Within annotation, pipelines call `StageExecutor.execute()` directly for VLM
-and SAM requests. There is no internal job queue or wait/poll layer. VLM request
-caching and the separate multi-GPU batch scheduler remain available.
+Pipelines call `StageExecutor.execute()` directly for VLM and SAM requests;
+there is no internal job queue or wait/poll layer.
 
 | Module | Responsibility |
 |---|---|
 | `config.py` | `PERCEPT_` settings and model/CV validation |
+| `backends.py` | Settings, VLM client and SAM executor setup shared by both annotation modes |
 | `media.py` | FFprobe metadata and timestamped FFmpeg frame extraction |
 | `pipelines/` | Event prompts, schemas, visual review and targeted SAM evidence |
 | `models/`, `cv/` | VLM backends and computer-vision adapters |
-| `runner.py` | Annotation inputs, synchronous stages, request caching and video orchestration |
+| `runner.py` | Video discovery, per-video orchestration, resume and batch results |
+| `execution.py` | Direct VLM/SAM stage execution and the VLM request cache |
 | `batch.py` | Manifest scheduling, shared GPU workers and concurrency control |
 | `results.py` | Annotation JSON, audit sidecars, filename collisions and resume |
 | `evaluation/`, `video_metrics/` | Event comparison, video quality metrics and checkpoint checks |
@@ -280,6 +279,3 @@ source timestamps. See [sampling behavior](docs/usage.md#video-frame-sampling).
 `results.py` manages
 files without a database. Its resume behavior is described in
 [usage](docs/usage.md).
-
-The [function audit](docs/function-audit.md) records callers, retained behavior,
-removed wrappers and remaining simplification candidates for the original top-level modules.

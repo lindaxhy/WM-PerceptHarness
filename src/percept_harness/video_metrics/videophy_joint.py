@@ -16,6 +16,8 @@ import math
 from pathlib import Path
 from typing import Any, Iterable
 
+from percept_harness.video_metrics._runtime import run_cli, write_json_exclusive
+
 
 def _read_rows(path: Path) -> list[dict[str, Any]]:
     if path.suffix.lower() == ".csv":
@@ -129,7 +131,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sa-column", default="sa")
     parser.add_argument("--root", type=Path)
     args = parser.parse_args(argv)
-    try:
+
+    def run():
         payload = aggregate(
             _read_rows(args.pc.expanduser().resolve(strict=True)),
             _read_rows(args.sa.expanduser().resolve(strict=True)),
@@ -141,15 +144,9 @@ def main(argv: list[str] | None = None) -> int:
         output = args.output.expanduser().resolve()
         if output.exists():
             raise FileExistsError(f"Output already exists: {output}")
-        output.parent.mkdir(parents=True, exist_ok=True)
-        serialized = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False)
-        with output.open("x", encoding="utf-8") as stream:
-            stream.write(serialized + "\n")
-        print(serialized)
-        return 0
-    except Exception as error:
-        print(f"VideoPhy-2 Joint aggregation failed: {error}", file=__import__("sys").stderr)
-        return 1
+        write_json_exclusive(output, payload, parents=True)
+        return payload
+    return run_cli("VideoPhy-2 Joint aggregation", run)
 
 
 if __name__ == "__main__":

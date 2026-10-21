@@ -30,7 +30,7 @@ def main(argv=None, *, judge=None):
     parser.add_argument("--reference", required=True, type=Path)
     parser.add_argument("--system", action="append", required=True, metavar="NAME=DIR")
     parser.add_argument("--out", required=True, type=Path, help="report output directory")
-    parser.add_argument("--tiou-threshold", type=float, default=.75)
+    parser.add_argument("--tiou-threshold", type=float, default=.5)
     parser.add_argument("--judge-base-url", default=os.getenv("PERCEPT_JUDGE_BASE_URL"))
     parser.add_argument("--judge-model", default=os.getenv("PERCEPT_JUDGE_MODEL"))
     parser.add_argument("--judge-api-key", default=os.getenv("PERCEPT_JUDGE_API_KEY"))

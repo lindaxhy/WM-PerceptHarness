@@ -110,8 +110,5 @@ class ModelResponseContract:
         if canonical(value) != self.schema_json:
             raise ValueError('scene response descriptor identity is invalid')
 
-    def format(self) -> dict[str, Any]:
-        return dict(type='json_schema', name=self.name, schema=json.loads(self.schema_json), strict=True)
-
     def cache_identity(self) -> dict[str, Any]:
         return dict(type='json_schema', name=self.name, strict=True, schema=json.loads(self.schema_json))

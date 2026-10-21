@@ -31,8 +31,7 @@ class ScriptedModel:
         self.calls.append(request.stage)
         self.requests.append(request)
         # Also exercise schema compilation and the transport allowlist.
-        self_contract = request.response_contract.format()
-        assert self_contract['name'] == request.schema_name
+        assert request.response_contract.name == request.schema_name
         payload = json.loads(request.prompt.split('INPUT_DATA_JSON\n')[1])
         if request.stage == 'grounded_draft':
             return DRAFT
@@ -282,7 +281,7 @@ class RevisionTests(unittest.TestCase):
             self.assertGreater(body['max_tokens'], 0)
             fake = SimpleNamespace(stage=stages[name], schema_name=name,
                 prompt=body['messages'][0]['content'][0]['text'],
-                response_contract=SimpleNamespace(format=lambda: {'name': name}))
+                response_contract=SimpleNamespace(name=name))
             data = scripted.generate(fake)
             return httpx.Response(200, json={'choices': [{'finish_reason': 'stop',
                 'message': {'role': 'assistant', 'content': json.dumps(data)}}]})
@@ -413,73 +412,28 @@ class RevisionTests(unittest.TestCase):
         self.assertTrue(outcome.metadata['model_output_failures'][0]['recovered'])
 
     def test_invalid_candidate_size_bound_does_not_bypass_validation(self):
-        from percept_harness.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS, INVALID_CANDIDATE_FIELD
+        from percept_harness.pipelines import output_validation
+        from percept_harness.pipelines.output_validation import INVALID_CANDIDATE_FIELD
         raw = {**DRAFT, 'responses': [], 'oversized': 'x' * 200_001}
-        result = DEFAULT_OUTPUT_SCHEMAS.sanitize('ReviewedRevision', raw,
+        result = output_validation.sanitize('ReviewedRevision', raw,
                     {'duration': 10., 'concern_ids': ['c0000']})
-        self.assertIsNotNone(DEFAULT_OUTPUT_SCHEMAS.failure_codes('ReviewedRevision', result))
+        self.assertIsNotNone(output_validation.failure_codes('ReviewedRevision', result))
         self.assertNotIn(INVALID_CANDIDATE_FIELD, result)
 
     def test_repair_feedback_collects_multiple_cross_field_errors(self):
-        from percept_harness.pipelines.output_validation import DEFAULT_OUTPUT_SCHEMAS
+        from percept_harness.pipelines import output_validation
         assessment = {'category': 'no_source_limitation', 'start': 6., 'end': 8.,
                       'reason': 'Checked.', 'visual_times': [7.], 'event_index': 0,
                       'candidate_quote': 'not in the event'}
         responses = [{'concern_id': cid, 'action': 'retained', 'rationale': 'Checked.',
                       'visual_times': [7.], 'assessment': assessment} for cid in ['c0000', 'c0001']]
-        output = DEFAULT_OUTPUT_SCHEMAS.sanitize('ReviewedRevision', {**DRAFT, 'responses': responses},
+        output = output_validation.sanitize('ReviewedRevision', {**DRAFT, 'responses': responses},
                     {'duration': 10., 'concern_ids': ['c0000', 'c0001', 'c0002']})
         messages = [v['message'] for v in output['_schema_validation']['details']]
         self.assertEqual(len(messages), 5)
         self.assertTrue(any('c0000' in x and 'candidate_quote' in x for x in messages))
         self.assertTrue(any('c0001' in x and 'must overlap' in x for x in messages))
         self.assertTrue(any("missing=['c0002']" in x for x in messages))
-
-    def test_frozen_assessment_rejects_candidate_edits(self):
-        context = {'duration': 10., 'concern_ids': [], 'frozen_events': DRAFT['events']}
-        with self.assertRaisesRegex(ValueError, 'Events are frozen'):
-            validate_stage(ReviewedRevision, {**DRAFT, 'events': [], 'responses': []}, context)
-
-    def test_split_pass_batches_and_independently_verifies_every_concern(self):
-        from percept_harness.pipelines.revision import split_revision_pass
-        ledger = [{'concern_id': f'c{i:04d}', 'reason': 'Check.'} for i in range(14)]
-        calls = []
-        def stage(name, schema, *, draft, review, ordinal):
-            calls.append((name, review))
-            if name == 'grounded_event_revision':
-                return DRAFT
-            ids = [c['concern_id'] for c in review['concerns']]
-            self.assertLessEqual(len(ids), 6)
-            self.assertEqual(draft, DRAFT)
-            if name == 'grounded_revision':
-                self.assertTrue(review['freeze_candidate'])
-                return {**draft, 'responses': [{'concern_id': cid, 'action': 'retained',
-                    'rationale': 'Checked.', 'visual_times': [3.]} for cid in ids]}
-            self.assertNotIn('responses', review)
-            return {'verdicts': [{'concern_id': cid, 'resolved': True, 'reason': 'Independent.'} for cid in ids], 'new_issues': []}
-        audit = {}
-        revision, verification = split_revision_pass(stage, DRAFT, {'concerns': ledger}, ledger, 0, audit)
-        self.assertEqual(len(revision['responses']), 14)
-        self.assertEqual(len(verification['verdicts']), 14)
-        self.assertEqual([n for n, _ in calls], ['grounded_event_revision'] + ['grounded_revision'] * 3 + ['revision_verification'] * 3)
-        self.assertEqual(len(audit['split_revision_attempts'][0]['verification_batches']), 3)
-
-    def test_split_pass_validates_new_issue_event_indices(self):
-        from percept_harness.pipelines.revision import split_revision_pass
-        for indices in ([0, 1], [2]):
-            with self.subTest(indices=indices):
-                def stage(name, schema, *, draft, review, ordinal):
-                    if name == 'grounded_event_revision':
-                        return DRAFT
-                    if name == 'grounded_revision':
-                        return {**DRAFT, 'responses': []}
-                    return {'verdicts': [], 'new_issues': [{**CONCERN, 'event_indices': indices}]}
-                if indices == [0, 1]:
-                    _, verification = split_revision_pass(stage, DRAFT, {}, [], 0, {})
-                    self.assertEqual(verification['new_issues'][0]['event_indices'], indices)
-                else:
-                    with self.assertRaisesRegex(ValueError, 'invalid event or time'):
-                        split_revision_pass(stage, DRAFT, {}, [], 0, {})
 
     def test_persistent_invalid_output_stops_after_three_attempts(self):
         model = ScriptedModel(malformed=True)
@@ -520,12 +474,14 @@ class RevisionTests(unittest.TestCase):
         manifest=self.root/'manifest.jsonl'
         manifest.write_text(json.dumps({'job_id':'one','video_path':str(self.video)})+'\n')
         args=SimpleNamespace(workers_per_gpu=1, request_concurrency=1, shard_index=0, shard_count=1,
-            cv='sam31', cv_devices='0', event_workflow='reviewed',manifest=manifest,output=self.root/'batch',force=False)
-        with patch.object(batch, 'Settings',return_value=self.settings) as configured, patch.object(batch,'GpuSlot',FakeSlot), \
-             patch('percept_harness.cli._load_backend',return_value=(ScriptedModel(passes_on=3),'test',lambda:None)):
-            configured.model_validate.side_effect = Settings.model_validate
+            cv_devices='0', event_workflow='reviewed', prompt_context='blue cups', model=None, manifest=manifest,
+            output=self.root/'batch', force=False)
+        model=ScriptedModel(passes_on=3)
+        with patch('percept_harness.backends.annotation_settings',return_value=self.settings), patch.object(batch,'GpuSlot',FakeSlot), \
+             patch('percept_harness.backends.load_model',return_value=(model,'test',lambda:None)):
             code=batch.run_manifest(args)
         self.assertEqual(code,1)
+        self.assertTrue(all('blue cups' in request.prompt for request in model.requests))
         state=json.loads((args.output/'shard-00.status.json').read_text())
         self.assertEqual(state['counts']['needs_review'],1)
         self.assertEqual(state['jobs']['one']['status'],'needs_review')

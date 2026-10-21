@@ -1,11 +1,16 @@
 """Pre-persistence validation of the active grounded annotation schemas."""
-from dataclasses import dataclass
 from collections.abc import Mapping
+from functools import cache
 import json
-from ..models.response_contract import preflight_plain
+
+from pydantic import ValidationError
+
+from ..models.response_contract import ModelResponseContract, canonical, compile_local_schema, preflight_plain
+from .event_schemas import SCHEMAS, ConfidenceDraft, CrossFieldValidationError, validate_stage
 
 SCHEMA_VALIDATION_FIELD = '_schema_validation'
 INVALID_CANDIDATE_FIELD = '_invalid_candidate'
+ISSUE_CODE = 'GROUNDED_SCHEMA_INVALID'
 
 
 def bounded_invalid_candidate(result):
@@ -17,66 +22,56 @@ def bounded_invalid_candidate(result):
         return None
 
 
-class DeclaredSchemaOutputError(ValueError):
-    def __init__(self, issue_codes, *, details=()):
-        self.issue_codes = tuple(issue_codes)
-        self.details = list(details)[:16]
-        super().__init__('declared model output schema is invalid')
-
-
-@dataclass(frozen=True)
-class _SchemaEntry:
-    validator: object
-    allowed_issue_codes: tuple[str, ...]
-    generic_issue_code: str
-    response_contract_factory: object
-
-
-class OutputSchemaRegistry:
-    def __init__(self):
-        self._entries = {}
-
-    def register(self, schema_name, validator, *, allowed_issue_codes, generic_issue_code,
-                 response_contract_factory=None):
-        if schema_name in self._entries:
-            raise ValueError('duplicate output schema')
-        self._entries[schema_name] = _SchemaEntry(validator, allowed_issue_codes, generic_issue_code, response_contract_factory)
-
-    def model_response_contract(self, schema_name, authenticated_context):
-        entry = self._entries.get(schema_name)
-        return entry.response_contract_factory(authenticated_context) if entry and entry.response_contract_factory else None
-
-    def sanitize(self, schema_name, result, validation_context=None):
-        entry = self._entries.get(schema_name)
-        if entry is None:
-            return dict(result)
-        try:
-            return entry.validator(result, validation_context)
-        except DeclaredSchemaOutputError as error:
-            codes = [code for code in error.issue_codes if code in entry.allowed_issue_codes]
-            envelope = {SCHEMA_VALIDATION_FIELD: {'schema_name': schema_name, 'status': 'invalid',
-                    'issue_codes': codes or [entry.generic_issue_code], 'details': error.details}}
-            candidate = bounded_invalid_candidate(result)
-            if candidate is not None:
-                envelope[INVALID_CANDIDATE_FIELD] = candidate
-            return envelope
-
-    def failure_codes(self, schema_name, result):
-        if schema_name not in self._entries:
-            return None
-        envelope = result.get(SCHEMA_VALIDATION_FIELD)
-        if isinstance(envelope, Mapping) and envelope.get('status') == 'invalid':
-            return tuple(envelope.get('issue_codes', ()))
+@cache
+def response_contract(schema_name):
+    schema = SCHEMAS.get(schema_name)
+    if schema is None:
         return None
-
-    def model_output_failure(self, schema_name):
-        entry = self._entries.get(schema_name)
-        if entry is None:
-            return None
-        return {SCHEMA_VALIDATION_FIELD: {'schema_name': schema_name, 'status': 'invalid',
-                'issue_codes': [entry.generic_issue_code]}}
+    return ModelResponseContract(schema_name, canonical(compile_local_schema(schema.model_json_schema())))
 
 
-DEFAULT_OUTPUT_SCHEMAS = OutputSchemaRegistry()
-from .event_schemas import register_event_schemas
-register_event_schemas(DEFAULT_OUTPUT_SCHEMAS)
+def _invalid(schema_name, details=None):
+    record = {'schema_name': schema_name, 'status': 'invalid', 'issue_codes': [ISSUE_CODE]}
+    if details is not None:
+        record['details'] = details
+    return {SCHEMA_VALIDATION_FIELD: record}
+
+
+def _error_details(error):
+    if isinstance(error, ValidationError):
+        return [{'location': list(e['loc']), 'type': e['type'], 'message': e['msg'][:500]}
+                for e in error.errors(include_input=False, include_context=False, include_url=False)[:16]]
+    if isinstance(error, CrossFieldValidationError):
+        return [{'location': [], 'type': 'ValueError', 'message': message[:500]} for message in error.issues]
+    return [{'location': [], 'type': type(error).__name__, 'message': str(error)[:500]}]
+
+
+def sanitize(schema_name, result, validation_context=None):
+    """Validate a model result, or return an invalid-output envelope for repair."""
+    schema = SCHEMAS.get(schema_name)
+    if schema is None:
+        return dict(result)
+    try:
+        validated = validate_stage(schema, result, validation_context or {})
+        # Preserve recoverable raw target data through stage execution;
+        # pipeline validation records discarded targets in its audit.
+        return dict(result) if schema is ConfidenceDraft else validated
+    except (ValueError, TypeError, KeyError) as error:
+        envelope = _invalid(schema_name, _error_details(error))
+    candidate = bounded_invalid_candidate(result)
+    if candidate is not None:
+        envelope[INVALID_CANDIDATE_FIELD] = candidate
+    return envelope
+
+
+def failure_codes(schema_name, result):
+    if schema_name not in SCHEMAS:
+        return None
+    envelope = result.get(SCHEMA_VALIDATION_FIELD)
+    if isinstance(envelope, Mapping) and envelope.get('status') == 'invalid':
+        return tuple(envelope.get('issue_codes', ()))
+    return None
+
+
+def model_output_failure(schema_name):
+    return None if schema_name not in SCHEMAS else _invalid(schema_name)

@@ -31,12 +31,12 @@ def audit_path(path: Path) -> Path:
 
 
 def is_annotation_record(record: dict[str, Any] | None) -> bool:
-    """Distinguish public/legacy payloads from execution-only sidecars by structure."""
-    return isinstance(record, dict) and bool({"duration", "events", "data"} & record.keys())
+    """Distinguish public annotations from execution-only sidecars by structure."""
+    return isinstance(record, dict) and bool({"duration", "events"} & record.keys())
 
 
 def annotation_record(path: Path) -> dict[str, Any] | None:
-    """Read public+audit results, plain annotations, and legacy envelopes."""
+    """Read public+audit results and plain annotations."""
     data = read_record(path)
     sidecar = audit_path(path)
     if sidecar.exists():
@@ -49,7 +49,7 @@ def annotation_record(path: Path) -> dict[str, Any] | None:
         if audit.get("status") == "completed" and data is None:
             record.update(status="failed", error="annotation data missing")
         return record
-    return data
+    return data if is_annotation_record(data) else None
 
 
 def write_annotation(path: Path, record: dict[str, Any]) -> None:
@@ -78,15 +78,11 @@ def write_annotation(path: Path, record: dict[str, Any]) -> None:
 def result_path(output: Path, video: Path) -> Path:
     """Reuse a video's filename, adding a numeric suffix for name collisions."""
     resolved = str(video.resolve())
-    # Find an existing owner before filling filename gaps, including legacy names.
+    # Find an existing owner before filling filename gaps.
     for sidecar_path in sorted(output.glob("*.audit.json")):
         sidecar = read_record(sidecar_path)
         if sidecar and not is_annotation_record(sidecar) and sidecar.get("video_path") == resolved:
             return sidecar_path.with_name(sidecar_path.name[:-len(".audit.json")] + ".json")
-    for candidate in sorted(output.glob("*.json")):
-        record = read_record(candidate)
-        if record and is_annotation_record(record) and record.get("video_path") == resolved:
-            return candidate
     index = 0
     while True:
         name = video.stem if index == 0 else f"{video.stem}--{index}"

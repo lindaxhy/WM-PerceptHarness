@@ -56,7 +56,7 @@ class OpenAICompatVideoModel:
     OUTPUT_TOKENS = {
         "confidence_draft": 16384, "grounded_draft": 16384, "evidence_review": 8192,
         "sam_prompt_review": 4096, "grounded_revision": 16384,
-        "revision_verification": 16384, "sam_target_plan": 4096, "grounded_event_revision": 16384,
+        "revision_verification": 16384, "sam_target_plan": 4096,
     }
 
     supports_semantic_result_cache = True

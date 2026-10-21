@@ -14,13 +14,12 @@ checks without starting the evaluator.
 from __future__ import annotations
 
 import argparse
-import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 import subprocess
-import sys
 from typing import Sequence
+
+from percept_harness.video_metrics._runtime import VBENCH_REVISION, run_cli, subprocess_env, verify_revision
 
 
 @dataclass(frozen=True)
@@ -48,19 +47,19 @@ SPECS: dict[str, MetricSpec] = {
         "https://github.com/KaiyueSun98/T2V-CompBench", "dd5eff7b93af0550b9efa2bdabbb21b3b017ceda",
         "python Grounded-Segment-Anything/compbench_motion_binding_seg.py ...; python dot/compbench_eval_motion_binding.py ...", needs_manifest=True),
     "motion_order_understanding": MetricSpec(
-        "https://github.com/Vchitect/VBench", "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490",
+        "https://github.com/Vchitect/VBench", VBENCH_REVISION,
         "bash evaluate.sh --max_parallel_tasks 1", needs_manifest=True),
     "motion_rationality": MetricSpec(
-        "https://github.com/Vchitect/VBench", "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490",
+        "https://github.com/Vchitect/VBench", VBENCH_REVISION,
         "bash evaluate.sh --max_parallel_tasks 1", needs_manifest=True),
     "mechanics": MetricSpec(
-        "https://github.com/Vchitect/VBench", "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490",
+        "https://github.com/Vchitect/VBench", VBENCH_REVISION,
         "bash evaluate.sh --max_parallel_tasks 1", needs_manifest=True),
     "thermotics": MetricSpec(
-        "https://github.com/Vchitect/VBench", "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490",
+        "https://github.com/Vchitect/VBench", VBENCH_REVISION,
         "bash evaluate.sh --max_parallel_tasks 1", needs_manifest=True),
     "material": MetricSpec(
-        "https://github.com/Vchitect/VBench", "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490",
+        "https://github.com/Vchitect/VBench", VBENCH_REVISION,
         "bash evaluate.sh --max_parallel_tasks 1", needs_manifest=True),
     "phygen_eval_pca": MetricSpec(
         "https://github.com/OpenGVLab/PhyGenBench", "f8642cb796f3bcb01f0b7c1b2ec53b75d357c739",
@@ -89,6 +88,18 @@ SPECS: dict[str, MetricSpec] = {
 }
 
 
+VBENCH2_DIMENSIONS = frozenset(name for name, spec in SPECS.items() if spec.source_url == "https://github.com/Vchitect/VBench")
+
+
+def vbench2_auxiliary_problem(auxiliary, *, ordered_pair: bool) -> str | None:
+    """VBench-2.0 questions are a non-empty string list; Motion Order has exactly two actions."""
+    if not isinstance(auxiliary, list) or not auxiliary or not all(isinstance(x, str) and x.strip() for x in auxiliary):
+        return "shape"
+    if ordered_pair and len(auxiliary) != 2:
+        return "count"
+    return None
+
+
 def _resolved(value: Path | None, *, label: str, directory: bool | None = None) -> Path | None:
     if value is None:
         return None
@@ -98,18 +109,6 @@ def _resolved(value: Path | None, *, label: str, directory: bool | None = None) 
     if directory is False and not path.is_file():
         raise ValueError(f"{label} must be a file: {path}")
     return path
-
-
-def verify_revision(source: Path, expected: str | None, *, runner=subprocess.run) -> dict[str, str | None]:
-    if not (source / ".git").exists():
-        raise ValueError(f"Source is not a git checkout: {source}")
-    if expected is None:
-        return {"revision": None}
-    result = runner(["git", "-C", str(source), "rev-parse", "HEAD"], check=True, capture_output=True, text=True)
-    actual = result.stdout.strip()
-    if actual != expected:
-        raise ValueError(f"{source} revision mismatch: expected {expected}, got {actual}")
-    return {"revision": actual}
 
 
 def preflight(*, metric: str, source_dir: Path | None, checkpoint: Path | None,
@@ -167,7 +166,7 @@ def run_official(*, metric: str, source_dir: Path | None, checkpoint: Path | Non
             stream = log.open("x", encoding="utf-8")
         completed = runner(list(command), cwd=details["source"], check=False,
                            stdout=stream, stderr=subprocess.STDOUT,
-                           env=os.environ.copy(), text=True)
+                           env=subprocess_env(), text=True)
         if completed.returncode:
             raise RuntimeError(f"official {metric} command exited with {completed.returncode}")
     finally:
@@ -195,17 +194,10 @@ def main(argv: list[str] | None = None) -> int:
     command = list(args.command)
     if command and command[0] == "--":
         command = command[1:]
-    try:
-        result = run_official(metric=args.metric, source_dir=args.source_dir,
-                              checkpoint=args.checkpoint, manifest=args.manifest,
-                              generated=args.generated, reference=args.reference,
-                              command=command, output=args.output,
-                              check_only=args.check_only)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0
-    except Exception as error:
-        print(f"Official external metric runner failed: {error}", file=sys.stderr)
-        return 1
+    return run_cli("Official external metric runner", lambda: run_official(
+        metric=args.metric, source_dir=args.source_dir, checkpoint=args.checkpoint, manifest=args.manifest,
+        generated=args.generated, reference=args.reference, command=command, output=args.output,
+        check_only=args.check_only), allow_nan=True)
 
 
 if __name__ == "__main__":

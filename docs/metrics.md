@@ -9,12 +9,12 @@ Use the sections below for [CLIP-IQA+](#clip-iqa), [Motion Smoothness](#motion-s
 | Evaluator | Command | Environment | Evidence and scope |
 |---|---|---|---|
 | Grounded event scoring | `percept score events` | Core package and an OpenAI-compatible semantic judge endpoint | Offline tests cover scoring with an injected judge; hosted judge and live SAM GPU inference remain unvalidated |
-| CLIP-IQA+ | `percept score clipiqa` | PyIQA 0.1.16; CPU or CUDA | Implemented sampled-frame scorer; a fresh full dependency installation is not validated by the historical record |
-| VBench Motion Smoothness / AMT-S | `percept score motion` | VBench 0.1.5, CUDA, AMT-S weights | Existing record marks single-video smoke completed; this is not a full-dataset validation |
+| CLIP-IQA+ | `percept score clipiqa` | PyIQA 0.1.16; CPU or CUDA | Implemented sampled-frame scorer; a fresh full dependency installation has not been validated |
+| VBench Motion Smoothness / AMT-S | `percept score motion` | VBench 0.1.5, CUDA, AMT-S weights | A single-video smoke run has completed; not validated on a full dataset |
 
-See [installation](usage.md) and the metric protocols below, [input/output conventions](usage.md), and [checkpoint preparation](#checkpoint-preparation). The packaged commands use the active environment; they do not merge the different dependency stacks. Use the `percept score` commands above for these public workflows. The evaluator integrations below use the same CLI; input preparation remains in `scripts/`. Removed script paths are not compatibility entry points. JSON provenance retains the existing wrapper identifiers for compatibility.
+See [installation](usage.md) and the metric protocols below, [input/output conventions](usage.md), and [checkpoint preparation](#checkpoint-preparation). The packaged commands use the active environment; they do not merge the different dependency stacks. Use the `percept score` commands above for these public workflows. The evaluator integrations below use the same CLI; input preparation remains in `scripts/`. The `wrapper` field of result metadata names the command that produced it (`percept <metric>` or `percept score vbench-clip`).
 
-CLIP-IQA+ is a **backup**, excluded from the current frozen main selection. Motion Smoothness is selected. Grounded event scoring is the repository's annotation-based workflow and is not silently inserted into the separate frozen 21-item list.
+CLIP-IQA+ is a backup metric outside the main [benchmark selection](#benchmark-reporting); Motion Smoothness is part of it. Grounded event scoring is the repository's annotation-based workflow and is reported separately from the 21-metric selection.
 
 ## Additional integration tools
 
@@ -35,9 +35,8 @@ The following code is preparation/integration support. Local checks do not estab
 
 `pip install` installs Python packages, not model weights. Use the explicit
 `curl` commands in the README for [CLIP-IQA+](../README.md#clip-iqa) and
-[Motion Smoothness](../README.md#motion-smoothness). The former
-`percept download` command has been removed; downloading is handled outside the
-package.
+[Motion Smoothness](../README.md#motion-smoothness). Downloading is handled
+outside the package.
 
 | Metric | Files relative to the cache directory | Source |
 |---|---|---|
@@ -48,7 +47,7 @@ The examples save files under `./weights`, relative to the current directory.
 For another location, change the download destinations and pass that same path
 as `--cache-dir` to scoring and `scripts/verify_install.py`. Existing caches can
 be reused when the required files are present. The shared
-[weight registry](../src/percept_harness/weights.py) contains cache-relative paths;
+[weight registry](../src/percept_harness/video_metrics/__init__.py) contains cache-relative paths;
 installation checks and custom-cache scoring check file existence before model
 loading. Checkpoints are ignored by Git and are not shipped in the wheel.
 
@@ -184,7 +183,9 @@ Each command selects one metric; there is no public `--dimension` selector or VB
 `percept score vbench-clip` calls the official competition
 `competitions/clip_score.py` implementation.  It creates only the official
 one-video metadata JSON and checks the official OpenAI CLIP ViT-B/32 cache;
-frame sampling and similarity calculation remain in the upstream file.
+frame sampling and similarity calculation remain in the upstream file. It uses
+the same pinned VBench git checkout, verifies its HEAD, never overwrites an
+existing output file and rejects non-finite values.
 
 `percept score external` provides preflight and command forwarding for
 the external evaluator families. It checks required source revisions and local
@@ -212,8 +213,8 @@ not faked by this package:
 - DOVER needs its own Torch 1.13-compatible environment and `DOVER.pth`.
 - Instruction Following needs WorldModelBench's VILA judge, data layout,
   and original question fields. Physical Adherence is not part of the
-  frozen final benchmark list; it is retained only as an optional
-  WorldModelBench diagnostic/compatibility reference.
+  benchmark selection; it is available only as an optional WorldModelBench
+  diagnostic.
 - Action Binding / Motion Binding / Object Interactions need the official
   T2V-CompBench repositories, numeric IDs, metadata, and large judge/vision
   environments.
@@ -226,7 +227,7 @@ not faked by this package:
 
 ### Individual metric commands
 
-After installing the harness, verify the cache and choose a fresh output directory. Pass the separate pinned VBench source checkout through `--vbench-root`:
+After installing the harness, verify the cache and choose a fresh output directory. Pass the separate VBench source through `--vbench-root`. It must be a git checkout at `fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490`; scoring and `--check-only` both verify its HEAD, and the result metadata records it as `source.revision`:
 
 ```bash
 percept imaging-quality \
@@ -267,7 +268,7 @@ The first run should be one short, decodable video.  Inspect the official
 
 `percept score dover` checks required upstream source files, runtime and checkpoint paths, then invokes the official evaluator. Source/cache preflight is available; this release does not establish successful DOVER model inference.
 
-Pinned source: `VQAssessment/DOVER` at `f1ddc96215bc7fbcf8f315c65d47905f339c3419`. The evaluator requires both `pretrained_weights/DOVER.pth` under the source root and `hub/checkpoints/convnext_tiny_1k_224_ema.pth` under `TORCH_HOME`. Record the source URLs used to acquire these files.
+Pinned source: `VQAssessment/DOVER` at `f1ddc96215bc7fbcf8f315c65d47905f339c3419`. The evaluator requires both `pretrained_weights/DOVER.pth` under the source root and `hub/checkpoints/convnext_tiny_1k_224_ema.pth` under `TORCH_HOME`. The source must be a git checkout at that revision; scoring and `--check-only` verify its HEAD. Record the source URLs used to acquire these files.
 
 Checkpoint sources are the [official DOVER release](https://github.com/QualityAssessment/DOVER/releases/download/v0.1.0/DOVER.pth) and the [ConvNeXt initialization checkpoint](https://dl.fbaipublicfiles.com/convnext/convnext_tiny_1k_224_ema.pth).
 
@@ -295,7 +296,7 @@ A successful check is `preflight_passed_not_scored`. Omit `--check-only` and use
 
 See the [catalog](#public-scoring-entry-points) for overall readiness and the [reproducibility notes](usage.md#reproducibility) for validation stages.
 
-If the original evaluator requires Python older than the harness's Python 3.12 minimum, run the dependency-free wrapper file directly with that environment's Python:
+If the original evaluator requires Python older than the harness's Python 3.12 minimum, run the standard-library-only wrapper file directly with that environment's Python. It imports the neighbouring `_runtime.py`, so run it from the source tree rather than copying `dover.py` alone:
 
 ```bash
 python /path/to/WM-PerceptHarness/src/percept_harness/video_metrics/dover.py --help
@@ -305,7 +306,7 @@ The wrapper still lives in the package source; this does not require installing 
 
 ## Input preparation
 
-`scripts/validate_metric_manifest.py` validates caller-supplied prompts, auxiliary questions and reference paths before evaluation. `scripts/build_reference_manifest.py` pairs generated and real future frames by identical relative filenames and reports unmatched files. Neither generates missing task inputs or reference frames.
+`scripts/validate_metric_manifest.py` validates caller-supplied prompts, auxiliary questions and reference paths before evaluation. `scripts/build_reference_manifest.py` pairs generated and real future frames by identical relative filenames and reports unmatched files. Neither generates missing task inputs or reference frames. Like `scripts/official_input_adapters.py`, these scripts import the harness, so run them in an environment where it is installed.
 
 `percept score videophy-joint --pc pc.csv --sa sa.csv --output joint.json` joins official VideoPhy-2 outputs by video ID and computes `SA >= 4 and PC >= 4`. This is an analysis field, not another model or an independent metric.
 
@@ -341,7 +342,8 @@ and must be frozen from the original task design.
 
 `scripts/official_input_adapters.py` is a format checker and field-preserving
 adapter. It does not score videos, download checkpoints, generate prompts, or
-replace an upstream evaluator. The caller remains responsible for supplying
+replace an upstream evaluator. Outputs are never overwritten, and NaN or
+infinite values are rejected. The caller remains responsible for supplying
 the original task metadata and for running the official command in its
 documented environment.
 
@@ -456,7 +458,7 @@ Select the array for your adapter below, save it as your input JSON, and replace
 
 ## Benchmark reporting
 
-The frozen selection from 2026-09-20 contains 21 main/specialist metrics and five reference/distribution appendix metrics. Selection is not evidence that every evaluator is provisioned or validated; use the current entry-point tables above for implementation scope.
+The benchmark selection contains 21 main/specialist metrics and five reference/distribution appendix metrics. Selection is not evidence that every evaluator is provisioned or validated; use the current entry-point tables above for implementation scope.
 
 | Group | Selected metrics |
 |---|---|
@@ -470,4 +472,4 @@ The frozen selection from 2026-09-20 contains 21 main/specialist metrics and fiv
 
 Mechanics, Thermotics and Material are separate specialist reports, excluded from a unified main score. PSNR/SSIM/LPIPS need aligned real future frames; FVD/FID need a matching real collection or statistics. Without those references, report `N/A`.
 
-Aesthetic Quality and long-video consistency variants are diagnostics; CLIP-IQA+ is a backup. Physical Adherence is outside the frozen selection. VideoPhy-2 Joint is an analysis of paired PC/SA scores (`PC >= 4` and `SA >= 4`), not an additional model or metric. Grounded event scoring is the separate annotation-based workflow. Report scores, coverage and exclusions separately rather than averaging incompatible metrics.
+Aesthetic Quality and long-video consistency variants are diagnostics; CLIP-IQA+ is a backup. Physical Adherence is outside the selection. VideoPhy-2 Joint is an analysis of paired PC/SA scores (`PC >= 4` and `SA >= 4`), not an additional model or metric. Grounded event scoring is the separate annotation-based workflow. Report scores, coverage and exclusions separately rather than averaging incompatible metrics.

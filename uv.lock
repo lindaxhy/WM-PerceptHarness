@@ -3280,6 +3280,13 @@ motion = [
     { name = "tqdm" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "numpy" },
+    { name = "pillow" },
+    { name = "pytest" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "decord", marker = "extra == 'motion'", specifier = "==0.6.0" },
@@ -3299,6 +3306,13 @@ requires-dist = [
     { name = "tqdm", marker = "extra == 'motion'", specifier = "==4.69.0" },
 ]
 provides-extras = ["clipiqa", "motion"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "numpy", specifier = "==2.2.6" },
+    { name = "pillow", specifier = "==11.3.0" },
+    { name = "pytest", specifier = ">=8.4,<9" },
+]
 
 [[package]]
 name = "xxhash"

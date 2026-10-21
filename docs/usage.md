@@ -69,38 +69,31 @@ The OpenAI-compatible backend retries timeouts, transport errors, and HTTP 429,
 500, 502, 503 and 504. Other HTTP errors fail immediately. Client class constants
 set three extra attempts and exponential backoff with jitter from a five-second
 base. Configure the fixed per-request timeout with
-`PERCEPT_OPENAI_TIMEOUT_SECONDS` (default 180 seconds). Dynamic video-length
-scaling and its upper timeout cap have been removed. This is not a batch deadline.
+`PERCEPT_OPENAI_TIMEOUT_SECONDS` (default 180 seconds). This is not a batch deadline.
 
 Each `ModelRequest` carries `max_frames` (default 128, including SAM overlays)
 and optional `max_output_tokens`. When the token limit is omitted, stage defaults
 are 16,384 for drafts/revision, 8,192 for evidence review and 4,096 for SAM prompt
 review. Stage payloads accept these same fields. Effective budgets enter the
-request-cache identity. The unused internal hints `media_resolution`,
-`reasoning_effort` and `clip_context` have been removed; they never changed the
-API payload. Provider-specific generation options remain in
-`PERCEPT_OPENAI_EXTRA_BODY`. Removing these hints from cache identity makes old
-request-cache entries miss; completed-result resume is unchanged. The CLI resolves model aliases before creating a client. Connection types, formats and numeric ranges are validated by `Settings`; the CLI checks required credentials. Direct Python callers of the internal client are responsible for supplying valid connection values. Reserved request-body overrides and external responses are still checked by the adapter.
+request-cache identity. Provider-specific generation options belong in
+`PERCEPT_OPENAI_EXTRA_BODY`. The CLI resolves model aliases before creating a client. Connection types, formats and numeric ranges are validated by `Settings`; the CLI checks required credentials. Direct Python callers of the internal client are responsible for supplying valid connection values. Reserved request-body overrides and external responses are still checked by the adapter.
 
 `OpenAICompatVideoModel.MAX_REQUEST_BYTES` fixes the encoded request limit at
 32 MiB; `MAX_OUTPUT_CHARS` limits model text to 1,000,000 characters. Oversized
 requests thin original video frames while retaining mandatory SAM overlays;
 requests that still exceed the limit fail. These limits and retry behavior are
-internal class constants, not environment settings. The former
-`PERCEPT_OPENAI_MAX_FRAMES`, request/output-size, retry and dynamic-timeout
-settings no longer apply. For repeatability, see
+internal class constants, not environment settings. For repeatability, see
 [result identity and resume](usage.md#result-identity-and-resume).
 
 ### Targeted SAM3.1 grounding
 
-Use the pinned SAM source revision `660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7`, its checkpoint and `sam3/assets/bpe_simple_vocab_16e6.txt.gz` tokenizer, a compatible GPU runtime, and FFmpeg 5.1+. The provider verifies the source revision. Annotation defaults to `--cv sam31`. SAM assets and the GPU are loaded only when the visual reviewer requests a targeted check. Configure them for production coverage; a failed check is recorded as unresolved and the final revision must remain conservative. Point these settings at actual local assets:
+Use the pinned SAM source revision `660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7`, its checkpoint and `sam3/assets/bpe_simple_vocab_16e6.txt.gz` tokenizer, a compatible GPU runtime, and FFmpeg 5.1+. The provider verifies the source revision. Single-video annotation runs SAM on the first visible GPU; choose it with `CUDA_VISIBLE_DEVICES`. SAM assets and the GPU are loaded only when the visual reviewer requests a targeted check. Configure them for production coverage; a failed check is recorded as unresolved and the final revision must remain conservative. Point these settings at actual local assets:
 
 | Environment variable | Value |
 |---|---|
 | `PERCEPT_CV_REPOSITORY_PATH` | Local SAM source checkout |
 | `PERCEPT_CV_CHECKPOINT_PATH` | Local checkpoint file |
 | `PERCEPT_CV_BPE_PATH` | `<repository>/sam3/assets/bpe_simple_vocab_16e6.txt.gz` (default `models/sam3/sam3/assets/...`) |
-| `PERCEPT_CV_DEVICE` | GPU device index |
 | `PERCEPT_CV_CACHE_ROOT` | Writable evidence cache |
 
 SAM loads the clean pinned checkout, checkpoint and tokenizer directly from
@@ -113,21 +106,25 @@ The core install neither installs this runtime nor validates a live GPU run. Run
 
 ## Annotation
 
-`percept annotate` runs the annotation workflow. The backend is `openai`, for OpenAI-compatible model APIs.
+`percept annotate` runs the annotation workflow against an OpenAI-compatible chat completions API.
 
 ```bash
 percept annotate --videos video.mp4 \
   --output outputs/actions
 ```
 
+`--prompt-context TEXT` adds object naming hints to every annotation request in
+both single-video and manifest mode. The text is passed as data, not as
+instructions, and becomes part of the request cache identity.
+
 Each successful `<video_stem>.json` is exactly `{ "duration": number, "events": [{ "start": number, "end": number, "description": string }] }`. The sibling `<video_stem>.audit.json` contains execution status, errors and review metadata. A failure writes its audit without a public annotation; an empty successful event list remains a valid annotation. `results.jsonl` summarizes the batch.
 
 The validator canonicalizes model duration rounding within one microsecond to authoritative media metadata (including an endpoint overshoot within that tolerance); larger duration discrepancies still fail. Times are finite seconds relative to the original container playback start and lie within the video endpoint. Initial video-stream delays are preserved; trailing audio does not extend an available video-stream duration. SAM uses decoded frame PTS on this clock and preserves original decoder indices. Each event is an independently describable visible process or change, bounded by meaningful completion, interruption or a different activity. Long events, gaps, overlaps and unfinished actions are valid. Segmentation follows the original event-boundary rules: independently describable phases may remain separate, with no requirement to merge a continuous manipulation into one event or to exhaustively cover the timeline. There are no event categories or fixed event-length limits.
 
-Experimental confidence-gated annotation is available on the experiment branch:
+Experimental confidence-gated annotation:
 
 ```bash
-percept annotate --videos video.mp4 --cv sam31 \
+percept annotate --videos video.mp4 \
   --event-workflow confidence-gated --output outputs/confidence
 ```
 
@@ -139,14 +136,14 @@ uncertainties. Confidence <= 0.6 requires a question; every reported question is
 processed regardless of confidence. With no questions, the draft-only route
 still takes one VLM call. Confident errors can remain unreported.
 
-The v6 workflow treats question kinds as descriptions, not SAM eligibility gates:
+The workflow treats question kinds as descriptions, not SAM eligibility gates:
 
 1. `grounded_draft` and `evidence_review` produce events and questions (or
    `confidence_draft` supplies both in confidence-gated mode).
 2. Every concrete question enters `sam_target_plan`, which sees only its source
    video window, expanded to include an outside-window identity reference when
    supplied, plus up to 0.5 seconds of context on each side. It selects one
-   relevant visible object/reference and a normalized XYXY box. Legacy free-text
+   relevant visible object/reference and a normalized XYXY box. Free-text
    unresolved issues lack timestamps and use the full source window rather than
    being skipped. A null target
    must include a reason; no target is invented when segmentation cannot help.
@@ -244,8 +241,8 @@ to locate it. Existing unreadable files are preserved and a free suffix is used.
 A result is skipped by default when its
 source path matches, its status is completed, its annotation passes schema
 validation, and its current-version audit records successful verification (or the explicit
-confidence-gated draft-only route). Failed, incomplete or malformed results are retried. Legacy result
-envelopes can still be read. There are no content checksums, code/environment
+confidence-gated draft-only route). Failed, incomplete or malformed results are retried.
+There are no content checksums, code/environment
 fingerprints, automatic history archives or per-run manifests.
 
 ```bash
@@ -276,25 +273,14 @@ and overlay signatures. Do not modify cache entries while a run is using them.
 The simplified internal CV schema accepts one target and one spatial prompt.
 Each request uses the local ID `target` and retains the original target description.
 Request scopes distinguish tracks; the description remains part of the cache key.
-Old CV entries containing retired entity/sampling fields become cache misses and
-are recomputed. Public annotation JSON and completed-result resume rules are
-unchanged; use `--force` to regenerate an already completed annotation.
 
 Targeted tracking samples the selected window at `PERCEPT_CV_MAX_FPS` and always
 includes its reference frame. OOM retries use the same original frame indices.
-Unused full-video scan/refinement settings and area/occlusion thresholds were
-removed. Shared limits cover overlays (24), processed frames (10,000) and total
+Shared limits cover overlays (24), processed frames (10,000) and total
 observations (64,000). SAM uses its pinned upstream defaults for confidence
 (0.5), compilation (off), and object capacity (16). These defaults are not
 separate environment settings. Artifact byte limits are internal storage
 bounds, not model parameters or limits on the entire cache directory.
-
-The retired `PERCEPT_CV_MIN_CONFIDENCE`, `PERCEPT_CV_MODEL_ALIAS`,
-`PERCEPT_CV_COMPILE_MODEL`, `PERCEPT_CV_EXECUTION_CHUNK_FRAMES`,
-`PERCEPT_CV_CACHE_MAX_FILES`, and `PERCEPT_CV_CACHE_MAX_BYTES` variables are
-ignored; remove them from existing environments. CV requests no longer carry
-a configurable confidence threshold, so previous CV cache keys are not reused.
-Completed annotations still follow the existing resume rules.
 
 Environment numbers and booleans use Pydantic Settings parsing, including
 standard boolean spellings such as `true`/`false` and `1`/`0`. FPS and timeouts
@@ -330,7 +316,7 @@ percept score events --reference outputs/reference \
 # Inspect outputs/event_scores/events.json
 ```
 
-The default temporal IoU threshold is `0.75` (`--tiou-threshold` changes it). Temporal assignment maximizes one-to-one match count, then IoU. The judge tests whether eligible descriptions express the same observed action, object, destination, direction and outcome, ignoring wording and timing. Segment precision is temporal matches / predicted events; recall is temporal matches / reference events; `segment_f1 = 2 * temporal_matches / (reference_events + prediction_events)`. `semantic_match_rate = semantic passes on the predicted temporal assignment / temporal matches`, or null if there are no temporal matches. This is **conditioned on predicted temporal matches**, unlike original WGO ground-truth-window label accuracy. Joint assignment independently maximizes one-to-one matches among edges passing both temporal and semantic tests; `joint_f1 = 2 * joint_match_count / (reference_events + prediction_events)`. Joint matching can select different event pairs from the temporal assignment, so `joint_f1` is not generally `segment_f1 * semantic_match_rate`. All counts and candidate judgments are retained for audit. A zero-event pair has null precision/recall/F1; a one-sided empty pair has zero F1 and undefined precision or recall where its denominator is zero.
+The default temporal IoU threshold is `0.5` (`--tiou-threshold` changes it). Temporal assignment maximizes one-to-one match count, then IoU. The judge tests whether eligible descriptions express the same observed action, object, destination, direction and outcome, ignoring wording and timing. Segment precision is temporal matches / predicted events; recall is temporal matches / reference events; `segment_f1 = 2 * temporal_matches / (reference_events + prediction_events)`. `semantic_match_rate = semantic passes on the predicted temporal assignment / temporal matches`, or null if there are no temporal matches. This is **conditioned on predicted temporal matches**, unlike original WGO ground-truth-window label accuracy. Joint assignment independently maximizes one-to-one matches among edges passing both temporal and semantic tests; `joint_f1 = 2 * joint_match_count / (reference_events + prediction_events)`. Joint matching can select different event pairs from the temporal assignment, so `joint_f1` is not generally `segment_f1 * semantic_match_rate`. All counts and candidate judgments are retained for audit. A zero-event pair has null precision/recall/F1; a one-sided empty pair has zero F1 and undefined precision or recall where its denominator is zero.
 
 The scorer accepts flat result directories (`video_path` stem or explicit `sample_id`/`job_id`) and nested sample directories. It excludes `.percept` histories, CV archives and root shard status files from primary annotations. Every sample ID in either side is reported. Missing, failed or invalid records, or a judge failure, yield an error sample, null system aggregate and nonzero exit. Valid empty `events` lists remain in the aggregate. `--out` is a directory containing `events.json`; the report includes source paths, status, counts, per-sample matching and a sanitized judge identity. Inspect invalid counts and source provenance before quoting scores. Old categorical JSON is rejected, not guessed or converted. In tests, `events_cli.main(argv, judge=callable)` permits fully offline scoring with a synthetic judge; that path does not validate hosted judge behavior.
 
@@ -392,7 +378,7 @@ of its category.
 
 ## Multi-GPU manifest annotation
 
-Manifest mode requires SAM3.1 (`--cv sam31`).
+Manifest mode runs one SAM3.1 worker per GPU listed in `--cv-devices` (default `0`).
 
 A JSONL manifest supplies one absolute `video_path` and a unique relative
 `job_id` per line. Input checksum fields are not used.
@@ -400,7 +386,7 @@ Each job writes normal annotation results under `<output>/<job_id>/`.
 
 ```bash
 percept annotate --manifest corpus.jsonl \
-  --cv sam31 --cv-devices 0,1,2,3 --workers-per-gpu 2 \
+  --cv-devices 0,1,2,3 --workers-per-gpu 2 \
   --request-concurrency 9 --output outputs/annotations
 ```
 
@@ -446,5 +432,3 @@ The script does not download weights, contact a VLM API or perform model inferen
 For a reported run, record input paths and pair IDs; model/provider configuration without secrets; prompt/code revision; runtime versions and device; checkpoint sources and versions; sampling settings; sample counts and exclusions. Preserve raw results and separate output directories for independent repeats. Use `--force` for independent annotation repeats.
 
 Save `python --version`, `python -m pip freeze` and `python -m pip check` for each evaluator environment. The motion-only VBench environment deliberately differs from the full upstream dependency metadata. A successful local check does not establish successful real-model inference or a complete benchmark run.
-
-Historical LAS tools remain on [archive/las-comparison-viewer](https://github.com/lindaxhy/WM-PerceptHarness/tree/archive/las-comparison-viewer) and [legacy-las-service](https://github.com/lindaxhy/WM-PerceptHarness/tree/legacy-las-service).
