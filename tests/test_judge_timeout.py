@@ -21,3 +21,33 @@ class JudgeTimeoutTests(unittest.TestCase):
         for value in [0,-1,True,float('inf'),float('nan')]:
             with self.subTest(value=value), self.assertRaises(ValueError):
                 OpenAIJudge('https://example.invalid','test','test',read_timeout_seconds=value)
+
+
+class JudgeModeTests(unittest.TestCase):
+    def capture(self, **options):
+        bodies = []
+        def handler(request):
+            import json
+            bodies.append(json.loads(request.content))
+            return httpx.Response(200, json={'choices': [{'message': {'content': '{"match":false,"reason":"different"}'}}]})
+        OpenAIJudge('https://example.invalid/v1/', 'judge-model', 'key', transport=httpx.MockTransport(handler), **options)('instruction', 'observed')
+        return bodies[0]
+
+    def test_default_request_is_unchanged(self):
+        self.assertEqual(self.capture(), {
+            'model': 'judge-model', 'temperature': 0, 'response_format': {'type': 'json_object'}, 'messages': [
+                {'role': 'system', 'content': 'Decide whether descriptions report the same observed action, object, destination, direction, and outcome. Ignore wording and timestamps. Return only JSON with strict boolean match and brief reason. Do not include chain of thought.'},
+                {'role': 'user', 'content': '{"reference": "instruction", "prediction": "observed"}'}]})
+
+    def test_instruction_mode_and_extra_body(self):
+        from percept_harness.evaluation.events import JUDGE_PROMPTS
+        body = self.capture(mode='instruction', extra_body={'thinking': {'type': 'disabled'}})
+        self.assertEqual(body['messages'][0]['content'], JUDGE_PROMPTS['instruction'])
+        self.assertTrue(body['messages'][0]['content'].startswith('The reference is the instruction'))
+        self.assertEqual(body['thinking'], {'type': 'disabled'})
+        self.assertEqual(body['messages'][1]['content'], '{"reference": "instruction", "prediction": "observed"}')
+
+    def test_invalid_mode_and_reserved_extra_body(self):
+        for options in ({'mode': 'lenient'}, {'extra_body': {'messages': []}}, {'extra_body': {'temperature': 1}}, {'extra_body': []}):
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                OpenAIJudge('https://example.invalid', 'test', 'test', **options)

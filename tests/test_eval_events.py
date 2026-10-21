@@ -201,3 +201,29 @@ def test_events_cli(dataset, tmp_path, capsys):
     report = json.loads((out / "events.json").read_text())
     assert report["status"] == "error"
     assert report["error"] == "ValueError: tIoU threshold must be finite in (0,1]"
+
+
+def test_events_cli_judge_mode_is_recorded(dataset, tmp_path, monkeypatch):
+    ref, sys_dir = dataset
+    built = {}
+
+    class Judge(events.OpenAIJudge):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            built.update(kwargs)
+
+        def __call__(self, reference, prediction):
+            return same_text(reference, prediction)
+
+    monkeypatch.setattr(events_cli, "OpenAIJudge", Judge)
+    out = tmp_path / "report"
+    args = ["--reference", str(ref), "--system", f"m={sys_dir}", "--out", str(out), "--judge-base-url", "https://judge.example/v1",
+            "--judge-model", "j", "--judge-api-key", "secret", "--judge-mode", "instruction",
+            "--judge-extra-body", '{"thinking": {"type": "disabled"}}']
+    assert events_cli.main(args) == 0
+    assert built == {"mode": "instruction", "extra_body": {"thinking": {"type": "disabled"}}}
+    judge = json.loads((out / "events.json").read_text())["judge"]
+    assert judge["mode"] == "instruction" and judge["system_prompt"] == events.JUDGE_PROMPTS["instruction"]
+    assert judge["extra_body"] == {"thinking": {"type": "disabled"}} and "secret" not in json.dumps(judge)
+    with pytest.raises(SystemExit):
+        events_cli.main(args[:-1] + ["not json"])

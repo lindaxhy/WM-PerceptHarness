@@ -25,11 +25,37 @@ def validate_decision(value):
     return value
 
 
+JUDGE_PROMPTS = {
+    # Symmetric: both sides describe what a video shows.
+    "observation": "Decide whether descriptions report the same observed action, object, destination, direction, and outcome. Ignore wording and timestamps. Return only JSON with strict boolean match and brief reason. Do not include chain of thought.",
+    # Asymmetric: the reference is the instruction a generator received for an interval.
+    "instruction": (
+        "The reference is the instruction a video generation model received for one time interval. "
+        "The prediction describes what is visible in the generated video during an overlapping interval. "
+        "Decide whether the prediction shows the instructed action or change actually happening. "
+        "Extra visible details in the prediction are fine and do not cause a mismatch. "
+        "Require only what the instruction specifies: the subject or camera motion and its direction, "
+        "the named objects, and the outcome. If the instruction is a camera motion, the prediction must show "
+        "that camera motion or an equivalent viewpoint change; camera following or framing phrases alone are not required. "
+        "Ignore wording, timestamps and visual quality. Return only JSON with strict boolean match and brief reason. "
+        "Do not include chain of thought."),
+}
+# The judge owns these request fields; extra_body may add provider options only.
+_RESERVED_JUDGE_KEYS = frozenset({"model", "temperature", "response_format", "messages", "stream"})
+
+
 class OpenAIJudge:
-    def __init__(self, base_url: str, model: str, api_key: str, *, transport=None, read_timeout_seconds: float = 180.0):
+    def __init__(self, base_url: str, model: str, api_key: str, *, mode: str = "observation", extra_body=None,
+                 transport=None, read_timeout_seconds: float = 180.0):
         if not base_url or not model or not api_key:
             raise ValueError("judge base URL, model and API key are required")
+        if mode not in JUDGE_PROMPTS:
+            raise ValueError(f"unknown judge mode {mode!r}; choose from {sorted(JUDGE_PROMPTS)}")
+        extra_body = {} if extra_body is None else extra_body
+        if not isinstance(extra_body, dict) or _RESERVED_JUDGE_KEYS & extra_body.keys():
+            raise ValueError("judge extra body must be a JSON object without " + ", ".join(sorted(_RESERVED_JUDGE_KEYS)))
         self.base_url, self.model, self.api_key = base_url.rstrip("/"), model, api_key
+        self.mode, self.extra_body = mode, dict(extra_body)
         if isinstance(read_timeout_seconds, bool) or not isinstance(read_timeout_seconds, (int, float)) or not math.isfinite(read_timeout_seconds) or read_timeout_seconds <= 0:
             raise ValueError("judge read timeout must be finite and positive")
         self.transport = transport
@@ -37,9 +63,9 @@ class OpenAIJudge:
 
     def __call__(self, reference: str, prediction: str) -> dict:
         payload = {"model": self.model, "temperature": 0, "response_format": {"type": "json_object"}, "messages": [
-            {"role": "system", "content": "Decide whether descriptions report the same observed action, object, destination, direction, and outcome. Ignore wording and timestamps. Return only JSON with strict boolean match and brief reason. Do not include chain of thought."},
+            {"role": "system", "content": JUDGE_PROMPTS[self.mode]},
             {"role": "user", "content": json.dumps({"reference": reference, "prediction": prediction}, ensure_ascii=False)},
-        ]}
+        ], **self.extra_body}
         try:
             with httpx.Client(timeout=self.timeout, transport=self.transport) as client:
                 response = client.post(f"{self.base_url}/chat/completions", json=payload, headers={"Authorization": f"Bearer {self.api_key}"})
