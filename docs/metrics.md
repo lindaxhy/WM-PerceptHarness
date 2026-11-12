@@ -24,12 +24,84 @@ The following code is preparation/integration support. Local checks do not estab
 |---|---|---|
 | MUSIQ, temporal flickering, dynamic degree, subject/background consistency, ViCLIP; aesthetic diagnostic | Independent commands below | Per-dimension weights and real smoke runs; frozen prompt mapping for ViCLIP; static subset for flickering |
 | CLIPScore | `percept score vbench-clip` | CLIP weights, original prompts, real inference validation |
+| GeCo Depth Error ↓ | `percept score geco-depth` | [Pinned upstream setup, fixed-window protocol and reading notes](#geco-depth-error) |
 | DOVER | `percept score dover` | Independent compatible runtime, weights, real inference validation; see [DOVER](#dover) |
 | WorldModelBench, T2V-CompBench, VBench-2.0, PhyGenBench, VideoPhy-2 inputs | `scripts/official_input_adapters.py` | Official evaluators, environments, weights and task metadata; adapters do not run the models |
 | External evaluator launch | `percept score external` | Checks the required source revision and resource paths, then forwards a caller-supplied command; upstream runtime and scoring validation remain the caller's responsibility |
 | Reference metrics | `scripts/build_reference_manifest.py` | Actual aligned future reference frames; pairing is not PSNR/SSIM/LPIPS scoring |
 | VideoPhy-2 Joint analysis | `percept score videophy-joint` | Official PC/SA outputs matched by video ID; Joint is not an independent metric |
 | Manifest preflight | `scripts/validate_metric_manifest.py` | Caller-provided frozen input metadata; no missing prompts or references are generated |
+
+## GeCo Depth Error
+
+For a generated RGB video, this command reports the official GeCo-Eval CSV
+column `depth` (lower is better, 0 is ideal, no upper bound). It is the
+structure term of the GeCo paper: the depth of one frame, reprojected into
+another frame with the estimated camera motion, compared with that frame's own
+depth, relative to the source depth. VGGT-1B estimates depth and cameras.
+UFM-Base only provides the covisibility mask that decides which pixels count.
+No prompt, known camera trajectory, or depth ground truth is required. The
+paper's headline number is the `fused` column, so these scores are not
+comparable with the paper's tables.
+
+Install FFmpeg and ffprobe on the harness PATH. In a separate environment follow
+the [upstream installation and weight instructions](https://github.com/ShixuanGu/GeCo/blob/b66d1c68647ba75b5e09d05755cedac79a435bd5/README.md)
+for VGGT and UFM. Upstream documents Linux, Python 3.11 and PyTorch 2.8/cu128.
+The upstream runtime may download weights on first use.
+
+```bash
+git clone https://github.com/ShixuanGu/GeCo.git /path/to/GeCo
+git -C /path/to/GeCo checkout b66d1c68647ba75b5e09d05755cedac79a435bd5
+percept score geco-depth --geco-root /path/to/GeCo \
+  --geco-python /path/to/geco-env/bin/python --videos-path clip.mp4 \
+  --output-dir results/geco/clip
+```
+
+**Windows.** Upstream scores 3 s windows sampled at min(8, native) fps and pairs
+every frame of a window with every other. It allows at most four windows and, on
+clips over 12 s, stretches each window to a quarter of the clip, which is
+hundreds of frames per window on long videos. The default `--windows two`
+keeps windows at 3 s. Clips up to 6 s use the upstream windows unchanged and
+score identically to upstream. Longer clips use two windows that start at 1/3
+and 2/3 of (duration − 3 s). The wrapper decodes only those frames from the
+first video stream at its reported average frame rate (variable-rate clips are
+resampled onto this grid), hands each window to the unmodified pinned evaluator
+as one clip, and combines the windows as upstream does: a frame-weighted mean
+over windows whose three official scores are finite. `--windows official`
+passes every frame and lets upstream choose.
+
+On machines without Hugging Face or GitHub access, pass a local UFM-Base
+directory (`config.json` and `model.safetensors`) with `--ufm-checkpoint`, keep
+VGGT-1B in `HF_HOME` and DINOv2 ViT-L in `TORCH_HOME`, and set
+`HF_HUB_OFFLINE=1`. UFM builds its encoder through `torch.hub`, whose GitHub
+lookup has no timeout.
+
+A successful run writes `wrapper_metadata.json` with the score and the start
+time, frame count and score of each window, alongside the original CSV and
+logs. A clip with no valid window fails the command. Keep these failures in the
+coverage denominator when comparing models. Use a new output directory for each
+run. Each call loads both models; for a large batch, place the windows of many
+videos under one frames root so that one evaluator process scores them.
+
+**Reading the score.** A pilot on 108 tasks, 17 models and the matching real
+videos (1080 clips) found the following.
+
+- Legitimate motion counts as error. With a static camera the background is near
+  zero and the error sits on moving hands, arms and liquids. A real video whose
+  first frame was repeated scored 2.5% of the original, and generated videos
+  that Dynamic Degree flags as static had about a quarter of the error of
+  moving ones. Report the score next to Dynamic Degree, or as a ratio to the
+  real video of the same task; a ratio below 1 means less motion than the real
+  video, not better geometry.
+- Content matters more than the model: tasks explained 37–50% of the variance
+  and models 5–14%. Real videos ranged from 0.004 (simulation) to 0.07–0.10
+  (head-mounted camera).
+- The distribution is heavy-tailed (the top 5% of clips carried about 30% of the
+  summed error). Aggregate with a geometric mean or median.
+- Input height matters below 480: the same real clips scored 23% lower at 256
+  than at 480, while 720 matched 480. Sampling at 6 fps matched 8 fps.
+- Extreme values mark visible failures such as a scene cut or a frame filled by
+  a textureless surface, where the geometry estimate itself is unstable.
 
 ## Checkpoint preparation
 
