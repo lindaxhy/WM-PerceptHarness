@@ -20,6 +20,7 @@ _SCORE_MODULES = {
     "events": ".evaluation.events_cli",
     "clipiqa": ".video_metrics.clipiqa",
     "motion": ".video_metrics.motion",
+    "geco-depth": ".video_metrics.geco_depth",
     "vbench-clip": ".video_metrics.vbench_clip",
     "dover": ".video_metrics.dover",
     "external": ".video_metrics.external",
