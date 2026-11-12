@@ -1,0 +1,75 @@
+{
+  "metric": "PSNR",
+  "files": [
+    {
+      "path": "examples/psnr_manifest.jsonl",
+      "sha256": "32b894e1669f5b84a2296ce9f468a5cfb90cfe2088fb21cc1ca1e790d12cf7ed",
+      "bytes": 874
+    },
+    {
+      "path": "modified/official_runtime.py",
+      "sha256": "7b44bcde858014f0b1891bdf7e99b7977af63746a50f1a4229dcb2ac5fb5bbc6",
+      "bytes": 3244
+    },
+    {
+      "path": "modified/run_psnr.py",
+      "sha256": "a59b16d8c773d59a01d06e61b7eabc4359e43254fd96c5556feb41866fbabddf",
+      "bytes": 15466
+    },
+    {
+      "path": "official/lingbot/LICENSE",
+      "sha256": "bc24ef0f4717a27f54e30321cbe1fbedc43b5b8daddef8ce3168a9ee9072c8da",
+      "bytes": 11356
+    },
+    {
+      "path": "official/lingbot/pipeline_lingbot_video_i2v.py",
+      "sha256": "9b4a085d6794debbba9eb1fc03455eec1c6cd5cd77b8c087ee42d08a631d2f3a",
+      "bytes": 15823
+    },
+    {
+      "path": "official/pyiqa/LICENSE",
+      "sha256": "7cfe4165a261b8f7fb71331f68da011c583e28c3dc3208e934ae7ccc4441cc46",
+      "bytes": 4659
+    },
+    {
+      "path": "official/pyiqa/LICENSE-S-Lab",
+      "sha256": "9214fbf1fe98a2dfd49ead7e5dd98c17238bbf935000b82f71b6a1d7deffab32",
+      "bytes": 1718
+    },
+    {
+      "path": "official/pyiqa/psnr_arch.py",
+      "sha256": "39e427d03934c8e1f6a0da743af99d55e1515e3eac41d35cd16974c303fb73d5",
+      "bytes": 2700
+    },
+    {
+      "path": "official/wan/LICENSE.txt",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "bytes": 11357
+    },
+    {
+      "path": "official/wan/textimage2video.py",
+      "sha256": "228f2fabf23014ed41ec6b8cd713d5be7371bb558501c71a62a0258b491a877b",
+      "bytes": 24031
+    },
+    {
+      "path": "official/wan/utils.py",
+      "sha256": "905850d9814ac99222b4dbb28016abcd6306e5ca161493b498b1c4afb5a99e89",
+      "bytes": 7274
+    },
+    {
+      "path": "OFFICIAL_MANIFEST.json",
+      "sha256": "35c9a18968766445c57d631fba9cd419f09e7d18b2bd9ed9663dc3e61ede54ba",
+      "bytes": 3744
+    },
+    {
+      "path": "README.md",
+      "sha256": "6c32a146684485c12d911d9b58f7d12441728bd4a4204364feba0ede578ab39f",
+      "bytes": 4405
+    },
+    {
+      "path": "requirements.txt",
+      "sha256": "c0631745d5ef0ca1674d38a7b1bffd8947a545ba0fc0c4e5977ef492c88ed8d1",
+      "bytes": 107
+    }
+  ]
+}

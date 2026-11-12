@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "metric": "motion_smoothness",
+  "entrypoint": "run_motion_smoothness.py",
+  "official_source": {
+    "distribution": "vbench",
+    "version": "0.1.5",
+    "archive": "official/distributions/vbench-0.1.5-py3-none-any.whl",
+    "url": "https://files.pythonhosted.org/packages/06/82/13e401ec97d2686397201dfe74e2dda88b3695192de1b25a5ab267ab8960/vbench-0.1.5-py3-none-any.whl",
+    "sha256": "13266ed4715d91a7669ab58484b9e010bc91bb96e129d414fb512d4937890023",
+    "extracted_source": "official/pypi/vbench/motion_smoothness.py",
+    "license": "official/pypi/vbench-0.1.5.dist-info/LICENSE",
+    "dependency_metadata": "official/pypi/vbench-0.1.5.dist-info/METADATA",
+    "config": "official/pypi/vbench/third_party/amt/cfgs/AMT-S.yaml"
+  },
+  "current_source": "modified/vbench/motion_smoothness.py",
+  "modification": "Input frame tensors remain in CPU memory; current inference pair is transferred to GPU. Sampling and score formulas unchanged.",
+  "device_argument": "torch.device('cuda'), matching official CLI",
+  "modes": [
+    "official",
+    "cpu-staging"
+  ],
+  "checkpoint": {
+    "cache_relative_path": "amt_model/amt-s.pth",
+    "sha256": "07e7e03405c213fe4405678db9b42d05671e48c56faf6a441b99bb0047d3cf77",
+    "included": false
+  },
+  "files": [
+    {
+      "path": "modified/vbench/motion_smoothness.py",
+      "bytes": 7069,
+      "sha256": "9e792f051e7d9c00ffe95541a0e28c75ecca7c00bd4992e47554172e52dd5fd8"
+    },
+    {
+      "path": "official/distributions/vbench-0.1.5-py3-none-any.whl",
+      "bytes": 438735,
+      "sha256": "13266ed4715d91a7669ab58484b9e010bc91bb96e129d414fb512d4937890023"
+    },
+    {
+      "path": "official/pypi/vbench/motion_smoothness.py",
+      "bytes": 7085,
+      "sha256": "082ddac8df7962d3a8b23bb999614fae6f3c9c93ebab9fb5c06b09588f109c94"
+    },
+    {
+      "path": "official/pypi/vbench/third_party/amt/cfgs/AMT-S.yaml",
+      "bytes": 1128,
+      "sha256": "a77746791b1d02c839f40791fb82adb28c5058cf3735b2657a4a965a789ce0a8"
+    },
+    {
+      "path": "official/pypi/vbench-0.1.5.dist-info/LICENSE",
+      "bytes": 11356,
+      "sha256": "43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1"
+    },
+    {
+      "path": "official/pypi/vbench-0.1.5.dist-info/METADATA",
+      "bytes": 6372,
+      "sha256": "e722e5715633fbb910191843a35d97a469ba34f721cfdc61535cfc778f6cc2d2"
+    },
+    {
+      "path": "README.md",
+      "bytes": 3831,
+      "sha256": "0355d99fb4d35ca907340f7333c98f6805cf36d17857804f7208f4f7cf778152"
+    },
+    {
+      "path": "run_motion_smoothness.py",
+      "bytes": 5260,
+      "sha256": "8fb2a3fc0f282b2bd6be5612a33e7069a569429d14b6c279dd669fef4384039d"
+    }
+  ],
+  "manifest_self_hash_excluded": true,
+  "numerical_caveat": "Padding and conditional inconsistent-frame resize execute on CPU in staging mode; CPU/GPU bilinear results are not guaranteed bitwise equal."
+}

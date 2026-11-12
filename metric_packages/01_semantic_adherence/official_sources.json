@@ -1,0 +1,81 @@
+{
+  "repositories": {
+    "videophy": [
+      "Hritikbansal/videophy",
+      "01d366c979e4a82875852adbf427ccc036e7373a"
+    ]
+  },
+  "scope": "Selected official source files; not a complete repository checkout or model snapshot.",
+  "files": [
+    {
+      "path": "official/videophy/LICENSE",
+      "url": "https://cdn.jsdelivr.net/gh/Hritikbansal/videophy@01d366c979e4a82875852adbf427ccc036e7373a/LICENSE",
+      "git_blob_sha1": "f2bc847e8a60e9e4852f36b94f4143e355867b7b",
+      "sha256": "3430fb338156b33c3ad5651f39a04bc23b8a5124585c6e773cdda6d372c250e8",
+      "bytes": 1069
+    },
+    {
+      "path": "official/videophy/VIDEOPHY2/README.md",
+      "url": "https://cdn.jsdelivr.net/gh/Hritikbansal/videophy@01d366c979e4a82875852adbf427ccc036e7373a/VIDEOPHY2/README.md",
+      "git_blob_sha1": "6e7092212157aaba0c74e324861a71444cd0259e",
+      "sha256": "42b9fcc72e7c68cb054df1f23ed56241213ca36146b4982111f05870baabd2e6",
+      "bytes": 6926
+    },
+    {
+      "path": "official/videophy/VIDEOPHY2/inference.py",
+      "url": "https://cdn.jsdelivr.net/gh/Hritikbansal/videophy@01d366c979e4a82875852adbf427ccc036e7373a/VIDEOPHY2/inference.py",
+      "git_blob_sha1": "4be9127aae9d89d567b298acca3bc51179781da0",
+      "sha256": "2475fc14ff1b3bb2b2ee70018735b81f56033effab683046a4ea0dd1f709ed5d",
+      "bytes": 5556
+    },
+    {
+      "path": "official/videophy/VIDEOPHY2/mplug_owl_video/__init__.py",
+      "url": "https://cdn.jsdelivr.net/gh/Hritikbansal/videophy@01d366c979e4a82875852adbf427ccc036e7373a/VIDEOPHY2/mplug_owl_video/__init__.py",
+      "git_blob_sha1": "2020ad3a8823c87d70054ba386129e9b17fc5c22",
+      "sha256": "8be3234417d139e3332285db20ef945151e24f956710ac610c758bb13018b9e2",
+      "bytes": 2463
+    },
+    {
+      "path": "official/videophy/VIDEOPHY2/mplug_owl_video/configuration_mplug_owl.py",
+      "url": "https://cdn.jsdelivr.net/gh/Hritikbansal/videophy@01d366c979e4a82875852adbf427ccc036e7373a/VIDEOPHY2/mplug_owl_video/configuration_mplug_owl.py",
+      "git_blob_sha1": "911a159d00a73d7ae774bc327b683808939bbf8f",
+      "sha256": "fc71b1a958eb7037a17afe8851407cf21a87384d50ab31ebc84b598276e734f7",
+      "bytes": 13114
+    },
+    {
+      "path": "official/videophy/VIDEOPHY2/mplug_owl_video/modeling_mplug_owl.py",
+      "url": "https://cdn.jsdelivr.net/gh/Hritikbansal/videophy@01d366c979e4a82875852adbf427ccc036e7373a/VIDEOPHY2/mplug_owl_video/modeling_mplug_owl.py",
+      "git_blob_sha1": "04aec2203b91969ae09971156120b4e90221e7da",
+      "sha256": "ec9cfc444dae1f071092f22e80b1bba87e431b04db356bd1b2fb9dae4bbaa60b",
+      "bytes": 82993
+    },
+    {
+      "path": "official/videophy/VIDEOPHY2/mplug_owl_video/processing_mplug_owl.py",
+      "url": "https://cdn.jsdelivr.net/gh/Hritikbansal/videophy@01d366c979e4a82875852adbf427ccc036e7373a/VIDEOPHY2/mplug_owl_video/processing_mplug_owl.py",
+      "git_blob_sha1": "775f4d6d148c46cf4bc1472432ed9fd90dd4a367",
+      "sha256": "cd98b47489a92c29e9bdb8fec81f990887b45673c816dcdeaf982c56d926438c",
+      "bytes": 9883
+    },
+    {
+      "path": "official/videophy/VIDEOPHY2/mplug_owl_video/tokenization_mplug_owl.py",
+      "url": "https://cdn.jsdelivr.net/gh/Hritikbansal/videophy@01d366c979e4a82875852adbf427ccc036e7373a/VIDEOPHY2/mplug_owl_video/tokenization_mplug_owl.py",
+      "git_blob_sha1": "22384b4438e3d325f89dad187f649feda5eacaf7",
+      "sha256": "f592c082d1f6f48b90829ee4ca4f1bcf469fb80953917b58961e8e84281ef6f6",
+      "bytes": 1839
+    },
+    {
+      "path": "official/videophy/VIDEOPHY2/template.py",
+      "url": "https://cdn.jsdelivr.net/gh/Hritikbansal/videophy@01d366c979e4a82875852adbf427ccc036e7373a/VIDEOPHY2/template.py",
+      "git_blob_sha1": "d052fe7a85eb2a8e7c68a180df108753c82e0652",
+      "sha256": "74adde4cad3ccd6cc5dfc69f2319f03d0559e63a7da996bcca5ede76b6c30299",
+      "bytes": 1176
+    },
+    {
+      "path": "official/videophy/requirements.txt",
+      "url": "https://cdn.jsdelivr.net/gh/Hritikbansal/videophy@01d366c979e4a82875852adbf427ccc036e7373a/requirements.txt",
+      "git_blob_sha1": "e79d71e9bcb891796d30adb1da549eb6f7a7d30a",
+      "sha256": "70cddd615cc5bf55f32bed177f0bd6491b8265f7c8196e73b36aec70791f583f",
+      "bytes": 180
+    }
+  ]
+}

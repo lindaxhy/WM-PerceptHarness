@@ -1,0 +1,2 @@
+# Preserve audited upstream bytes and runtime source hashes on every platform.
+metric_packages/** -text

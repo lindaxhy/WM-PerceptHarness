@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "metric": "dynamic_degree",
+  "entrypoint": "run_dynamic_degree.py",
+  "official_source": {
+    "distribution": "vbench",
+    "version": "0.1.5",
+    "archive": "official/distributions/vbench-0.1.5-py3-none-any.whl",
+    "url": "https://files.pythonhosted.org/packages/06/82/13e401ec97d2686397201dfe74e2dda88b3695192de1b25a5ab267ab8960/vbench-0.1.5-py3-none-any.whl",
+    "sha256": "13266ed4715d91a7669ab58484b9e010bc91bb96e129d414fb512d4937890023",
+    "extracted_source": "official/pypi/vbench/dynamic_degree.py",
+    "license": "official/pypi/vbench-0.1.5.dist-info/LICENSE",
+    "dependency_metadata": "official/pypi/vbench-0.1.5.dist-info/METADATA"
+  },
+  "current_source": "modified/vbench/dynamic_degree.py",
+  "modification": "Input frame tensors remain in CPU memory; current inference pair is transferred to GPU. Sampling and score formulas unchanged.",
+  "device_argument": "torch.device('cuda'), matching official CLI",
+  "modes": [
+    "official",
+    "cpu-staging"
+  ],
+  "checkpoint": {
+    "cache_relative_path": "raft_model/models/raft-things.pth",
+    "sha256": "fcfa4125d6418f4de95d84aec20a3c5f4e205101715a79f193243c186ac9a7e1",
+    "included": false
+  },
+  "files": [
+    {
+      "path": "modified/vbench/dynamic_degree.py",
+      "bytes": 5580,
+      "sha256": "601591e8f65819dd147f0b025da5b76f66fa130442288179fef3b00b107a85b7"
+    },
+    {
+      "path": "official/distributions/vbench-0.1.5-py3-none-any.whl",
+      "bytes": 438735,
+      "sha256": "13266ed4715d91a7669ab58484b9e010bc91bb96e129d414fb512d4937890023"
+    },
+    {
+      "path": "official/pypi/vbench/dynamic_degree.py",
+      "bytes": 5516,
+      "sha256": "2e93d3a7af38bfbe459c19c9d127894f687424a0bc534dbf7e6571d17b24dff7"
+    },
+    {
+      "path": "official/pypi/vbench-0.1.5.dist-info/LICENSE",
+      "bytes": 11356,
+      "sha256": "43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1"
+    },
+    {
+      "path": "official/pypi/vbench-0.1.5.dist-info/METADATA",
+      "bytes": 6372,
+      "sha256": "e722e5715633fbb910191843a35d97a469ba34f721cfdc61535cfc778f6cc2d2"
+    },
+    {
+      "path": "README.md",
+      "bytes": 3527,
+      "sha256": "f119af8633a17bc83b0e42ed150020a5678becbf877437eef639d1d471eda526"
+    },
+    {
+      "path": "run_dynamic_degree.py",
+      "bytes": 5172,
+      "sha256": "d73544690a5a818ce6a97cf9b1ef247588a4144850c9680689a89079cafdab42"
+    }
+  ],
+  "manifest_self_hash_excluded": true
+}

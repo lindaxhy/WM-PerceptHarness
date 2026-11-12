@@ -11,6 +11,7 @@ Use the sections below for [CLIP-IQA+](#clip-iqa), [Motion Smoothness](#motion-s
 | Grounded event scoring | `percept score events` | Core package and an OpenAI-compatible semantic judge endpoint | Offline tests cover scoring with an injected judge; hosted judge and live SAM GPU inference remain unvalidated |
 | CLIP-IQA+ | `percept score clipiqa` | PyIQA 0.1.16; CPU or CUDA | Implemented sampled-frame scorer; a fresh full dependency installation has not been validated |
 | VBench Motion Smoothness / AMT-S | `percept score motion` | VBench 0.1.5, CUDA, AMT-S weights | A single-video smoke run has completed; not validated on a full dataset |
+| Standalone evaluators (SA, PC, PSNR, Dynamic Degree, Motion Smoothness) | `percept score <evaluator>`; see [standalone commands](#standalone-evaluator-commands) | Separate package environments | Audited package runners invoked through the harness; no fresh model scoring was performed |
 
 See [installation](usage.md) and the metric protocols below, [input/output conventions](usage.md), and [checkpoint preparation](#checkpoint-preparation). The packaged commands use the active environment; they do not merge the different dependency stacks. Use the `percept score` commands above for these public workflows. The evaluator integrations below use the same CLI; input preparation remains in `scripts/`. The `wrapper` field of result metadata names the command that produced it (`percept <metric>` or `percept score vbench-clip`).
 
@@ -30,6 +31,35 @@ The following code is preparation/integration support. Local checks do not estab
 | Reference metrics | `scripts/build_reference_manifest.py` | Actual aligned future reference frames; pairing is not PSNR/SSIM/LPIPS scoring |
 | VideoPhy-2 Joint analysis | `percept score videophy-joint` | Official PC/SA outputs matched by video ID; Joint is not an independent metric |
 | Manifest preflight | `scripts/validate_metric_manifest.py` | Caller-provided frozen input metadata; no missing prompts or references are generated |
+
+## Standalone evaluator commands
+
+The source packages under [`metric_packages/`](../metric_packages/README.md)
+retain the audited implementations and documented adaptations for five
+evaluators. Each is also available as a `percept score` subcommand:
+
+| Evaluator | Command | Source package |
+| --- | --- | --- |
+| Semantic Adherence (SA) | `percept score semantic-adherence` | `01_semantic_adherence` |
+| Physical Commonsense (PC) | `percept score physical-commonsense` | `02_physical_commonsense` |
+| PSNR | `percept score psnr` | `06_psnr` |
+| Dynamic Degree | `percept score dynamic-degree` | `07_dynamic_degree` |
+| Motion Smoothness | `percept score motion-smoothness` | `08_motion_smoothness` |
+
+These commands locate the pinned runner under `metric_packages/` and start it
+with `--python` (default: the current interpreter), so an evaluator keeps its
+own environment; the VideoPhy-2 SA/PC packages, for example, use Python 3.10.
+Pass `--metric-packages-root` (or set `PERCEPT_METRIC_PACKAGES`) when the
+source checkout is not next to the installed package, and `--dry-run` to print
+the exact command without starting it. Sampling, model loading and scoring stay
+in the package runner.
+
+`percept score dynamic-degree` and `percept score motion-smoothness` run the
+standalone, hash-pinned VBench 0.1.5 adapters, including the optional
+`cpu-staging` mode. The existing `percept dynamic-degree` and `percept score
+motion` commands remain the official-checkout and installed-VBench-CLI paths;
+the two protocols are not interchangeable. Package file verification and CLI
+tests do not establish real-model inference or improved judge accuracy.
 
 ## Checkpoint preparation
 

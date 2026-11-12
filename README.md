@@ -240,6 +240,24 @@ Add `--check-only` to verify inputs, source and weights without starting inferen
 
 CLIPScore, DOVER and other external evaluators have separate entries in the [metric guide](docs/metrics.md#vbench-and-external-evaluators). Their availability as commands does not imply a completed full-benchmark validation.
 
+The [standalone metric packages](metric_packages/README.md) additionally provide
+reviewed source, examples and documented adaptations for Semantic Adherence,
+Physical Commonsense, PSNR, Dynamic Degree and Motion Smoothness. Each uses its
+own runtime; these source directories are separate from the commands above and
+distinguish optional modified sampling, alignment or input-memory behavior.
+Each evaluator is also exposed as a `percept score` command, which locates the
+audited runner and starts it in the selected evaluator environment:
+
+```bash
+percept score semantic-adherence --python /path/to/videophy-env/bin/python \
+  --input-csv /data/inputs/sa.csv --checkpoint /path/to/videophy_2_auto \
+  --output outputs/sa
+```
+
+Use `percept score <evaluator> --help` for the evaluator options, `--dry-run` to
+inspect the exact runner command, and `--metric-packages-root` when the source
+checkout is elsewhere. Motion Rationality is excluded from this addition.
+
 ## Documentation
 
 | Guide | Contents |

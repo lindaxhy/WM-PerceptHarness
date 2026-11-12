@@ -24,6 +24,11 @@ _SCORE_MODULES = {
     "dover": ".video_metrics.dover",
     "external": ".video_metrics.external",
     "videophy-joint": ".video_metrics.videophy_joint",
+    "semantic-adherence": ".video_metrics.semantic_adherence",
+    "physical-commonsense": ".video_metrics.physical_commonsense",
+    "psnr": ".video_metrics.psnr",
+    "dynamic-degree": ".video_metrics.dynamic_degree",
+    "motion-smoothness": ".video_metrics.motion_smoothness",
 }
 
 _DIRECT_METRICS = {

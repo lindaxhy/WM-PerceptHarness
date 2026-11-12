@@ -1,0 +1,19 @@
+{
+  "python": "3.10.12",
+  "torch": "2.10.0+cu128",
+  "transformers": "4.28.1",
+  "accelerate": "0.28.0",
+  "peft": "0.3.0",
+  "numpy": "1.26.4",
+  "decord": "0.6.0",
+  "environment_scope": "Recorded working configuration; full dependency installation was not repeated for this package.",
+  "checkpoint": {
+    "repository": "videophysics/videophy_2_auto",
+    "revision": "ca38370e1dcc79c99c7017dd8755d0a087299afc"
+  },
+  "missing_external_assets": [
+    "complete pinned checkpoint including tokenizer and processor",
+    "Python/CUDA runtime dependencies",
+    "user input videos"
+  ]
+}

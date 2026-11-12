@@ -26,7 +26,7 @@ and the MUSIQ/Laplacian fallback. It adds CLI arguments, optional imports, input
 validation, explicit video release, non-finite score rejection, JSON output,
 and version metadata. Model loading errors now fail the command.
 
-## External packages and models (not vendored)
+## Installed dependencies for the harness commands
 
 | Component | Selected implementation | Upstream information |
 | --- | --- | --- |
@@ -44,9 +44,11 @@ versions and to the upstream checkpoint terms.
 
 ## External sources run from user-provided checkouts
 
-These sources, their checkpoints and data are not distributed with this
-repository. Commands load or invoke a checkout that you obtain separately, and
-its license applies to that checkout, its weights and your use of them.
+The harness commands load or invoke checkouts that you obtain separately, and
+their licenses apply to those checkouts, weights and your use of them. The
+standalone metric source packages now vendor selected source files as documented
+[below](#vendored-standalone-metric-packages); model checkpoints and evaluation
+data are not included.
 License identifiers below were read from each upstream `LICENSE` file; check
 the exact revision you install.
 
@@ -66,7 +68,8 @@ the exact revision you install.
 The MIT License of this repository covers only its own code. It does not
 relicense any component above; several are limited to non-commercial use.
 
-No model checkpoints or third-party model implementation are distributed here.
+No model checkpoints are distributed here. Selected third-party implementation
+source is included only in the standalone metric packages described below.
 The packaged [weight registry](../src/percept_harness/video_metrics/__init__.py) records cache-relative filenames.
 Download URLs and commands are documented in the README. Installation checks
 check file existence. CLIP-IQA+ checks both checkpoint paths when `--cache-dir`
@@ -79,6 +82,25 @@ local invocation wrapper. It
 executes the installed official CLI without copying or modifying VBench/AMT
 scoring code. It adds input/checkpoint checks, isolated run directories, logging,
 result validation and single-video JSON metadata. Official results are retained.
+
+## Vendored standalone metric packages
+
+The directories under [`metric_packages/`](../metric_packages/README.md) retain
+upstream source separately from project adapters. Each package records file
+hashes, upstream revisions and the applicable license text. They are copied
+source bundles, not a claim that one environment can install every evaluator.
+
+| Package | Included upstream source | Retained license and scope |
+| --- | --- | --- |
+| SA / PC | VideoPhy-2 at `01d366c979e4a82875852adbf427ccc036e7373a` | MIT, retained in each `official/videophy/LICENSE`; model checkpoint terms remain separate |
+| PSNR | Selected IQA-PyTorch, Wan and LingBot source | IQA-PyTorch `LICENSE` (PolyForm Noncommercial) and `LICENSE-S-Lab` both retained; Wan/LingBot Apache-2.0 licenses retained; component attribution in PSNR source remains applicable |
+| Dynamic Degree / Motion Smoothness | Original `vbench==0.1.5` wheel, selected extracted source and optional CPU-staging adaptations | Original distribution license/metadata retained; wheel preserves its included upstream files; RAFT/AMT and checkpoint terms still apply |
+
+The repository's MIT license does not override these third-party terms. The
+CPU-staging files are identified as modifications in their adjacent README and
+manifest; official baselines remain unchanged. The packages contain no model
+weights or private inputs/results. Their documented model revisions and external
+download locations are references, not redistributed checkpoints.
 
 ## Metric interpretation
 

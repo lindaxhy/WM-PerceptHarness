@@ -1,0 +1,77 @@
+{
+  "metric": "PSNR",
+  "files": [
+    {
+      "path": "official/pyiqa/psnr_arch.py",
+      "repository": "https://github.com/chaofengc/IQA-PyTorch",
+      "revision": "18dd7a19694e94aac21019170e3f5e63d6b4e19e",
+      "upstream_path": "pyiqa/archs/psnr_arch.py",
+      "sha256": "39e427d03934c8e1f6a0da743af99d55e1515e3eac41d35cd16974c303fb73d5",
+      "bytes": 2700,
+      "url": "https://github.com/chaofengc/IQA-PyTorch/blob/18dd7a19694e94aac21019170e3f5e63d6b4e19e/pyiqa/archs/psnr_arch.py"
+    },
+    {
+      "path": "official/pyiqa/LICENSE",
+      "repository": "https://github.com/chaofengc/IQA-PyTorch",
+      "revision": "18dd7a19694e94aac21019170e3f5e63d6b4e19e",
+      "upstream_path": "LICENSE",
+      "sha256": "7cfe4165a261b8f7fb71331f68da011c583e28c3dc3208e934ae7ccc4441cc46",
+      "bytes": 4659,
+      "url": "https://github.com/chaofengc/IQA-PyTorch/blob/18dd7a19694e94aac21019170e3f5e63d6b4e19e/LICENSE"
+    },
+    {
+      "path": "official/pyiqa/LICENSE-S-Lab",
+      "repository": "https://github.com/chaofengc/IQA-PyTorch",
+      "revision": "18dd7a19694e94aac21019170e3f5e63d6b4e19e",
+      "upstream_path": "LICENSE-S-Lab",
+      "sha256": "9214fbf1fe98a2dfd49ead7e5dd98c17238bbf935000b82f71b6a1d7deffab32",
+      "bytes": 1718,
+      "url": "https://github.com/chaofengc/IQA-PyTorch/blob/18dd7a19694e94aac21019170e3f5e63d6b4e19e/LICENSE-S-Lab"
+    },
+    {
+      "path": "official/lingbot/pipeline_lingbot_video_i2v.py",
+      "repository": "https://github.com/Robbyant/lingbot-video",
+      "revision": "f348dca454c8f1e5707721614dbac10fa5290fed",
+      "upstream_path": "lingbot_video/pipeline_lingbot_video_i2v.py",
+      "sha256": "9b4a085d6794debbba9eb1fc03455eec1c6cd5cd77b8c087ee42d08a631d2f3a",
+      "bytes": 15823,
+      "url": "https://github.com/Robbyant/lingbot-video/blob/f348dca454c8f1e5707721614dbac10fa5290fed/lingbot_video/pipeline_lingbot_video_i2v.py"
+    },
+    {
+      "path": "official/wan/utils.py",
+      "repository": "https://github.com/Wan-Video/Wan2.2",
+      "revision": "42bf4cfaa384bc21833865abc2f9e6c0e67233dc",
+      "upstream_path": "wan/utils/utils.py",
+      "sha256": "905850d9814ac99222b4dbb28016abcd6306e5ca161493b498b1c4afb5a99e89",
+      "bytes": 7274,
+      "url": "https://github.com/Wan-Video/Wan2.2/blob/42bf4cfaa384bc21833865abc2f9e6c0e67233dc/wan/utils/utils.py"
+    },
+    {
+      "path": "official/wan/textimage2video.py",
+      "repository": "https://github.com/Wan-Video/Wan2.2",
+      "revision": "42bf4cfaa384bc21833865abc2f9e6c0e67233dc",
+      "upstream_path": "wan/textimage2video.py",
+      "sha256": "228f2fabf23014ed41ec6b8cd713d5be7371bb558501c71a62a0258b491a877b",
+      "bytes": 24031,
+      "url": "https://github.com/Wan-Video/Wan2.2/blob/42bf4cfaa384bc21833865abc2f9e6c0e67233dc/wan/textimage2video.py"
+    },
+    {
+      "path": "official/wan/LICENSE.txt",
+      "repository": "https://github.com/Wan-Video/Wan2.2",
+      "revision": "42bf4cfaa384bc21833865abc2f9e6c0e67233dc",
+      "upstream_path": "LICENSE.txt",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "bytes": 11357,
+      "url": "https://github.com/Wan-Video/Wan2.2/blob/42bf4cfaa384bc21833865abc2f9e6c0e67233dc/LICENSE.txt"
+    },
+    {
+      "path": "official/lingbot/LICENSE",
+      "repository": "https://github.com/Robbyant/lingbot-video",
+      "revision": "f348dca454c8f1e5707721614dbac10fa5290fed",
+      "upstream_path": "LICENSE",
+      "sha256": "bc24ef0f4717a27f54e30321cbe1fbedc43b5b8daddef8ce3168a9ee9072c8da",
+      "bytes": 11356,
+      "url": "https://github.com/Robbyant/lingbot-video/blob/f348dca454c8f1e5707721614dbac10fa5290fed/LICENSE"
+    }
+  ]
+}

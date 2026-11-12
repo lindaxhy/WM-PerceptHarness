@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "metric": "semantic_adherence",
+  "packaged_on": "2026-11-07",
+  "entrypoints": [
+    "modified/sapc/run_sa.py"
+  ],
+  "official_sources": "official_sources.json",
+  "environment_directory": "environment",
+  "files": [
+    {
+      "path": "environment/runtime.json",
+      "sha256": "cc77fa7d9dc7a61fbae02f8e9d2b3aa4c50cfad875ddcf84cac7594acd5cf3fa",
+      "bytes": 590
+    },
+    {
+      "path": "environment/versions.txt",
+      "sha256": "3d1aee9782679ff5c3e878b2a1c50c5cc35fd1b0587e27e5ad1a71c090173ed0",
+      "bytes": 1235
+    },
+    {
+      "path": "examples/input.csv",
+      "sha256": "7d7db7cb953f0d27b217ea0f2057eb76ce0c5d3e49af26128f45141350934396",
+      "bytes": 125
+    },
+    {
+      "path": "modified/sapc/run_sa.py",
+      "sha256": "60bc20ab1396bdb4ee88599a4b8da5a8b867deedd094d9044a3e6125377875cf",
+      "bytes": 167
+    },
+    {
+      "path": "modified/sapc/run_videophy.py",
+      "sha256": "539b456442c8c1bd290d9e77aaeda8d392f9b15526e77b506770016a704a6c8c",
+      "bytes": 8065
+    },
+    {
+      "path": "modified/sapc/sampling.py",
+      "sha256": "b88faf9c02c67bece27d0ef6784c25d6040635809b84e9311c38d4195faf626f",
+      "bytes": 8351
+    },
+    {
+      "path": "official/videophy/LICENSE",
+      "sha256": "3430fb338156b33c3ad5651f39a04bc23b8a5124585c6e773cdda6d372c250e8",
+      "bytes": 1069
+    },
+    {
+      "path": "official/videophy/requirements.txt",
+      "sha256": "70cddd615cc5bf55f32bed177f0bd6491b8265f7c8196e73b36aec70791f583f",
+      "bytes": 180
+    },
+    {
+      "path": "official/videophy/VIDEOPHY2/inference.py",
+      "sha256": "2475fc14ff1b3bb2b2ee70018735b81f56033effab683046a4ea0dd1f709ed5d",
+      "bytes": 5556
+    },
+    {
+      "path": "official/videophy/VIDEOPHY2/mplug_owl_video/__init__.py",
+      "sha256": "8be3234417d139e3332285db20ef945151e24f956710ac610c758bb13018b9e2",
+      "bytes": 2463
+    },
+    {
+      "path": "official/videophy/VIDEOPHY2/mplug_owl_video/configuration_mplug_owl.py",
+      "sha256": "fc71b1a958eb7037a17afe8851407cf21a87384d50ab31ebc84b598276e734f7",
+      "bytes": 13114
+    },
+    {
+      "path": "official/videophy/VIDEOPHY2/mplug_owl_video/modeling_mplug_owl.py",
+      "sha256": "ec9cfc444dae1f071092f22e80b1bba87e431b04db356bd1b2fb9dae4bbaa60b",
+      "bytes": 82993
+    },
+    {
+      "path": "official/videophy/VIDEOPHY2/mplug_owl_video/processing_mplug_owl.py",
+      "sha256": "cd98b47489a92c29e9bdb8fec81f990887b45673c816dcdeaf982c56d926438c",
+      "bytes": 9883
+    },
+    {
+      "path": "official/videophy/VIDEOPHY2/mplug_owl_video/tokenization_mplug_owl.py",
+      "sha256": "f592c082d1f6f48b90829ee4ca4f1bcf469fb80953917b58961e8e84281ef6f6",
+      "bytes": 1839
+    },
+    {
+      "path": "official/videophy/VIDEOPHY2/README.md",
+      "sha256": "42b9fcc72e7c68cb054df1f23ed56241213ca36146b4982111f05870baabd2e6",
+      "bytes": 6926
+    },
+    {
+      "path": "official/videophy/VIDEOPHY2/template.py",
+      "sha256": "74adde4cad3ccd6cc5dfc69f2319f03d0559e63a7da996bcca5ede76b6c30299",
+      "bytes": 1176
+    },
+    {
+      "path": "official_sources.json",
+      "sha256": "15c6545bcc456866e5a31387e142cb2d8c032f6c882ac8129021d53bd2f65d94",
+      "bytes": 4172
+    },
+    {
+      "path": "README.md",
+      "sha256": "a1ea88067642bf8c1a13b2886de22a4eef6448c2e041c1ca80237172c61180da",
+      "bytes": 4457
+    }
+  ]
+}
